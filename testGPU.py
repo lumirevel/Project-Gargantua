@@ -1,4 +1,9 @@
 import argparse
+import json
+import os
+import struct
+import zlib
+
 import numpy as np
 
 C = 299792458.0
@@ -211,23 +216,89 @@ def iter_hit_chunks(mem, total, chunk_size):
         yield start + hit_local, rec
 
 
+def load_meta(path: str) -> dict:
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    if not isinstance(meta, dict):
+        raise ValueError("meta JSON must be an object")
+    print(f"using meta: {path}")
+    return meta
+
+
+def write_ppm(path: str, img: np.ndarray) -> None:
+    h, w, _ = img.shape
+    with open(path, "wb") as f:
+        f.write(f"P6\\n{w} {h}\\n255\\n".encode("ascii"))
+        f.write(img.tobytes())
+
+
+def write_png(path: str, img: np.ndarray) -> None:
+    h, w, c = img.shape
+    if c != 3:
+        raise ValueError("PNG writer expects RGB image")
+
+    rows = [b"\x00" + img[y].tobytes() for y in range(h)]
+    raw = b"".join(rows)
+    compressed = zlib.compress(raw, level=6)
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", compressed)
+        + chunk(b"IEND", b"")
+    )
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def save_rgb_image(path: str, img: np.ndarray) -> None:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ("", ".png"):
+        write_png(path, img)
+    elif ext == ".ppm":
+        write_ppm(path, img)
+    else:
+        raise ValueError(f"Unsupported output extension: {ext}. Use .png or .ppm")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--width", type=int, default=1200)
-    parser.add_argument("--height", type=int, default=1200)
+    parser.add_argument("--width", type=int, default=None)
+    parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--input", type=str, default="collisions.bin")
-    parser.add_argument("--output", type=str, default="blackhole_gpu.ppm")
+    parser.add_argument("--meta", type=str, default="")
+    parser.add_argument("--output", type=str, default="blackhole_gpu.png")
     parser.add_argument("--chunk", type=int, default=160000)
     parser.add_argument("--spectral-step", type=float, default=5.0)
     parser.add_argument("--exposure", type=float, default=-1.0, help="negative = auto exposure")
     parser.add_argument("--dither", type=float, default=0.75)
     parser.add_argument("--inner-edge-mult", type=float, default=1.4)
-    parser.add_argument("--rcp", type=float, default=6.0)
-    parser.add_argument("--look", type=str, default="balanced")
+    parser.add_argument("--rcp", type=float, default=None)
+    parser.add_argument("--look", type=str, default=None)
     args = parser.parse_args()
 
-    W = int(args.width)
-    H = int(args.height)
+    meta = load_meta(args.meta) if args.meta else {}
+
+    W = int(args.width if args.width is not None else meta.get("width", 1200))
+    H = int(args.height if args.height is not None else meta.get("height", 1200))
+    if W <= 0 or H <= 0:
+        raise ValueError("width and height must be positive")
+
+    look = args.look if args.look is not None else str(meta.get("preset", "balanced"))
+    rcp = float(args.rcp if args.rcp is not None else meta.get("rcp", 6.0))
+
+    if "collisionStride" in meta:
+        stride = int(meta["collisionStride"])
+        if stride != COLLISION_DTYPE.itemsize:
+            raise ValueError(f"Unexpected collision stride in meta: {stride}")
+
     total = W * H
 
     actual_size = np.fromfile(args.input, dtype=np.uint8).size
@@ -240,14 +311,14 @@ def main():
 
     eps = 1e-12
     lum_samples = []
-    for hit_idx, rec in iter_hit_chunks(mem, total, args.chunk):
+    for _, rec in iter_hit_chunks(mem, total, args.chunk):
         T = np.maximum(rec["T"].astype(np.float64), 1.0)
         v = rec["v_disk"].astype(np.float64)
         d = rec["direct_world"].astype(np.float64)
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            noise = synthetic_disk_noise(v, args.rcp)
+            noise = synthetic_disk_noise(v, rcp)
 
         rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult)
         lum = rgb_lin @ LUMA
@@ -263,9 +334,9 @@ def main():
         p50 = float(np.percentile(sample, 50.0))
         p99 = float(np.percentile(sample, 99.5))
         target_white = 0.8
-        if args.look.lower() == "interstellar":
+        if look.lower() == "interstellar":
             target_white = 0.9
-        elif args.look.lower() == "eht":
+        elif look.lower() == "eht":
             target_white = 0.6
         exposure = target_white / max(p99, eps)
         print(f"lum p50={p50:.6g}, p99.5={p99:.6g}")
@@ -281,7 +352,7 @@ def main():
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            noise = synthetic_disk_noise(v, args.rcp)
+            noise = synthetic_disk_noise(v, rcp)
 
         rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult)
         rgb_exp = rgb_lin * exposure
@@ -289,7 +360,7 @@ def main():
         lum_tm = aces_tonemap(lum)
         scale = lum_tm / np.maximum(lum, 1e-12)
         rgb_tm = rgb_exp * scale[:, None]
-        rgb_tm = apply_look(rgb_tm, args.look)
+        rgb_tm = apply_look(rgb_tm, look)
         rgb_srgb = np.power(np.clip(rgb_tm, 0.0, 1.0), 1.0 / 2.2)
 
         y = hit_idx // W
@@ -302,10 +373,7 @@ def main():
         rgb8 = np.clip(rgb_srgb * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
         img[H - 1 - y, x] = rgb8
 
-    with open(args.output, "wb") as f:
-        f.write(f"P6\n{W} {H}\n255\n".encode("ascii"))
-        f.write(img.tobytes())
-
+    save_rgb_image(args.output, img)
     print(f"Saved {args.output}")
 
 

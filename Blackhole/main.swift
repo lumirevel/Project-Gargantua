@@ -42,6 +42,23 @@ struct CollisionInfo {
     var noise: Float
 }
 
+struct RenderMeta: Codable {
+    var version: String
+    var width: Int
+    var height: Int
+    var preset: String
+    var rcp: Double
+    var h: Double
+    var maxSteps: Int
+    var camX: Double
+    var camY: Double
+    var camZ: Double
+    var fov: Double
+    var roll: Double
+    var diskH: Double
+    var collisionStride: Int
+}
+
 func normalize(_ v: SIMD3<Float>) -> SIMD3<Float> {
     let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
     return v / len
@@ -204,5 +221,28 @@ let data = Data(bytesNoCopy: outBuf.contents(), count: outSize, deallocator: .no
 let url = URL(fileURLWithPath: outPath)
 try data.write(to: url)
 
+let meta = RenderMeta(
+    version: "schwarzschild_dense_v1",
+    width: width,
+    height: height,
+    preset: preset,
+    rcp: rcp,
+    h: hArg,
+    maxSteps: maxStepsArg,
+    camX: camXFactor,
+    camY: camYFactor,
+    camZ: camZFactor,
+    fov: fovDeg,
+    roll: rollDeg,
+    diskH: diskHFactor,
+    collisionStride: MemoryLayout<CollisionInfo>.stride
+)
+let encoder = JSONEncoder()
+encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+let metaData = try encoder.encode(meta)
+let metaURL = URL(fileURLWithPath: outPath + ".json")
+try metaData.write(to: metaURL)
+
 print("Saved at:", url.path)
 print("Saved collisions.bin (\(outSize) bytes, hits=\(hitCount))")
+print("Saved meta at:", metaURL.path)
