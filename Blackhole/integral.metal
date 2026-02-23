@@ -146,6 +146,102 @@ static inline bool segment_enter_disk(float3 p0,
     return false;
 }
 
+static inline float fade(float t) {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+static inline float lerp1(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+static inline uint hash2(uint x, uint y, uint base) {
+    uint h = x * 374761393u + y * 668265263u + base * 362437u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= (h >> 16);
+    return h;
+}
+
+static inline float grad2(uint h, float x, float y) {
+    switch (h & 7u) {
+        case 0u: return  x + y;
+        case 1u: return -x + y;
+        case 2u: return  x - y;
+        case 3u: return -x - y;
+        case 4u: return  x;
+        case 5u: return -x;
+        case 6u: return  y;
+        default: return -y;
+    }
+}
+
+static inline int pos_mod(int x, int m) {
+    int r = x % m;
+    return (r < 0) ? (r + m) : r;
+}
+
+static inline float perlin2_repeat(float x, float y, int repeatX, int repeatY, uint base) {
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+
+    float xf = x - float(x0);
+    float yf = y - float(y0);
+
+    int rx0 = pos_mod(x0, repeatX);
+    int ry0 = pos_mod(y0, repeatY);
+    int rx1 = pos_mod(x1, repeatX);
+    int ry1 = pos_mod(y1, repeatY);
+
+    float n00 = grad2(hash2(uint(rx0), uint(ry0), base), xf, yf);
+    float n10 = grad2(hash2(uint(rx1), uint(ry0), base), xf - 1.0, yf);
+    float n01 = grad2(hash2(uint(rx0), uint(ry1), base), xf, yf - 1.0);
+    float n11 = grad2(hash2(uint(rx1), uint(ry1), base), xf - 1.0, yf - 1.0);
+
+    float u = fade(xf);
+    float v = fade(yf);
+    float nx0 = lerp1(n00, n10, u);
+    float nx1 = lerp1(n01, n11, u);
+    return lerp1(nx0, nx1, v);
+}
+
+static inline float disk_texture_noise(float dxy, float phi, float z, constant Params& P) {
+    float denom = max(P.re - P.rs, 1e-6);
+    float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
+
+    float spiral = phi + 1.8 * log(max(dxy / P.rs, 1.0));
+    float c = cos(spiral);
+    float s = sin(spiral);
+
+    float bx = 12.0 * u + 2.6 * c;
+    float by = 2.6 * s;
+
+    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
+    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+
+    float fbm = 0.0;
+    float amp = 1.0;
+    float freq = 1.0;
+    float ampSum = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        float nx = (bx + 0.20 * w1) * freq;
+        float ny = (by + 0.18 * w2) * freq;
+        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+        fbm += amp * n;
+        ampSum += amp;
+        amp *= 0.55;
+        freq *= 2.0;
+    }
+    fbm = (ampSum > 0.0) ? (fbm / ampSum) : 0.0;
+
+    float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
+    float edgeIn = smoothstep(0.01, 0.08, u);
+    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
+    float radialFade = edgeIn * edgeOut;
+
+    return clamp(3.2 * fbm * zFade * radialFade, -1.0, 1.0);
+}
+
 kernel void renderBH(constant Params& P [[buffer(0)]],
                      device CollisionInfo* outInfo [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]])
@@ -232,7 +328,8 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                     info.T   = T;
                     info.v_disk = v_disk;
                     info.direct_world = -direct;  // Python과 동일하게 -direct 저장
-                    info.noise = 0.0;
+                    float phiPos = atan2(hitPos.y, hitPos.x);
+                    info.noise = disk_texture_noise(dxy, phiPos, hitPos.z, P);
 
                     outInfo[idx] = info;
                     return;
