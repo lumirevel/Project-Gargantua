@@ -172,13 +172,13 @@ else
 fi
 
 if ((${#PY_ARGS[@]})); then
-  python3 "$ROOT_DIR/scripts/render_collisions.py" \
+  python3 "$ROOT_DIR/Blackhole/render_collisions.py" \
     --input "$COLLISIONS_OUT" \
     --meta "$COLLISIONS_OUT.json" \
     --output "$IMAGE_OUT" \
     "${PY_ARGS[@]}"
 else
-  python3 "$ROOT_DIR/scripts/render_collisions.py" \
+  python3 "$ROOT_DIR/Blackhole/render_collisions.py" \
     --input "$COLLISIONS_OUT" \
     --meta "$COLLISIONS_OUT.json" \
     --output "$IMAGE_OUT"
