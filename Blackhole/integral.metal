@@ -95,6 +95,57 @@ static inline void rk4_step(thread float4 &p, thread float4 &v, constant Params&
     }
 }
 
+static inline bool inside_disk_volume(float3 pos, constant Params& P) {
+    float dxy = length(float2(pos.x, pos.y));
+    return (dxy > P.rs && dxy < P.re && abs(pos.z) < P.he);
+}
+
+static inline bool segment_enter_disk(float3 p0,
+                                      float3 p1,
+                                      constant Params& P,
+                                      thread float& tEnter)
+{
+    bool in0 = inside_disk_volume(p0, P);
+    bool in1 = inside_disk_volume(p1, P);
+
+    if (!in0 && in1) {
+        float lo = 0.0;
+        float hi = 1.0;
+        for (int i = 0; i < 10; ++i) {
+            float mid = 0.5 * (lo + hi);
+            bool inMid = inside_disk_volume(mix(p0, p1, mid), P);
+            if (inMid) hi = mid;
+            else lo = mid;
+        }
+        tEnter = hi;
+        return true;
+    }
+
+    // Outside -> outside skip protection for thin disk crossings.
+    const int coarse = 48;
+    bool prevIn = in0;
+    float prevT = 0.0;
+    for (int i = 1; i <= coarse; ++i) {
+        float t = float(i) / float(coarse);
+        bool nowIn = inside_disk_volume(mix(p0, p1, t), P);
+        if (!prevIn && nowIn) {
+            float lo = prevT;
+            float hi = t;
+            for (int j = 0; j < 10; ++j) {
+                float mid = 0.5 * (lo + hi);
+                bool inMid = inside_disk_volume(mix(p0, p1, mid), P);
+                if (inMid) hi = mid;
+                else lo = mid;
+            }
+            tEnter = hi;
+            return true;
+        }
+        prevIn = nowIn;
+        prevT = t;
+    }
+    return false;
+}
+
 kernel void renderBH(constant Params& P [[buffer(0)]],
                      device CollisionInfo* outInfo [[buffer(1)]],
                      uint2 gid [[thread_position_in_grid]])
@@ -150,18 +201,14 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         float3 worldPos = localPos.x * newX + localPos.y * newY + localPos.z * newZ;
 
         if (hasPrev) {
-            float z0 = world0.z;
-            float z1 = worldPos.z;
-
-            bool crossTop = (z1 - P.he) * (z0 - P.he) < 0.0;
-            bool crossBot = (z1 + P.he) * (z0 + P.he) < 0.0;
-
-            if (crossTop || crossBot) {
-                float dxy = length(float2(worldPos.x, worldPos.y));
+            float tEnter = 0.0;
+            if (segment_enter_disk(world0, worldPos, P, tEnter)) {
+                float3 hitPos = mix(world0, worldPos, tEnter);
+                float dxy = length(float2(hitPos.x, hitPos.y));
                 if (dxy > P.rs && dxy < P.re) {
                     // disk velocity (Python과 동일)
                     float absV = sqrt(P.G * P.M / dxy);
-                    float3 phiVec = normalize(float3(-worldPos.y, worldPos.x, 0.0));
+                    float3 phiVec = normalize(float3(-hitPos.y, hitPos.x, 0.0));
                     float3 v_disk = absV * phiVec;
 
                     // Lux.v와 동일한 world velocity 계산
