@@ -43,12 +43,33 @@ struct CollisionInfo {
 }
 
 func normalize(_ v: SIMD3<Float>) -> SIMD3<Float> {
-    let len = sqrt(v.x*v.x + v.y*v.y + v.z*v.z)
+    let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
     return v / len
 }
 
 func cross(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> SIMD3<Float> {
-    SIMD3<Float>(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x)
+    SIMD3<Float>(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+}
+
+func intArg(_ name: String, default defaultValue: Int) -> Int {
+    guard let idx = CommandLine.arguments.firstIndex(of: name), idx + 1 < CommandLine.arguments.count else {
+        return defaultValue
+    }
+    return Int(CommandLine.arguments[idx + 1]) ?? defaultValue
+}
+
+func doubleArg(_ name: String, default defaultValue: Double) -> Double {
+    guard let idx = CommandLine.arguments.firstIndex(of: name), idx + 1 < CommandLine.arguments.count else {
+        return defaultValue
+    }
+    return Double(CommandLine.arguments[idx + 1]) ?? defaultValue
+}
+
+func stringArg(_ name: String, default defaultValue: String) -> String {
+    guard let idx = CommandLine.arguments.firstIndex(of: name), idx + 1 < CommandLine.arguments.count else {
+        return defaultValue
+    }
+    return CommandLine.arguments[idx + 1]
 }
 
 let device = MTLCreateSystemDefaultDevice()!
@@ -58,33 +79,82 @@ let library = device.makeDefaultLibrary()!
 let fn = library.makeFunction(name: "renderBH")!
 let pipeline = try device.makeComputePipelineState(function: fn)
 
-let width = 1200
-let height = 1200
+let width = intArg("--width", default: 1200)
+let height = intArg("--height", default: 1200)
+let preset = stringArg("--preset", default: "balanced").lowercased()
 
-// physics.py constants
+let baseCamX: Double
+let baseCamY: Double
+let baseCamZ: Double
+let baseFov: Double
+let baseRoll: Double
+let baseRcp: Double
+let baseDiskH: Double
+let baseMaxSteps: Int
+
+switch preset {
+case "interstellar":
+    baseCamX = 4.8
+    baseCamY = 0.0
+    baseCamZ = 0.55
+    baseFov = 58.0
+    baseRoll = -18.0
+    baseRcp = 9.0
+    baseDiskH = 0.08
+    baseMaxSteps = 1600
+case "eht":
+    baseCamX = 8.4
+    baseCamY = 0.0
+    baseCamZ = 0.10
+    baseFov = 30.0
+    baseRoll = 0.0
+    baseRcp = 4.4
+    baseDiskH = 0.20
+    baseMaxSteps = 2000
+default:
+    baseCamX = 22.0
+    baseCamY = 0.0
+    baseCamZ = 0.9
+    baseFov = 58.0
+    baseRoll = -18.0
+    baseRcp = 9.0
+    baseDiskH = 0.01
+    baseMaxSteps = 1600
+}
+
+let camXFactor = doubleArg("--camX", default: baseCamX)
+let camYFactor = doubleArg("--camY", default: baseCamY)
+let camZFactor = doubleArg("--camZ", default: baseCamZ)
+let fovDeg = doubleArg("--fov", default: baseFov)
+let rollDeg = doubleArg("--roll", default: baseRoll)
+let rcp = doubleArg("--rcp", default: baseRcp)
+let diskHFactor = doubleArg("--diskH", default: baseDiskH)
+let maxStepsArg = intArg("--maxSteps", default: baseMaxSteps)
+let hArg = max(1e-6, doubleArg("--h", default: 0.01))
+let outPath = stringArg("--output", default: "collisions.bin")
+
+print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg)")
+
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
 let k: Double = 1.380649e-23
-
-// Blackhole defaults: M=1e35, rcp=4, disk h=3e6
 let M: Double = 1e35
-let rsD = 2.0 * G * M / (c*c)
-let rcp: Double = 4.0
+
+let rsD = 2.0 * G * M / (c * c)
 let reD = rsD * rcp
-let heD: Double = 3e6
+let heD = rsD * diskHFactor
 
-// camera: p = rs * (5,0,0.2)
-let camPos = SIMD3<Float>(Float(rsD*5.0), Float(0.0), Float(rsD*0.2))
+let camPos = SIMD3<Float>(Float(rsD * camXFactor), Float(rsD * camYFactor), Float(rsD * camZFactor))
+let z = normalize(camPos)
 
-// Eye basis (target = 0)
-let target = SIMD3<Float>(0,0,0)
-let z = normalize(camPos)   // Python에서 target=0이면 z = p.unit가 됨
-
-let vup = SIMD3<Float>(0, Float(sin(Double.pi/12.0)), Float(cos(Double.pi/12.0)))
-let planeX = normalize(cross(vup, z))
+let vup = SIMD3<Float>(0, 0, 1)
+let planeX0 = normalize(cross(vup, z))
+let planeY0 = normalize(cross(z, planeX0))
+let roll = Float(rollDeg * Double.pi / 180.0)
+let planeX = cos(roll) * planeX0 + sin(roll) * planeY0
 let planeY = normalize(cross(z, planeX))
 
-let d = Float(Double(width) / (2.0 * tan(Double.pi/3.0)))  // 너 코드와 동일
+let d = Float(Double(width) / (2.0 * tan(fovDeg * Double.pi / 360.0)))
 
 var params = Params(
     width: UInt32(width),
@@ -101,14 +171,12 @@ var params = Params(
     G: Float(G),
     c: Float(c),
     k: Float(k),
-    h: 0.01,              // blackholeMain
-    maxSteps: 1000,        // 요청값
+    h: Float(hArg),
+    maxSteps: Int32(maxStepsArg),
     eps: 1e-5
 )
 
-let paramBuf = device.makeBuffer(bytes: &params,
-                                 length: MemoryLayout<Params>.stride,
-                                 options: [])!
+let paramBuf = device.makeBuffer(bytes: &params, length: MemoryLayout<Params>.stride, options: [])!
 
 let count = width * height
 let outSize = count * MemoryLayout<CollisionInfo>.stride
@@ -128,10 +196,13 @@ enc.endEncoding()
 cmd.commit()
 cmd.waitUntilCompleted()
 
-// Save collisions.bin
+let ptr = outBuf.contents().bindMemory(to: CollisionInfo.self, capacity: count)
+var hitCount = 0
+for i in 0..<count where ptr[i].hit != 0 { hitCount += 1 }
+
 let data = Data(bytesNoCopy: outBuf.contents(), count: outSize, deallocator: .none)
-//try data.write(to: URL(fileURLWithPath: "collisions.bin"))
-let url = URL(fileURLWithPath: "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/collisions.bin")
+let url = URL(fileURLWithPath: outPath)
 try data.write(to: url)
+
 print("Saved at:", url.path)
-print("Saved collisions.bin (\(outSize) bytes)")
+print("Saved collisions.bin (\(outSize) bytes, hits=\(hitCount))")
