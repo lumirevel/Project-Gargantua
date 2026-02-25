@@ -886,9 +886,19 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                     if (entered) {
                         float dxy = length(float2(hitPos.x, hitPos.y));
                         if (dxy > P.rs && dxy < P.re) {
-                            float absV = sqrt(P.G * P.M / dxy);
-                            float3 phiVec = normalize(float3(-hitPos.y, hitPos.x, 0.0));
-                            float3 v_disk = absV * phiVec;
+                            // Kerr disk emissivity shift:
+                            // encode exact GR g-factor in v_disk.x and emission radius in v_disk.y.
+                            float r_M = dxy / max(massLen, 1e-12);
+                            float omega = 1.0 / max(pow(r_M, 1.5) + a, 1e-8); // prograde circular orbit
+                            KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
+                            float uDen = -(diskCov.gtt
+                                         + 2.0 * omega * diskCov.gtphi
+                                         + omega * omega * diskCov.gphiphi);
+                            float u_t = 1.0 / sqrt(max(uDen, 1e-12));
+                            float E_emit = u_t * (1.0 - omega * Lz);
+                            float g_factor = 1.0 / max(E_emit, 1e-8);
+                            if (!isfinite(g_factor)) g_factor = 1.0;
+                            g_factor = clamp(g_factor, 1e-4, 1e4);
 
                             float3 segDir = worldPos - world0;
                             float segLen2 = dot(segDir, segDir);
@@ -900,7 +910,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                             info.hit = 1;
                             info.ct  = state.t * massLen;
                             info.T   = T;
-                            info.v_disk = v_disk;
+                            info.v_disk = float3(g_factor, dxy, 0.0);
                             info.direct_world = -direct;
                             float phiPos = atan2(hitPos.y, hitPos.x);
                             info.noise = disk_texture_noise(dxy, phiPos, hitPos.z, P);

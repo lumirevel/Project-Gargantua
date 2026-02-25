@@ -74,7 +74,7 @@ def planck_lambda(lam_m: np.ndarray, temperature: np.ndarray) -> np.ndarray:
     return C1 / (np.power(lam_m, 5) * np.expm1(x))
 
 
-def compute_g_factor(v: np.ndarray, d: np.ndarray):
+def compute_g_factor_schwarzschild(v: np.ndarray, d: np.ndarray):
     v_norm = np.linalg.norm(v, axis=1)
     d_norm = np.linalg.norm(d, axis=1)
     dot = np.einsum("ij,ij->i", v, d)
@@ -105,8 +105,15 @@ def render_linear_rgb(
     y_bar: np.ndarray,
     z_bar: np.ndarray,
     inner_edge_mult: float,
+    metric: str,
 ) -> np.ndarray:
-    g_total, r_emit = compute_g_factor(v, d)
+    if metric == "kerr":
+        # For Kerr runs, Metal encodes exact GR shift in v_disk:
+        # v[:, 0] = g_factor, v[:, 1] = emission radius (meters).
+        g_total = np.clip(v[:, 0], 1e-4, 1e4)
+        r_emit = np.maximum(v[:, 1], RS * 1.0001)
+    else:
+        g_total, r_emit = compute_g_factor_schwarzschild(v, d)
 
     T_obs = np.maximum(T_emit * g_total, 1.0)
     spectrum = planck_lambda(lam_m[None, :], T_obs[:, None])
@@ -292,6 +299,7 @@ def main():
         raise ValueError("width and height must be positive")
 
     look = args.look if args.look is not None else str(meta.get("preset", "balanced"))
+    metric = str(meta.get("metric", "schwarzschild")).lower()
     rcp = float(args.rcp if args.rcp is not None else meta.get("rcp", 6.0))
 
     if "collisionStride" in meta:
@@ -318,9 +326,12 @@ def main():
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            noise = synthetic_disk_noise(v, rcp)
+            if metric == "kerr":
+                noise = np.zeros_like(noise)
+            else:
+                noise = synthetic_disk_noise(v, rcp)
 
-        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult)
+        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric)
         lum = rgb_lin @ LUMA
         stride = max(1, lum.size // 4096)
         lum_samples.append(lum[::stride])
@@ -352,9 +363,12 @@ def main():
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            noise = synthetic_disk_noise(v, rcp)
+            if metric == "kerr":
+                noise = np.zeros_like(noise)
+            else:
+                noise = synthetic_disk_noise(v, rcp)
 
-        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult)
+        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric)
         rgb_exp = rgb_lin * exposure
         lum = rgb_exp @ LUMA
         lum_tm = aces_tonemap(lum)
