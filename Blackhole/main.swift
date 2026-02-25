@@ -31,6 +31,16 @@ struct Params {
     var maxSteps: Int32
 
     var eps: Float
+    var metric: Int32
+    var spin: Float
+    var kerrSubsteps: Int32
+    var kerrTol: Float
+    var kerrEscapeMult: Float
+    var kerrRadialScale: Float
+    var kerrAzimuthScale: Float
+    var kerrImpactScale: Float
+    var _padMetric0: Float
+    var _padMetric1: Int32
 }
 
 struct CollisionInfo {
@@ -56,6 +66,14 @@ struct RenderMeta: Codable {
     var fov: Double
     var roll: Double
     var diskH: Double
+    var metric: String
+    var spin: Double
+    var kerrTol: Double
+    var kerrEscapeMult: Double
+    var kerrSubsteps: Int
+    var kerrRadialScale: Double
+    var kerrAzimuthScale: Double
+    var kerrImpactScale: Double
     var collisionStride: Int
 }
 
@@ -147,10 +165,24 @@ let rollDeg = doubleArg("--roll", default: baseRoll)
 let rcp = doubleArg("--rcp", default: baseRcp)
 let diskHFactor = doubleArg("--diskH", default: baseDiskH)
 let maxStepsArg = intArg("--maxSteps", default: baseMaxSteps)
-let hArg = max(1e-6, doubleArg("--h", default: 0.01))
 let outPath = stringArg("--output", default: "collisions.bin")
+let metricName = stringArg("--metric", default: "schwarzschild").lowercased()
+let metricArg: Int32 = (metricName == "kerr") ? 1 : 0
+let defaultH = 0.01
+let hArg = max(1e-6, doubleArg("--h", default: defaultH))
+let spinArg = max(0.0, min(0.999, doubleArg("--spin", default: 0.0)))
+let defaultKerrSubsteps = 4
+let defaultKerrRadialScale = 0.69
+let defaultKerrAzimuthScale = 0.91
+let defaultKerrImpactScale = 0.97
+let kerrSubstepsArg = max(1, min(8, intArg("--kerr-substeps", default: defaultKerrSubsteps)))
+let kerrTolArg = max(1e-6, doubleArg("--kerr-tol", default: 1e-5))
+let kerrEscapeMultArg = max(1.0, doubleArg("--kerr-escape-mult", default: 3.0))
+let kerrRadialScaleArg = max(0.01, doubleArg("--kerr-radial-scale", default: defaultKerrRadialScale))
+let kerrAzimuthScaleArg = max(0.01, doubleArg("--kerr-azimuth-scale", default: defaultKerrAzimuthScale))
+let kerrImpactScaleArg = max(0.1, doubleArg("--kerr-impact-scale", default: defaultKerrImpactScale))
 
-print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg)")
+print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg))")
 
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
@@ -190,7 +222,17 @@ var params = Params(
     k: Float(k),
     h: Float(hArg),
     maxSteps: Int32(maxStepsArg),
-    eps: 1e-5
+    eps: 1e-5,
+    metric: metricArg,
+    spin: Float(spinArg),
+    kerrSubsteps: Int32(kerrSubstepsArg),
+    kerrTol: Float(kerrTolArg),
+    kerrEscapeMult: Float(kerrEscapeMultArg),
+    kerrRadialScale: Float(kerrRadialScaleArg),
+    kerrAzimuthScale: Float(kerrAzimuthScaleArg),
+    kerrImpactScale: Float(kerrImpactScaleArg),
+    _padMetric0: 0.0,
+    _padMetric1: 0
 )
 
 let paramBuf = device.makeBuffer(bytes: &params, length: MemoryLayout<Params>.stride, options: [])!
@@ -222,7 +264,7 @@ let url = URL(fileURLWithPath: outPath)
 try data.write(to: url)
 
 let meta = RenderMeta(
-    version: "schwarzschild_dense_v1",
+    version: "dense_pruned_v2",
     width: width,
     height: height,
     preset: preset,
@@ -235,6 +277,14 @@ let meta = RenderMeta(
     fov: fovDeg,
     roll: rollDeg,
     diskH: diskHFactor,
+    metric: metricName,
+    spin: spinArg,
+    kerrTol: kerrTolArg,
+    kerrEscapeMult: kerrEscapeMultArg,
+    kerrSubsteps: kerrSubstepsArg,
+    kerrRadialScale: kerrRadialScaleArg,
+    kerrAzimuthScale: kerrAzimuthScaleArg,
+    kerrImpactScale: kerrImpactScaleArg,
     collisionStride: MemoryLayout<CollisionInfo>.stride
 )
 let encoder = JSONEncoder()

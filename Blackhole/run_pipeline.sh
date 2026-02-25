@@ -44,7 +44,7 @@ One-command pipeline:
 
 Routing rules:
 - Shared: --width --height --rcp
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale
 - Python-only: --chunk --spectral-step --exposure --dither --inner-edge-mult --look
 - Unknown options go to Swift by default.
 - Use --py to forward the remaining args to Python.
@@ -122,7 +122,11 @@ while [[ "$#" -gt 0 ]]; do
       PRESET_VALUE="$val"
       SWIFT_ARGS+=("$arg" "$val")
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--maxSteps|--h)
+    --kerr-legacy)
+      echo "error: --kerr-legacy has been removed. Kerr now uses a single 3D Hamiltonian path." >&2
+      exit 2
+      ;;
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--maxSteps|--h|--metric|--spin|--kerr-substeps|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -165,10 +169,16 @@ if [[ ! -x "$BIN_PATH" ]]; then
   exit 1
 fi
 
+RUNNER=("$BIN_PATH")
+if [[ -n "${BH_FORCE_ARCH:-}" ]]; then
+  RUNNER=(/usr/bin/arch "-$BH_FORCE_ARCH" "$BIN_PATH")
+  echo "binary runner arch: $BH_FORCE_ARCH"
+fi
+
 if ((${#SWIFT_ARGS[@]})); then
-  "$BIN_PATH" --output "$COLLISIONS_OUT" "${SWIFT_ARGS[@]}"
+  "${RUNNER[@]}" --output "$COLLISIONS_OUT" "${SWIFT_ARGS[@]}"
 else
-  "$BIN_PATH" --output "$COLLISIONS_OUT"
+  "${RUNNER[@]}" --output "$COLLISIONS_OUT"
 fi
 
 if ((${#PY_ARGS[@]})); then
