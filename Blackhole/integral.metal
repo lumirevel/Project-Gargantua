@@ -754,10 +754,10 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                         float3 phiVec = normalize(float3(-hitPos.y, hitPos.x, 0.0));
                         float3 v_disk = absV * phiVec;
 
-                        float r = p.y;
+                        float rState = p.y;
                         float phi = p.w;
-                        float dx = cos(phi) * v.y - r * sin(phi) * v.w;
-                        float dy = sin(phi) * v.y + r * cos(phi) * v.w;
+                        float dx = cos(phi) * v.y - rState * sin(phi) * v.w;
+                        float dy = sin(phi) * v.y + rState * cos(phi) * v.w;
                         float3 worldVel = dx * newX + dy * newY;
                         float3 direct = normalize(worldVel);
 

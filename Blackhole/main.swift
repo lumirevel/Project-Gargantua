@@ -54,6 +54,7 @@ struct CollisionInfo {
 
 struct RenderMeta: Codable {
     var version: String
+    var spectralEncoding: String
     var width: Int
     var height: Int
     var preset: String
@@ -173,6 +174,7 @@ let maxStepsArg = intArg("--maxSteps", default: baseMaxSteps)
 let outPath = stringArg("--output", default: "collisions.bin")
 let metricName = stringArg("--metric", default: "schwarzschild").lowercased()
 let metricArg: Int32 = (metricName == "kerr") ? 1 : 0
+let spectralEncoding = (metricName == "kerr") ? "gfactor_v1" : "legacy_vectors"
 let defaultH = 0.01
 let hArg = max(1e-6, doubleArg("--h", default: defaultH))
 let spinArg = max(0.0, min(0.999, doubleArg("--spin", default: 0.0)))
@@ -269,7 +271,8 @@ let url = URL(fileURLWithPath: outPath)
 try data.write(to: url)
 
 let meta = RenderMeta(
-    version: "dense_pruned_v2",
+    version: "dense_pruned_v3",
+    spectralEncoding: spectralEncoding,
     width: width,
     height: height,
     preset: preset,

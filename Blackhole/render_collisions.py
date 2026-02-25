@@ -84,7 +84,9 @@ def compute_g_factor_schwarzschild(v: np.ndarray, d: np.ndarray):
     cos_theta = np.clip(cos_theta, -1.0, 1.0)
     gamma = 1.0 / np.sqrt(1.0 - beta * beta)
 
-    delta = 1.0 / np.maximum(gamma * (1.0 - beta * cos_theta), 1e-9)
+    # `direct_world` in legacy collisions is opposite to the emitter->observer
+    # convention used in the textbook Doppler form, so the sign is inverted here.
+    delta = 1.0 / np.maximum(gamma * (1.0 + beta * cos_theta), 1e-9)
 
     r_emit = (G * M_BH) / np.maximum(v_norm * v_norm, 1e-30)
     r_emit = np.maximum(r_emit, RS * 1.0001)
@@ -106,9 +108,10 @@ def render_linear_rgb(
     z_bar: np.ndarray,
     inner_edge_mult: float,
     metric: str,
+    spectral_encoding: str,
 ) -> np.ndarray:
-    if metric == "kerr":
-        # For Kerr runs, Metal encodes exact GR shift in v_disk:
+    if spectral_encoding == "gfactor_v1":
+        # Metal encodes exact GR shift in v_disk for both metrics:
         # v[:, 0] = g_factor, v[:, 1] = emission radius (meters).
         g_total = np.clip(v[:, 0], 1e-4, 1e4)
         r_emit = np.maximum(v[:, 1], RS * 1.0001)
@@ -300,6 +303,7 @@ def main():
 
     look = args.look if args.look is not None else str(meta.get("preset", "balanced"))
     metric = str(meta.get("metric", "schwarzschild")).lower()
+    spectral_encoding = str(meta.get("spectralEncoding", "legacy_vectors")).lower()
     rcp = float(args.rcp if args.rcp is not None else meta.get("rcp", 6.0))
 
     if "collisionStride" in meta:
@@ -326,12 +330,12 @@ def main():
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            if metric == "kerr":
+            if spectral_encoding == "gfactor_v1":
                 noise = np.zeros_like(noise)
             else:
                 noise = synthetic_disk_noise(v, rcp)
 
-        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric)
+        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric, spectral_encoding)
         lum = rgb_lin @ LUMA
         stride = max(1, lum.size // 4096)
         lum_samples.append(lum[::stride])
@@ -363,12 +367,12 @@ def main():
         noise = rec["noise"].astype(np.float64)
 
         if float(np.max(np.abs(noise))) < 1e-6:
-            if metric == "kerr":
+            if spectral_encoding == "gfactor_v1":
                 noise = np.zeros_like(noise)
             else:
                 noise = synthetic_disk_noise(v, rcp)
 
-        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric)
+        rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric, spectral_encoding)
         rgb_exp = rgb_lin * exposure
         lum = rgb_exp @ LUMA
         lum_tm = aces_tonemap(lum)
