@@ -107,6 +107,11 @@ func stringArg(_ name: String, default defaultValue: String) -> String {
     return CommandLine.arguments[idx + 1]
 }
 
+if CommandLine.arguments.contains("--kerr-use-u") {
+    FileHandle.standardError.write(Data("error: --kerr-use-u has been removed after validation tests showed no practical gain.\n".utf8))
+    exit(2)
+}
+
 let device = MTLCreateSystemDefaultDevice()!
 let queue = device.makeCommandQueue()!
 

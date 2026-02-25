@@ -126,6 +126,10 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-legacy has been removed. Kerr now uses a single 3D Hamiltonian path." >&2
       exit 2
       ;;
+    --kerr-use-u)
+      echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
+      exit 2
+      ;;
     --camX|--camY|--camZ|--fov|--roll|--diskH|--maxSteps|--h|--metric|--spin|--kerr-substeps|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale)
       need_value "$arg" "$@"
       val="$1"
