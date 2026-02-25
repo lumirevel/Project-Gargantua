@@ -751,7 +751,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                     float dxy = length(float2(hitPos.x, hitPos.y));
                     if (dxy > P.rs && dxy < P.re) {
                         float absV = sqrt(P.G * P.M / dxy);
-                        float3 phiVec = normalize(float3(-hitPos.y, hitPos.x, 0.0));
+                        float3 phiVec = normalize(float3(hitPos.y, -hitPos.x, 0.0));
                         float3 v_disk = absV * phiVec;
 
                         float rState = p.y;
@@ -889,7 +889,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                             // Kerr disk emissivity shift:
                             // encode exact GR g-factor in v_disk.x and emission radius in v_disk.y.
                             float r_M = dxy / max(massLen, 1e-12);
-                            float omega = 1.0 / max(pow(r_M, 1.5) + a, 1e-8); // prograde circular orbit
+                            float omega = -1.0 / max(pow(r_M, 1.5) + a, 1e-8); // flipped disk rotation
                             KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
                             float uDen = -(diskCov.gtt
                                          + 2.0 * omega * diskCov.gtphi
