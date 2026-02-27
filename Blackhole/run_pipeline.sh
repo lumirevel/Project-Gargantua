@@ -10,18 +10,23 @@ BIN_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/Blackhole"
 COLLISIONS_OUT="${BH_COLLISIONS_OUT:-$ROOT_DIR/collisions.bin}"
 IMAGE_OUT="${BH_IMAGE_OUT:-$ROOT_DIR/blackhole_gpu.png}"
 NO_BUILD=0
-MODE="debug"
+MODE="fast"
+COLLISIONS_MODE="auto"
+COLLISIONS_POLICY="temp"
+PIPELINE_MODE="gpu-only"
 SSAA=1
 WIDTH_SET=0
 HEIGHT_SET=0
 WIDTH_VALUE=""
 HEIGHT_VALUE=""
 TILE_SIZE_VALUE=""
+TILE_SIZE_EXPLICIT=0
 COLLISIONS_OUT_EXPLICIT=0
 METRIC_VALUE="schwarzschild"
 MAX_STEPS_VALUE=""
 KERR_SUBSTEPS_VALUE=""
 SPECTRAL_STEP_VALUE="5.0"
+EXPOSURE_VALUE=""
 
 SWIFT_ARGS=()
 PY_ARGS=()
@@ -31,22 +36,17 @@ PRESET_VALUE=""
 ETA_SCRIPT="$ROOT_DIR/scripts/pipeline_eta.py"
 ETA_HISTORY="$ROOT_DIR/.pipeline_eta_history.json"
 ETA_RELAY="${BH_ETA_RELAY:-errors}"
-COMPOSE_BACKEND="${BH_COMPOSE_BACKEND:-gpu}"
+COMPOSE_BACKEND="python"
 MATCH_CPU=1
 GPU_FULL_COMPOSE=0
+GPU_STREAM_LINEAR32=0
+LINEAR32_OUT=""
+LEGACY_COMPOSE_OVERRIDE=""
 
 case "$ETA_RELAY" in
   always|errors|none) ;;
   *)
     echo "error: BH_ETA_RELAY must be one of always, errors, none" >&2
-    exit 2
-    ;;
-esac
-
-case "$COMPOSE_BACKEND" in
-  gpu|python) ;;
-  *)
-    echo "error: BH_COMPOSE_BACKEND must be one of gpu, python" >&2
     exit 2
     ;;
 esac
@@ -57,6 +57,10 @@ log_section() {
 
 log_item() {
   printf "  %-16s %s\n" "$1" "$2"
+}
+
+to_gib() {
+  awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824.0 }'
 }
 
 normalize_dash() {
@@ -90,20 +94,27 @@ Routing rules:
 - Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look
 - Pipeline quality: --ssaa {1|2|4} (2=2x2, 4=4x4 supersampling)
 - Swift memory: --tile-size <pixels> (optional, e.g. 512/1024)
-- Mode: --mode {debug|fast} (debug=keep collisions, fast=temporary collisions)
-- Compose backend: --compose {gpu|python}
-  - gpu: GPU trace + Python compose (quality-match path)
-  - python: Python-only compose path
-- GPU precise-match path: --gpu-native (CPU-equivalent stats + precise GPU compose)
-- Pure GPU stats path: --gpu-pure (native full GPU prepass + GPU compose)
-- Legacy hybrid alias: --gpu-hybrid (same as --gpu-native)
+- Pipeline mode:
+  - --pipeline {cpu-mixed|gpu-only}
+  - shortcut: --cpu-mixed / --gpu-only
+- Collisions mode:
+  - --collisions {debug|auto|linear32|none}
+  - debug: keep collisions.bin (+meta), debug/inspection mode
+  - auto: choose none first, switch to linear32 if memory risk is detected (default)
+  - linear32: always streamed float32 intermediate chunks
+  - none: no intermediate collision files (low-quality/quick mode)
+  - compatibility: --temp-collisions => linear32, --keep-collisions => debug
+- Compatibility aliases (deprecated):
+  - mode: --mode {debug|fast}, --debug, --fast (maps to collisions mode)
+  - pipeline: --match-cpu / --gpu-native / --gpu-pure / --gpu-hybrid / --compose {gpu|python}
+- Default collisions mode is auto (none -> linear32 fallback on memory pressure).
 - Unknown options go to Swift by default.
 - Use --py to forward the remaining args to Python.
 
 Output controls:
-- --output <path>: *.png/*.ppm => image output, *.bin => collisions output
-- --collisions-out <path>
-- --image-out <path>
+- --output <path>: final image output path (PNG/PPM)
+- --image-out <path>: alias of --output
+- --collisions-out <path>: optional explicit intermediate path (advanced)
 
 Example:
   ./run_pipeline.sh --width 1200 --height 1200 --preset interstellar --output blackhole_gpu.png
@@ -146,9 +157,14 @@ while [[ "$#" -gt 0 ]]; do
       out_path="$1"
       shift
       case "$out_path" in
-        *.png|*.ppm) IMAGE_OUT="$out_path" ;;
-        *.bin) COLLISIONS_OUT="$out_path"; COLLISIONS_OUT_EXPLICIT=1 ;;
-        *) COLLISIONS_OUT="$out_path"; COLLISIONS_OUT_EXPLICIT=1 ;;
+        *.bin)
+          echo "warn: --output *.bin is deprecated. Use --collisions-out for intermediates and --output for final image." >&2
+          COLLISIONS_OUT="$out_path"
+          COLLISIONS_OUT_EXPLICIT=1
+          ;;
+        *)
+          IMAGE_OUT="$out_path"
+          ;;
       esac
       continue
       ;;
@@ -157,7 +173,12 @@ while [[ "$#" -gt 0 ]]; do
       MODE="$1"
       shift
       case "$MODE" in
-        debug|fast) ;;
+        debug)
+          COLLISIONS_MODE="debug"
+          ;;
+        fast)
+          COLLISIONS_MODE="auto"
+          ;;
         *)
           echo "error: --mode must be one of debug, fast" >&2
           exit 2
@@ -165,12 +186,62 @@ while [[ "$#" -gt 0 ]]; do
       esac
       continue
       ;;
+    --collisions)
+      need_value "$arg" "$@"
+      mode_value="$1"
+      shift
+      case "$mode_value" in
+        debug)
+          COLLISIONS_MODE="debug"
+          MODE="debug"
+          ;;
+        auto)
+          COLLISIONS_MODE="auto"
+          MODE="fast"
+          ;;
+        linear32)
+          COLLISIONS_MODE="linear32"
+          MODE="fast"
+          ;;
+        none)
+          COLLISIONS_MODE="none"
+          MODE="fast"
+          ;;
+        keep)
+          # Backward compatibility alias
+          COLLISIONS_MODE="debug"
+          MODE="debug"
+          ;;
+        temp)
+          # Backward compatibility alias
+          COLLISIONS_MODE="linear32"
+          MODE="fast"
+          ;;
+        *)
+          echo "error: --collisions must be one of debug, auto, linear32, none" >&2
+          exit 2
+          ;;
+      esac
+      continue
+      ;;
+    --temp-collisions)
+      COLLISIONS_MODE="linear32"
+      MODE="fast"
+      continue
+      ;;
+    --keep-collisions)
+      COLLISIONS_MODE="debug"
+      MODE="debug"
+      continue
+      ;;
     --compose)
       need_value "$arg" "$@"
-      COMPOSE_BACKEND="$1"
+      LEGACY_COMPOSE_OVERRIDE="$1"
       shift
-      case "$COMPOSE_BACKEND" in
-        gpu|python) ;;
+      case "$LEGACY_COMPOSE_OVERRIDE" in
+        gpu|python)
+          echo "warn: --compose is deprecated and will be mapped to --pipeline." >&2
+          ;;
         *)
           echo "error: --compose must be one of gpu, python" >&2
           exit 2
@@ -178,37 +249,60 @@ while [[ "$#" -gt 0 ]]; do
       esac
       continue
       ;;
+    --cpu-mixed)
+      PIPELINE_MODE="cpu-mixed"
+      continue
+      ;;
+    --gpu-only)
+      PIPELINE_MODE="gpu-only"
+      continue
+      ;;
+    --pipeline)
+      need_value "$arg" "$@"
+      pipeline_mode="$1"
+      shift
+      case "$pipeline_mode" in
+        cpu-mixed)
+          PIPELINE_MODE="cpu-mixed"
+          ;;
+        gpu-only)
+          PIPELINE_MODE="gpu-only"
+          ;;
+        *)
+          echo "error: --pipeline must be one of cpu-mixed, gpu-only" >&2
+          exit 2
+          ;;
+      esac
+      continue
+      ;;
     --match-cpu)
-      # Kept for backward compatibility. GPU backend already runs in match mode.
-      COMPOSE_BACKEND="gpu"
-      MATCH_CPU=1
-      GPU_FULL_COMPOSE=0
+      # Kept for backward compatibility: map to cpu-mixed terminology.
+      PIPELINE_MODE="cpu-mixed"
       continue
       ;;
     --gpu-native)
-      COMPOSE_BACKEND="gpu"
-      MATCH_CPU=0
-      GPU_FULL_COMPOSE=0
+      # Kept for backward compatibility: map to cpu-mixed terminology.
+      PIPELINE_MODE="cpu-mixed"
       continue
       ;;
     --gpu-pure)
-      COMPOSE_BACKEND="gpu"
-      MATCH_CPU=0
-      GPU_FULL_COMPOSE=1
+      # Kept for backward compatibility: map to gpu-only terminology.
+      PIPELINE_MODE="gpu-only"
       continue
       ;;
     --gpu-hybrid)
-      COMPOSE_BACKEND="gpu"
-      MATCH_CPU=0
-      GPU_FULL_COMPOSE=0
+      # Kept for backward compatibility: map to cpu-mixed terminology.
+      PIPELINE_MODE="cpu-mixed"
       continue
       ;;
     --fast)
       MODE="fast"
+      COLLISIONS_MODE="auto"
       continue
       ;;
     --debug)
       MODE="debug"
+      COLLISIONS_MODE="debug"
       continue
       ;;
     --ssaa)
@@ -245,6 +339,7 @@ while [[ "$#" -gt 0 ]]; do
     --tile-size)
       need_value "$arg" "$@"
       TILE_SIZE_VALUE="$1"
+      TILE_SIZE_EXPLICIT=1
       shift
       continue
       ;;
@@ -282,13 +377,6 @@ while [[ "$#" -gt 0 ]]; do
       val="$1"
       shift
       KERR_SUBSTEPS_VALUE="$val"
-      SWIFT_ARGS+=("$arg" "$val")
-      ;;
-    --tile-size)
-      need_value "$arg" "$@"
-      val="$1"
-      shift
-      TILE_SIZE_VALUE="$val"
       SWIFT_ARGS+=("$arg" "$val")
       ;;
     --preset)
@@ -334,7 +422,15 @@ while [[ "$#" -gt 0 ]]; do
       SWIFT_ARGS+=("$arg" "$val")
       PY_ARGS+=("$arg" "$val")
       ;;
-    --exposure|--dither|--inner-edge-mult)
+    --exposure)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      EXPOSURE_VALUE="$val"
+      SWIFT_ARGS+=("$arg" "$val")
+      PY_ARGS+=("$arg" "$val")
+      ;;
+    --dither|--inner-edge-mult)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -359,6 +455,67 @@ if [[ "$LOOK_SET" -eq 0 && -n "$PRESET_VALUE" ]]; then
   SWIFT_ARGS+=(--look "$PRESET_VALUE")
   PY_ARGS+=(--look "$PRESET_VALUE")
 fi
+
+# Canonical routing: compose backend is implied by pipeline mode.
+if [[ -n "$LEGACY_COMPOSE_OVERRIDE" ]]; then
+  if [[ "$LEGACY_COMPOSE_OVERRIDE" == "python" ]]; then
+    PIPELINE_MODE="cpu-mixed"
+  elif [[ "$LEGACY_COMPOSE_OVERRIDE" == "gpu" && "$PIPELINE_MODE" == "cpu-mixed" ]]; then
+    echo "warn: --compose gpu is ignored in cpu-mixed mode (cpu-mixed now composes via python)." >&2
+  fi
+fi
+
+# Collisions mode may constrain pipeline route.
+if [[ "$PIPELINE_MODE" == "cpu-mixed" && ( "$COLLISIONS_MODE" == "auto" || "$COLLISIONS_MODE" == "linear32" || "$COLLISIONS_MODE" == "none" ) ]]; then
+  echo "warn: --collisions $COLLISIONS_MODE requires gpu-only. switching pipeline to gpu-only." >&2
+  PIPELINE_MODE="gpu-only"
+fi
+
+case "$PIPELINE_MODE" in
+  cpu-mixed)
+    COMPOSE_BACKEND="python"
+    MATCH_CPU=1
+    GPU_FULL_COMPOSE=0
+    GPU_STREAM_LINEAR32=0
+    ;;
+  gpu-only)
+    COMPOSE_BACKEND="gpu"
+    MATCH_CPU=0
+    GPU_FULL_COMPOSE=1
+    GPU_STREAM_LINEAR32=0
+    ;;
+  *)
+    echo "error: internal invalid pipeline mode: $PIPELINE_MODE" >&2
+    exit 2
+    ;;
+esac
+
+case "$COLLISIONS_MODE" in
+  debug)
+    COLLISIONS_POLICY="keep"
+    GPU_FULL_COMPOSE=1
+    GPU_STREAM_LINEAR32=0
+    ;;
+  auto)
+    COLLISIONS_POLICY="temp"
+    GPU_FULL_COMPOSE=1
+    GPU_STREAM_LINEAR32=0
+    ;;
+  linear32)
+    COLLISIONS_POLICY="keep"
+    GPU_FULL_COMPOSE=0
+    GPU_STREAM_LINEAR32=1
+    ;;
+  none)
+    COLLISIONS_POLICY="temp"
+    GPU_FULL_COMPOSE=1
+    GPU_STREAM_LINEAR32=0
+    ;;
+  *)
+    echo "error: internal invalid collisions mode: $COLLISIONS_MODE" >&2
+    exit 2
+    ;;
+esac
 
 if [[ "$WIDTH_SET" -eq 1 ]]; then
   if ! [[ "$WIDTH_VALUE" =~ ^[0-9]+$ ]] || [[ "$WIDTH_VALUE" -le 0 ]]; then
@@ -393,8 +550,11 @@ fi
 if [[ -z "$TILE_SIZE_VALUE" ]]; then
   if (( RENDER_WIDTH * RENDER_HEIGHT > 8000000 )); then
     TILE_SIZE_VALUE=1024
-    SWIFT_ARGS+=(--tile-size "$TILE_SIZE_VALUE")
+    TILE_SIZE_EXPLICIT=1
   fi
+fi
+if [[ "$TILE_SIZE_EXPLICIT" -eq 1 && -n "$TILE_SIZE_VALUE" ]]; then
+  SWIFT_ARGS+=(--tile-size "$TILE_SIZE_VALUE")
 fi
 if [[ -n "$TILE_SIZE_VALUE" ]]; then
   TILE_INFO="$TILE_SIZE_VALUE"
@@ -402,32 +562,97 @@ else
   TILE_INFO="full-frame"
 fi
 
+if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 && "$GPU_FULL_COMPOSE" -eq 1 && "$COLLISIONS_MODE" == "auto" ]]; then
+  PIXELS=$((RENDER_WIDTH * RENDER_HEIGHT))
+  COLLISION_BYTES=$((PIXELS * 64))
+  NEED_LINEAR=1
+  if [[ -n "$EXPOSURE_VALUE" ]]; then
+    if awk -v x="$EXPOSURE_VALUE" 'BEGIN { exit !(x > 0) }'; then
+      NEED_LINEAR=0
+    fi
+  fi
+  LINEAR_BYTES=$((NEED_LINEAR * PIXELS * 16))
+  EST_TOTAL_BYTES=$((COLLISION_BYTES + LINEAR_BYTES))
+
+  PHYS_MEM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  if [[ "$PHYS_MEM_BYTES" =~ ^[0-9]+$ ]] && (( PHYS_MEM_BYTES > 0 )); then
+    SAFE_BUDGET_BYTES=$((PHYS_MEM_BYTES * 80 / 100))
+    if (( EST_TOTAL_BYTES > SAFE_BUDGET_BYTES )); then
+      EST_GIB="$(to_gib "$EST_TOTAL_BYTES")"
+      MEM_GIB="$(to_gib "$PHYS_MEM_BYTES")"
+      echo "warn: gpu-only estimated memory ${EST_GIB} GiB exceeds safe budget on this machine (${MEM_GIB} GiB physical)." >&2
+      echo "warn: auto mode switched to streamed linear32 due to memory budget." >&2
+      MATCH_CPU=0
+      GPU_FULL_COMPOSE=0
+      GPU_STREAM_LINEAR32=1
+    fi
+  fi
+fi
+
+IMAGE_BASE="$IMAGE_OUT"
+if [[ "$IMAGE_BASE" == *.* ]]; then
+  IMAGE_BASE="${IMAGE_BASE%.*}"
+fi
+if [[ "$COLLISIONS_OUT_EXPLICIT" -eq 0 && "$COLLISIONS_POLICY" == "keep" ]]; then
+  COLLISIONS_OUT="${IMAGE_BASE}.collisions.bin"
+fi
+
 TEMP_COLLISIONS=""
-if [[ "$MODE" == "fast" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; then
-  TEMP_COLLISIONS="$(mktemp /tmp/blackhole_collisions.XXXXXX)"
-  COLLISIONS_OUT="$TEMP_COLLISIONS"
+if [[ "$COLLISIONS_POLICY" == "temp" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; then
+  if [[ ( "$COLLISIONS_MODE" == "none" || "$COLLISIONS_MODE" == "auto" ) && "$COMPOSE_BACKEND" == "gpu" && "$GPU_FULL_COMPOSE" -eq 1 ]]; then
+    COLLISIONS_OUT="/tmp/blackhole_discard.bin"
+  else
+    TEMP_COLLISIONS="$(mktemp /tmp/blackhole_collisions.XXXXXX)"
+    COLLISIONS_OUT="$TEMP_COLLISIONS"
+  fi
+fi
+if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+  if [[ "$COLLISIONS_POLICY" == "keep" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; then
+    LINEAR32_OUT="${IMAGE_BASE}.linear32f32"
+  else
+    LINEAR32_OUT="${COLLISIONS_OUT}.linear32f32"
+  fi
 fi
 
 log_section "Pipeline"
 log_item "metric" "$METRIC_VALUE"
-log_item "mode" "$MODE"
-log_item "compose" "$COMPOSE_BACKEND"
-if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-  log_item "match_cpu" "enabled (GPU trace + Python compose)"
-elif [[ "$COMPOSE_BACKEND" == "gpu" && "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-  log_item "gpu_mode" "pure-gpu"
-elif [[ "$COMPOSE_BACKEND" == "gpu" ]]; then
-  log_item "gpu_mode" "precise-match"
+if [[ "$MATCH_CPU" -eq 0 ]]; then
+  PIPELINE_MODE_LABEL="gpu-only"
+else
+  PIPELINE_MODE_LABEL="cpu-mixed"
 fi
+log_item "pipeline_mode" "$PIPELINE_MODE_LABEL"
+if [[ "$MATCH_CPU" -eq 0 ]]; then
+  if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
+    log_item "gpu_strategy" "in-memory"
+  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+    log_item "gpu_strategy" "streamed-linear32"
+  else
+    log_item "gpu_strategy" "disk-collision"
+  fi
+fi
+log_item "collisions_mode" "$COLLISIONS_MODE"
+log_item "collisions_policy" "$COLLISIONS_POLICY"
+log_item "compose" "$COMPOSE_BACKEND"
 log_item "ssaa" "$SSAA"
 log_item "output_size" "${TARGET_WIDTH}x${TARGET_HEIGHT}"
 log_item "render_size" "${RENDER_WIDTH}x${RENDER_HEIGHT}"
 log_item "tile_size" "$TILE_INFO"
 log_item "eta_output" "$ETA_RELAY"
-if [[ -n "$TEMP_COLLISIONS" ]]; then
-  log_item "collisions_out" "$COLLISIONS_OUT (temporary)"
+if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+  if [[ -n "$TEMP_COLLISIONS" ]]; then
+    log_item "collisions_out" "$COLLISIONS_OUT (temporary, unused)"
+    log_item "linear32_out" "$LINEAR32_OUT (temporary)"
+  else
+    log_item "collisions_out" "$COLLISIONS_OUT (unused)"
+    log_item "linear32_out" "$LINEAR32_OUT"
+  fi
 else
-  log_item "collisions_out" "$COLLISIONS_OUT"
+  if [[ -n "$TEMP_COLLISIONS" ]]; then
+    log_item "collisions_out" "$COLLISIONS_OUT (temporary)"
+  else
+    log_item "collisions_out" "$COLLISIONS_OUT"
+  fi
 fi
 log_item "image_out" "$IMAGE_OUT"
 
@@ -475,9 +700,11 @@ if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
   GPU_COMPOSE_ARGS=(--compose-gpu --image-out "$IMAGE_OUT")
   if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
     GPU_COMPOSE_ARGS+=(--gpu-full-compose)
-    if [[ -n "$TEMP_COLLISIONS" ]]; then
+    if [[ "$COLLISIONS_MODE" == "none" || "$COLLISIONS_MODE" == "auto" || -n "$TEMP_COLLISIONS" ]]; then
       GPU_COMPOSE_ARGS+=(--discard-collisions)
     fi
+  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+    GPU_COMPOSE_ARGS+=(--linear32-intermediate --linear32-out "$LINEAR32_OUT" --discard-collisions)
   fi
   if ((${#SWIFT_ARGS[@]})); then
     SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}" "${SWIFT_ARGS[@]}")
@@ -494,12 +721,14 @@ fi
 
 if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
   if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    log_section "Stage 1/1 - Swift Trace+Compose (GPU Pure)"
+    log_section "Stage 1/1 - Swift Trace+Compose (gpu-only, in-memory)"
+  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+    log_section "Stage 1/1 - Swift Trace+Compose (gpu-only, streamed-linear32)"
   else
-    log_section "Stage 1/1 - Swift Trace+Compose (GPU Precise-Match)"
+    log_section "Stage 1/1 - Swift Trace+Compose (gpu)"
   fi
 elif [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-  log_section "Stage 1/2 - Swift Trace (Match CPU)"
+  log_section "Stage 1/2 - Swift Trace (cpu-mixed)"
 else
   log_section "Stage 1/2 - Swift Trace"
 fi
@@ -534,7 +763,7 @@ if [[ "$COMPOSE_BACKEND" == "python" || ( "$COMPOSE_BACKEND" == "gpu" && "$MATCH
   fi
 
   if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-    log_section "Stage 2/2 - Python Compose (Match CPU)"
+    log_section "Stage 2/2 - Python Compose (cpu-mixed)"
   else
     log_section "Stage 2/2 - Python Compose"
   fi
@@ -562,12 +791,24 @@ fi
 
 log_section "Outputs"
 log_item "image" "$IMAGE_OUT"
-if [[ "$MODE" == "debug" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
+if [[ "$COLLISIONS_MODE" == "none" ]]; then
+  :
+elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+  if [[ "$COLLISIONS_POLICY" == "keep" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
+    log_item "linear32" "$LINEAR32_OUT"
+    log_item "meta" "$LINEAR32_OUT.json"
+  fi
+elif [[ "$COLLISIONS_POLICY" == "keep" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
   log_item "collisions" "$COLLISIONS_OUT"
   log_item "meta" "$COLLISIONS_OUT.json"
 fi
 
 if [[ -n "$TEMP_COLLISIONS" ]]; then
   rm -f "$TEMP_COLLISIONS" "$TEMP_COLLISIONS.json"
-  log_item "cleanup" "temporary collisions removed"
+  if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+    rm -f "$LINEAR32_OUT" "$LINEAR32_OUT.json"
+    log_item "cleanup" "temporary linear32/collision artifacts removed"
+  else
+    log_item "cleanup" "temporary collisions removed"
+  fi
 fi
