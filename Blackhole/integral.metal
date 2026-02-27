@@ -13,6 +13,10 @@ using namespace metal;
 struct Params {
     uint   width;
     uint   height;
+    uint   fullWidth;
+    uint   fullHeight;
+    uint   offsetX;
+    uint   offsetY;
 
     float3 camPos;     // p
     float3 planeX;
@@ -49,9 +53,13 @@ struct CollisionInfo {
     uint   hit;          // 0 or 1
     float  ct;           // c * t
     float  T;            // disk temperature
-    float3 v_disk;       // disk local velocity in world coords
-    float3 direct_world; // -unit(worldVel) (Python과 동일)
+    float  _pad0;
+    float4 v_disk;       // x/y/z used, w padding
+    float4 direct_world; // x/y/z used, w padding
     float  noise;        // 1단계는 0으로
+    float  _pad3_0;
+    float  _pad3_1;
+    float  _pad3_2;
 };
 
 static inline float3 conv(float r, float theta, float phi) {
@@ -598,100 +606,73 @@ static inline bool segment_enter_disk(float3 p0,
     return false;
 }
 
-static inline float fade(float t) {
-    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+static inline float hash13(float3 p3) {
+    p3 = fract(p3 * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
-static inline float lerp1(float a, float b, float t) {
-    return a + t * (b - a);
+static inline float noise3D(float3 p) {
+    float3 i = floor(p);
+    float3 f = fract(p);
+    float3 u = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash13(i + float3(0.0, 0.0, 0.0));
+    float n100 = hash13(i + float3(1.0, 0.0, 0.0));
+    float n010 = hash13(i + float3(0.0, 1.0, 0.0));
+    float n110 = hash13(i + float3(1.0, 1.0, 0.0));
+    float n001 = hash13(i + float3(0.0, 0.0, 1.0));
+    float n101 = hash13(i + float3(1.0, 0.0, 1.0));
+    float n011 = hash13(i + float3(0.0, 1.0, 1.0));
+    float n111 = hash13(i + float3(1.0, 1.0, 1.0));
+
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+    float nxy0 = mix(nx00, nx10, u.y);
+    float nxy1 = mix(nx01, nx11, u.y);
+    return mix(nxy0, nxy1, u.z);
 }
 
-static inline uint hash2(uint x, uint y, uint base) {
-    uint h = x * 374761393u + y * 668265263u + base * 362437u;
-    h = (h ^ (h >> 13)) * 1274126177u;
-    h ^= (h >> 16);
-    return h;
-}
-
-static inline float grad2(uint h, float x, float y) {
-    switch (h & 7u) {
-        case 0u: return  x + y;
-        case 1u: return -x + y;
-        case 2u: return  x - y;
-        case 3u: return -x - y;
-        case 4u: return  x;
-        case 5u: return -x;
-        case 6u: return  y;
-        default: return -y;
+static inline float fbm(float3 p) {
+    float total = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        total += noise3D(p * frequency) * amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+        p += float3(0.25);
     }
+    return total;
 }
 
-static inline int pos_mod(int x, int m) {
-    int r = x % m;
-    return (r < 0) ? (r + m) : r;
-}
+static inline float disk_cloud_noise(float r, float phi, float z, constant Params& P) {
+    float r_norm = (r - P.rs) / max(P.re - P.rs, 1e-6);
+    float h_norm = z / max(P.he, 1e-6);
 
-static inline float perlin2_repeat(float x, float y, int repeatX, int repeatY, uint base) {
-    int x0 = int(floor(x));
-    int y0 = int(floor(y));
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
+    float shear_speed = 15.0 / (sqrt(max(r_norm, 0.0)) + 0.1);
+    float angle = phi + shear_speed;
 
-    float xf = x - float(x0);
-    float yf = y - float(y0);
+    float3 pos = float3(r_norm * 4.0 * cos(angle),
+                        r_norm * 4.0 * sin(angle),
+                        h_norm * 1.5);
 
-    int rx0 = pos_mod(x0, repeatX);
-    int ry0 = pos_mod(y0, repeatY);
-    int rx1 = pos_mod(x1, repeatX);
-    int ry1 = pos_mod(y1, repeatY);
+    float3 warp;
+    warp.x = fbm(pos + float3(1.2, 3.4, 0.0));
+    warp.y = fbm(pos + float3(8.3, 0.7, 0.0));
+    warp.z = fbm(pos + float3(0.1, 5.2, 0.0));
 
-    float n00 = grad2(hash2(uint(rx0), uint(ry0), base), xf, yf);
-    float n10 = grad2(hash2(uint(rx1), uint(ry0), base), xf - 1.0, yf);
-    float n01 = grad2(hash2(uint(rx0), uint(ry1), base), xf, yf - 1.0);
-    float n11 = grad2(hash2(uint(rx1), uint(ry1), base), xf - 1.0, yf - 1.0);
+    float n = fbm(pos + warp * 1.8);
 
-    float u = fade(xf);
-    float v = fade(yf);
-    float nx0 = lerp1(n00, n10, u);
-    float nx1 = lerp1(n01, n11, u);
-    return lerp1(nx0, nx1, v);
-}
+    float radial_edge = smoothstep(0.0, 0.1, r_norm) * (1.0 - smoothstep(0.9, 1.0, r_norm));
+    // Rays are recorded at disk-entry points, so keep boundary density non-zero.
+    float vertical_edge = 1.0 - smoothstep(0.8, 1.6, abs(h_norm));
 
-static inline float disk_texture_noise(float dxy, float phi, float z, constant Params& P) {
-    float denom = max(P.re - P.rs, 1e-6);
-    float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
+    n = (n - 0.4) * 2.5;
 
-    float spiral = phi + 1.8 * log(max(dxy / P.rs, 1.0));
-    float c = cos(spiral);
-    float s = sin(spiral);
-
-    float bx = 12.0 * u + 2.6 * c;
-    float by = 2.6 * s;
-
-    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
-    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
-
-    float fbm = 0.0;
-    float amp = 1.0;
-    float freq = 1.0;
-    float ampSum = 0.0;
-    for (int i = 0; i < 5; ++i) {
-        float nx = (bx + 0.20 * w1) * freq;
-        float ny = (by + 0.18 * w2) * freq;
-        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
-        fbm += amp * n;
-        ampSum += amp;
-        amp *= 0.55;
-        freq *= 2.0;
-    }
-    fbm = (ampSum > 0.0) ? (fbm / ampSum) : 0.0;
-
-    float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
-    float edgeIn = smoothstep(0.01, 0.08, u);
-    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
-    float radialFade = edgeIn * edgeOut;
-
-    return clamp(3.2 * fbm * zFade * radialFade, -1.0, 1.0);
+    return clamp(n * radial_edge * vertical_edge, 0.0, 1.0);
 }
 
 kernel void renderBH(constant Params& P [[buffer(0)]],
@@ -702,8 +683,10 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
     uint idx = gid.y * P.width + gid.x;
 
     // Eye의 screenCoord 생성과 동일한 스케일: [-w/2, w/2], [-h/2, h/2]
-    float x = (float(gid.x) + 0.5) - float(P.width)  * 0.5;
-    float y = (float(gid.y) + 0.5) - float(P.height) * 0.5;
+    uint gx = gid.x + P.offsetX;
+    uint gy = gid.y + P.offsetY;
+    float x = (float(gx) + 0.5) - float(P.fullWidth)  * 0.5;
+    float y = (float(gy) + 0.5) - float(P.fullHeight) * 0.5;
 
     float3 dir = normalize(x * P.planeX + y * P.planeY - P.d * P.z);
 
@@ -725,8 +708,8 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
     info.hit = 0;
     info.ct  = 0.0;
     info.T   = 0.0;
-    info.v_disk = float3(0);
-    info.direct_world = float3(0);
+    info.v_disk = float4(0);
+    info.direct_world = float4(0);
     info.noise = 0.0;
 
     float4 p = float4(0.0, r0, M_PI * 0.5, 0.0);
@@ -767,10 +750,18 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                         info.hit = 1;
                         info.ct  = P.c * p.x;
                         info.T   = T;
-                        info.v_disk = v_disk;
-                        info.direct_world = -direct;
-                        float phiPos = atan2(hitPos.y, hitPos.x);
-                        info.noise = disk_texture_noise(dxy, phiPos, hitPos.z, P);
+                        info.v_disk = float4(v_disk, 0.0);
+                        info.direct_world = float4(-direct, 0.0);
+                        float3 segProbe = worldPos - world0;
+                        float segProbeLen2 = dot(segProbe, segProbe);
+                        float3 samplePos = hitPos;
+                        if (segProbeLen2 > 1e-20) {
+                            float3 probe = hitPos + normalize(segProbe) * (0.35 * P.he);
+                            if (inside_disk_volume(probe, P)) samplePos = probe;
+                        }
+                        float sampleR = length(float2(samplePos.x, samplePos.y));
+                        float phiPos = atan2(samplePos.y, samplePos.x);
+                        info.noise = disk_cloud_noise(sampleR, phiPos, samplePos.z, P);
 
                         outInfo[idx] = info;
                         return;
@@ -885,11 +876,15 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
                     if (entered) {
                         float dxy = length(float2(hitPos.x, hitPos.y));
-                        if (dxy > P.rs && dxy < P.re) {
-                            // Kerr disk emissivity shift:
-                            // encode exact GR g-factor in v_disk.x and emission radius in v_disk.y.
-                            float r_M = dxy / max(massLen, 1e-12);
-                            float omega = -1.0 / max(pow(r_M, 1.5) + a, 1e-8); // flipped disk rotation
+                        float r_M = dxy / max(massLen, 1e-12);
+
+                        float a2 = a * a;
+                        float z1 = 1.0 + pow(max(1.0 - a2, 0.0), 1.0 / 3.0) * (pow(1.0 + a, 1.0 / 3.0) + pow(1.0 - a, 1.0 / 3.0));
+                        float z2 = sqrt(max(3.0 * a2 + z1 * z1, 0.0));
+                        float r_isco = 3.0 + z2 - sqrt(max((3.0 - z1) * (3.0 + z1 + 2.0 * z2), 0.0));
+
+                        if (r_M > r_isco && dxy < P.re) {
+                            float omega = 1.0 / max(pow(r_M, 1.5) + a, 1e-8);
                             KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
                             float uDen = -(diskCov.gtt
                                          + 2.0 * omega * diskCov.gtphi
@@ -905,15 +900,25 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                             float3 direct = (segLen2 > 1e-20) ? normalize(segDir) : normalize(dir);
 
                             float T0 = pow((3.0 * P.G * P.M) / (8.0 * M_PI * pow(P.rs, 3.0) * P.k), 0.25);
-                            float T  = T0 * pow(dxy / P.rs, -0.75);
+                            float T_newtonian = T0 * pow(dxy / P.rs, -0.75);
+                            float boundary_factor = pow(max(1.0 - sqrt(r_isco / r_M), 0.0), 0.25);
+                            float T = T_newtonian * boundary_factor;
 
                             info.hit = 1;
                             info.ct  = state.t * massLen;
                             info.T   = T;
-                            info.v_disk = float3(g_factor, dxy, 0.0);
-                            info.direct_world = -direct;
-                            float phiPos = atan2(hitPos.y, hitPos.x);
-                            info.noise = disk_texture_noise(dxy, phiPos, hitPos.z, P);
+                            info.v_disk = float4(g_factor, dxy, 0.0, 0.0);
+                            info.direct_world = float4(-direct, 0.0);
+                            float3 segProbe = worldPos - world0;
+                            float segProbeLen2 = dot(segProbe, segProbe);
+                            float3 samplePos = hitPos;
+                            if (segProbeLen2 > 1e-20) {
+                                float3 probe = hitPos + normalize(segProbe) * (0.35 * P.he);
+                                if (inside_disk_volume(probe, P)) samplePos = probe;
+                            }
+                            float sampleR = length(float2(samplePos.x, samplePos.y));
+                            float phiPos = atan2(samplePos.y, samplePos.x);
+                            info.noise = disk_cloud_noise(sampleR, phiPos, samplePos.z, P);
 
                             outInfo[idx] = info;
                             return;
@@ -937,4 +942,328 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
     }
 
     outInfo[idx] = info;
+}
+
+struct ComposeParams {
+    uint  tileWidth;
+    uint  tileHeight;
+    uint  downsample;
+    uint  outTileWidth;
+    uint  outTileHeight;
+    uint  srcOffsetX;
+    uint  srcOffsetY;
+    uint  outOffsetX;
+    uint  outOffsetY;
+    uint  fullInputHeight;
+    float exposure;
+    float dither;
+    float innerEdgeMult;
+    float spectralStep;
+    float cloudQ10;
+    float cloudInvSpan;
+    uint  look;
+    uint  spectralEncoding;
+    uint  precisionMode;
+    uint  cloudBins;
+    uint  lumBins;
+    float lumLogMin;
+    float lumLogMax;
+};
+
+constant ushort BAYER8_LUT[64] = {
+     0,48,12,60, 3,51,15,63,
+    32,16,44,28,35,19,47,31,
+     8,56, 4,52,11,59, 7,55,
+    40,24,36,20,43,27,39,23,
+     2,50,14,62, 1,49,13,61,
+    34,18,46,30,33,17,45,29,
+    10,58, 6,54, 9,57, 5,53,
+    42,26,38,22,41,25,37,21
+};
+
+static inline float3 comp_xyz_to_rgb(float3 xyz) {
+    float3 r;
+    r.x =  3.2406 * xyz.x + -1.5372 * xyz.y + -0.4986 * xyz.z;
+    r.y = -0.9689 * xyz.x +  1.8758 * xyz.y +  0.0415 * xyz.z;
+    r.z =  0.0557 * xyz.x + -0.2040 * xyz.y +  1.0570 * xyz.z;
+    return max(r, 0.0);
+}
+
+
+static inline float comp_aces(float x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+static inline float3 comp_apply_look(float3 rgb, uint look) {
+    if (look == 1u) { // interstellar
+        float3 out;
+        out.x = 1.08 * rgb.x + 0.03 * rgb.y - 0.03 * rgb.z;
+        out.y = 0.02 * rgb.x + 1.02 * rgb.y - 0.01 * rgb.z;
+        out.z = -0.03 * rgb.x + 0.00 * rgb.y + 0.90 * rgb.z;
+        out = clamp(out, 0.0, 1.0);
+        out = precise::pow(out, float3(0.95));
+        return clamp(out, 0.0, 1.0);
+    }
+    if (look == 2u) { // eht
+        float3 out;
+        out.x = 1.30 * rgb.x + 0.22 * rgb.y - 0.02 * rgb.z;
+        out.y = 0.18 * rgb.x + 1.03 * rgb.y - 0.07 * rgb.z;
+        out.z = -0.06 * rgb.x + 0.02 * rgb.y + 0.52 * rgb.z;
+        out = clamp(out, 0.0, 1.0);
+        float y = dot(out, float3(0.2126, 0.7152, 0.0722));
+        out = 0.75 * out + 0.25 * float3(y);
+        out = precise::pow(out, float3(1.05));
+        return clamp(out, 0.0, 1.0);
+    }
+    return clamp(rgb, 0.0, 1.0);
+}
+
+static inline void comp_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar) {
+    float t1 = (lam - 442.0) * ((lam < 442.0) ? 0.0624 : 0.0374);
+    float t2 = (lam - 599.8) * ((lam < 599.8) ? 0.0264 : 0.0323);
+    float t3 = (lam - 501.1) * ((lam < 501.1) ? 0.0490 : 0.0382);
+    x_bar = 0.362 * precise::exp(-0.5 * t1 * t1) + 1.056 * precise::exp(-0.5 * t2 * t2) - 0.065 * precise::exp(-0.5 * t3 * t3);
+
+    t1 = (lam - 568.8) * ((lam < 568.8) ? 0.0213 : 0.0247);
+    t2 = (lam - 530.9) * ((lam < 530.9) ? 0.0613 : 0.0322);
+    y_bar = 0.821 * precise::exp(-0.5 * t1 * t1) + 0.286 * precise::exp(-0.5 * t2 * t2);
+
+    t1 = (lam - 437.0) * ((lam < 437.0) ? 0.0845 : 0.0278);
+    t2 = (lam - 459.0) * ((lam < 459.0) ? 0.0385 : 0.0725);
+    z_bar = 1.217 * precise::exp(-0.5 * t1 * t1) + 0.681 * precise::exp(-0.5 * t2 * t2);
+
+    x_bar = max(x_bar, 0.0);
+    y_bar = max(y_bar, 0.0);
+    z_bar = max(z_bar, 0.0);
+}
+
+
+static inline float comp_planck_lambda(float lam_m, float T) {
+    const float C1 = 1.1910429e-16;
+    const float C2 = 1.4387769e-2;
+    float x = C2 / max(lam_m * T, 1e-30);
+    x = clamp(x, 1e-8, 700.0);
+    if (x > 80.0) {
+        // For large x, exp(x) is enormous and radiance is effectively zero.
+        return 0.0;
+    }
+    float denom = max(precise::exp(x) - 1.0, 1e-20);
+    return C1 / (pow(lam_m, 5.0) * denom);
+}
+
+
+static inline float comp_synthetic_noise(float3 v_disk, constant Params& P) {
+    float2 vxy = v_disk.xy;
+    float speed = length(vxy);
+    float r_emit = (P.G * P.M) / max(speed * speed, 1e-30);
+    float u = clamp((r_emit - P.rs) / max(P.re - P.rs, 1e-12), 0.0, 1.0);
+    float phi = atan2(-vxy.x, vxy.y);
+    float theta = phi + 1.9 * log(max(r_emit / max(P.rs, 1e-6), 1.0));
+    float cloud = 0.65 * sin(18.0 * u + 3.0 * cos(theta)) + 0.35 * cos(11.0 * theta);
+    return clamp(cloud, -1.0, 1.0);
+}
+
+static inline float comp_cloud_raw(const CollisionInfo rec, constant Params& P, constant ComposeParams& C) {
+    float n = rec.noise;
+    if (abs(n) < 1e-6 && C.spectralEncoding == 0u) {
+        n = comp_synthetic_noise(rec.v_disk.xyz, P);
+    }
+    n = clamp(n, -1.0, 1.0);
+    return (n < -1e-6) ? clamp(0.5 + 0.5 * n, 0.0, 1.0) : clamp(n, 0.0, 1.0);
+}
+
+static inline float3 comp_linear_rgb(const CollisionInfo rec,
+                                     constant Params& P,
+                                     constant ComposeParams& C)
+{
+    float g_total = 1.0;
+    float r_emit = P.rs * 2.0;
+    if (C.spectralEncoding == 1u) {
+        g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
+        r_emit = max(rec.v_disk.y, P.rs * 1.0001);
+    } else {
+        float3 v = rec.v_disk.xyz;
+        float3 d = rec.direct_world.xyz;
+        float v_norm = length(v);
+        float d_norm = length(d);
+        float dot_vd = dot(v, d);
+        float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
+        float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
+        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+        float delta = 1.0 / max(gamma * (1.0 + beta * cos_theta), 1e-9);
+        r_emit = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
+        r_emit = max(r_emit, P.rs * 1.0001);
+        float g_gr = sqrt(clamp(1.0 - P.rs / r_emit, 1e-8, 1.0));
+        g_total = clamp(delta * g_gr, 1e-4, 1e4);
+    }
+
+    float T_emit = max(rec.T, 1.0);
+    float T_obs = max(T_emit * g_total, 1.0);
+
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lam_m = lam * 1e-9;
+        float x_bar, y_bar, z_bar;
+        comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
+        float b = comp_planck_lambda(lam_m, T_obs) * precise::pow(g_total, 3.0);
+        if (kahan) {
+            float yx = b * x_bar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * y_bar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * z_bar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * x_bar;
+            Y += b * y_bar;
+            Z += b * z_bar;
+        }
+    }
+
+    float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+
+    float r_in = max(C.innerEdgeMult, 1.0) * P.rs;
+    float boundary = clamp(1.0 - sqrt(r_in / max(r_emit, r_in)), 0.0, 1.0);
+    float3 d_world = rec.direct_world.xyz;
+    float mu = abs(d_world.z) / max(length(d_world), 1e-30);
+    float limb = 0.4 + 0.6 * clamp(mu, 0.0, 1.0);
+    rgb *= boundary * limb;
+
+    float cloud = comp_cloud_raw(rec, P, C);
+    cloud = clamp((cloud - C.cloudQ10) * C.cloudInvSpan, 0.0, 1.0);
+    cloud = 0.18 + 0.82 * cloud;
+    float core = precise::pow(cloud, 1.15);
+    float clump = precise::pow(core, 2.2);
+    float vvoid = precise::pow(1.0 - cloud, 1.8);
+    float density = 0.62 + 1.28 * core;
+    rgb *= density;
+    rgb *= (1.0 + 0.34 * clump);
+    rgb *= (1.0 - 0.14 * vvoid);
+    rgb.x *= (1.0 + 0.12 * clump);
+    rgb.z *= (1.0 - 0.08 * clump);
+    return rgb;
+}
+
+static inline float comp_log10(float x) {
+    return log(max(x, 1e-30)) * 0.4342944819032518;
+}
+
+static inline float comp_bayer8(uint x, uint y) {
+    uint idx = ((y & 7u) << 3u) | (x & 7u);
+    return ((float(BAYER8_LUT[idx]) + 0.5) / 64.0) - 0.5;
+}
+
+static inline float3 comp_shade(const CollisionInfo rec,
+                                constant Params& P,
+                                constant ComposeParams& C)
+{
+    if (rec.hit == 0u) return float3(0.0);
+    float3 rgb = comp_linear_rgb(rec, P, C);
+
+    float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
+    float lumTm = comp_aces(lum);
+    float scale = lumTm / max(lum, 1e-12);
+    float3 rgbTm = rgbExp * scale;
+    rgbTm = comp_apply_look(rgbTm, C.look);
+    float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
+    return srgb;
+}
+
+kernel void composeCloudHist(constant Params& P [[buffer(0)]],
+                             constant ComposeParams& C [[buffer(1)]],
+                             device const CollisionInfo* inInfo [[buffer(2)]],
+                             device atomic_uint* outHist [[buffer(3)]],
+                             uint gid [[thread_position_in_grid]])
+{
+    uint count = C.tileWidth * C.tileHeight;
+    if (gid >= count) return;
+    CollisionInfo rec = inInfo[gid];
+    if (rec.hit == 0u) return;
+    uint bins = max(C.cloudBins, 1u);
+    float cloud = comp_cloud_raw(rec, P, C);
+    uint bin = min((uint)floor(cloud * float(bins - 1u) + 0.5), bins - 1u);
+    atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
+}
+
+kernel void composeLumHist(constant Params& P [[buffer(0)]],
+                           constant ComposeParams& C [[buffer(1)]],
+                           device const CollisionInfo* inInfo [[buffer(2)]],
+                           device atomic_uint* outHist [[buffer(3)]],
+                           uint gid [[thread_position_in_grid]])
+{
+    uint count = C.tileWidth * C.tileHeight;
+    if (gid >= count) return;
+    CollisionInfo rec = inInfo[gid];
+    if (rec.hit == 0u) return;
+    float3 rgb = comp_linear_rgb(rec, P, C);
+    float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    uint bins = max(C.lumBins, 1u);
+    float t = (comp_log10(max(lum, 1e-30)) - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6);
+    t = clamp(t, 0.0, 1.0);
+    uint bin = min((uint)floor(t * float(bins - 1u) + 0.5), bins - 1u);
+    atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
+}
+
+kernel void composeBH(constant Params& P [[buffer(0)]],
+                      constant ComposeParams& C [[buffer(1)]],
+                      device const CollisionInfo* inInfo [[buffer(2)]],
+                      device uchar4* outRGBA [[buffer(3)]],
+                      uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= C.outTileWidth || gid.y >= C.outTileHeight) return;
+
+    uint globalOutX = C.outOffsetX + gid.x;
+    uint globalOutY = C.outOffsetY + gid.y;
+    uint ds = max(C.downsample, 1u);
+
+    float3 acc = float3(0.0);
+    uint cnt = 0u;
+    for (uint sy = 0u; sy < ds; ++sy) {
+        for (uint sx = 0u; sx < ds; ++sx) {
+            uint srcX = globalOutX * ds + sx;
+            uint srcY = C.fullInputHeight - 1u - (globalOutY * ds + sy);
+            if (srcX < C.srcOffsetX || srcX >= C.srcOffsetX + C.tileWidth) continue;
+            if (srcY < C.srcOffsetY || srcY >= C.srcOffsetY + C.tileHeight) continue;
+
+            uint lx = srcX - C.srcOffsetX;
+            uint ly = srcY - C.srcOffsetY;
+            uint lidx = ly * C.tileWidth + lx;
+            acc += comp_shade(inInfo[lidx], P, C);
+            cnt += 1u;
+        }
+    }
+
+    float3 color = (cnt > 0u) ? (acc / float(cnt)) : float3(0.0);
+    if (C.dither > 0.0) {
+        float d = comp_bayer8(globalOutX, globalOutY) * (C.dither / 255.0);
+        color = clamp(color + float3(d), 0.0, 1.0);
+    }
+
+    uchar4 pix;
+    pix.x = uchar(clamp(color.x * 255.0 + 0.5, 0.0, 255.0));
+    pix.y = uchar(clamp(color.y * 255.0 + 0.5, 0.0, 255.0));
+    pix.z = uchar(clamp(color.z * 255.0 + 0.5, 0.0, 255.0));
+    pix.w = 255u;
+    outRGBA[gid.y * C.outTileWidth + gid.x] = pix;
 }

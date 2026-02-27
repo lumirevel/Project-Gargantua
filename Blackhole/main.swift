@@ -11,6 +11,10 @@ import Metal
 struct Params {
     var width: UInt32
     var height: UInt32
+    var fullWidth: UInt32
+    var fullHeight: UInt32
+    var offsetX: UInt32
+    var offsetY: UInt32
 
     var camPos: SIMD3<Float>
     var planeX: SIMD3<Float>
@@ -47,9 +51,46 @@ struct CollisionInfo {
     var hit: UInt32
     var ct: Float
     var T: Float
-    var v_disk: SIMD3<Float>
-    var direct_world: SIMD3<Float>
+    var _pad0: Float
+    var v_disk: SIMD4<Float>
+    var direct_world: SIMD4<Float>
     var noise: Float
+    var _pad3_0: Float
+    var _pad3_1: Float
+    var _pad3_2: Float
+}
+
+struct ExposureSample {
+    var T: Float
+    var vDisk: SIMD3<Float>
+    var direct: SIMD3<Float>
+    var noise: Float
+}
+
+struct ComposeParams {
+    var tileWidth: UInt32
+    var tileHeight: UInt32
+    var downsample: UInt32
+    var outTileWidth: UInt32
+    var outTileHeight: UInt32
+    var srcOffsetX: UInt32
+    var srcOffsetY: UInt32
+    var outOffsetX: UInt32
+    var outOffsetY: UInt32
+    var fullInputHeight: UInt32
+    var exposure: Float
+    var dither: Float
+    var innerEdgeMult: Float
+    var spectralStep: Float
+    var cloudQ10: Float
+    var cloudInvSpan: Float
+    var look: UInt32
+    var spectralEncoding: UInt32
+    var precisionMode: UInt32
+    var cloudBins: UInt32
+    var lumBins: UInt32
+    var lumLogMin: Float
+    var lumLogMax: Float
 }
 
 struct RenderMeta: Codable {
@@ -75,6 +116,13 @@ struct RenderMeta: Codable {
     var kerrRadialScale: Double
     var kerrAzimuthScale: Double
     var kerrImpactScale: Double
+    var tileSize: Int
+    var composeGPU: Bool
+    var downsample: Int
+    var outputWidth: Int
+    var outputHeight: Int
+    var exposure: Double
+    var look: String
     var collisionStride: Int
 }
 
@@ -108,17 +156,170 @@ func stringArg(_ name: String, default defaultValue: String) -> String {
     return CommandLine.arguments[idx + 1]
 }
 
+func writePPM(path: String, width: Int, height: Int, rgb: [UInt8]) throws {
+    let header = "P6\n\(width) \(height)\n255\n"
+    let url = URL(fileURLWithPath: path)
+    var data = Data(header.utf8)
+    data.append(contentsOf: rgb)
+    try data.write(to: url)
+}
+
+@discardableResult
+func runProcess(_ launchPath: String, _ args: [String]) -> Int32 {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: launchPath)
+    proc.arguments = args
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+        return proc.terminationStatus
+    } catch {
+        return -1
+    }
+}
+
+func copyCollisionTileRows(sourceBase: UnsafeRawPointer,
+                           fullWidth: Int,
+                           stride: Int,
+                           srcX: Int,
+                           srcY: Int,
+                           tileWidth: Int,
+                           tileHeight: Int,
+                           destinationBase: UnsafeMutableRawPointer) {
+    if srcX == 0 && tileWidth == fullWidth {
+        let byteCount = tileWidth * tileHeight * stride
+        let srcOffset = srcY * fullWidth * stride
+        memcpy(destinationBase, sourceBase.advanced(by: srcOffset), byteCount)
+        return
+    }
+    let rowBytes = tileWidth * stride
+    var dst = destinationBase
+    for row in 0..<tileHeight {
+        let srcOffset = ((srcY + row) * fullWidth + srcX) * stride
+        memcpy(dst, sourceBase.advanced(by: srcOffset), rowBytes)
+        dst = dst.advanced(by: rowBytes)
+    }
+}
+
+func updateBuffer<T>(_ buffer: MTLBuffer, with value: inout T) {
+    withUnsafeBytes(of: &value) { raw in
+        guard let base = raw.baseAddress else { return }
+        memcpy(buffer.contents(), base, raw.count)
+    }
+}
+
+func writeRawBuffer(to url: URL, sourceBase: UnsafeRawPointer, byteCount: Int) throws {
+    _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.truncate(atOffset: UInt64(byteCount))
+    let chunkBytes = 4 * 1024 * 1024
+    var offset = 0
+    while offset < byteCount {
+        let count = min(chunkBytes, byteCount - offset)
+        let ptr = sourceBase.advanced(by: offset)
+        try handle.write(contentsOf: Data(bytes: ptr, count: count))
+        offset += count
+    }
+}
+
+func percentileSorted(_ sorted: [Float], _ q: Float) -> Float {
+    if sorted.isEmpty { return 0.0 }
+    let qq = min(max(q, 0.0), 1.0)
+    if sorted.count == 1 { return sorted[0] }
+    let pos = Float(sorted.count - 1) * qq
+    let lo = Int(floor(pos))
+    let hi = min(lo + 1, sorted.count - 1)
+    let t = pos - Float(lo)
+    return sorted[lo] * (1.0 - t) + sorted[hi] * t
+}
+
+func histogramQuantileBin(_ hist: UnsafeBufferPointer<UInt32>, _ q: Float) -> Int {
+    if hist.isEmpty { return 0 }
+    var total: UInt64 = 0
+    for c in hist { total += UInt64(c) }
+    if total == 0 { return 0 }
+    let qq = min(max(q, 0.0), 1.0)
+    let target = UInt64(Double(max(total - 1, 0)) * Double(qq))
+    var cum: UInt64 = 0
+    for i in 0..<hist.count {
+        cum += UInt64(hist[i])
+        if cum > target { return i }
+    }
+    return hist.count - 1
+}
+
+func quantileFromUniformHistogram(_ hist: UnsafeBufferPointer<UInt32>, _ q: Float, _ minVal: Float, _ maxVal: Float) -> Float {
+    if hist.isEmpty { return minVal }
+    let idx = histogramQuantileBin(hist, q)
+    if hist.count == 1 { return minVal }
+    let t = Float(idx) / Float(hist.count - 1)
+    return minVal + (maxVal - minVal) * t
+}
+
+func cieXYZBar(_ wavelengthNm: Double) -> (Double, Double, Double) {
+    let lam = wavelengthNm
+    let t1x = (lam - 442.0) * (lam < 442.0 ? 0.0624 : 0.0374)
+    let t2x = (lam - 599.8) * (lam < 599.8 ? 0.0264 : 0.0323)
+    let t3x = (lam - 501.1) * (lam < 501.1 ? 0.0490 : 0.0382)
+    let x = 0.362 * exp(-0.5 * t1x * t1x) + 1.056 * exp(-0.5 * t2x * t2x) - 0.065 * exp(-0.5 * t3x * t3x)
+
+    let t1y = (lam - 568.8) * (lam < 568.8 ? 0.0213 : 0.0247)
+    let t2y = (lam - 530.9) * (lam < 530.9 ? 0.0613 : 0.0322)
+    let y = 0.821 * exp(-0.5 * t1y * t1y) + 0.286 * exp(-0.5 * t2y * t2y)
+
+    let t1z = (lam - 437.0) * (lam < 437.0 ? 0.0845 : 0.0278)
+    let t2z = (lam - 459.0) * (lam < 459.0 ? 0.0385 : 0.0725)
+    let z = 1.217 * exp(-0.5 * t1z * t1z) + 0.681 * exp(-0.5 * t2z * t2z)
+    return (max(x, 0.0), max(y, 0.0), max(z, 0.0))
+}
+
+func planckLambda(_ lambdaMeters: Double, _ temp: Double) -> Double {
+    let c1 = 2.0 * 6.62607015e-34 * 299_792_458.0 * 299_792_458.0
+    let c2 = 6.62607015e-34 * 299_792_458.0 / 1.380649e-23
+    let x = min(max(c2 / max(lambdaMeters * temp, 1e-30), 1e-8), 700.0)
+    return c1 / (pow(lambdaMeters, 5.0) * expm1(x))
+}
+
+func fail(_ message: String, code: Int32 = 3) -> Never {
+    FileHandle.standardError.write(Data(("error: " + message + "\n").utf8))
+    exit(code)
+}
+
 if CommandLine.arguments.contains("--kerr-use-u") {
     FileHandle.standardError.write(Data("error: --kerr-use-u has been removed after validation tests showed no practical gain.\n".utf8))
     exit(2)
 }
+if CommandLine.arguments.contains("--sample") {
+    FileHandle.standardError.write(Data("error: --sample has been removed. Use --ssaa (1, 2, 4) in run_pipeline.sh.\n".utf8))
+    exit(2)
+}
 
-let device = MTLCreateSystemDefaultDevice()!
-let queue = device.makeCommandQueue()!
-
-let library = device.makeDefaultLibrary()!
-let fn = library.makeFunction(name: "renderBH")!
+guard let device = MTLCreateSystemDefaultDevice() else {
+    fail("no Metal device available (check permissions/runtime context)")
+}
+guard let queue = device.makeCommandQueue() else {
+    fail("failed to create Metal command queue")
+}
+guard let library = device.makeDefaultLibrary() else {
+    fail("failed to load default Metal library")
+}
+guard let fn = library.makeFunction(name: "renderBH") else {
+    fail("Metal function renderBH not found in default library")
+}
 let pipeline = try device.makeComputePipelineState(function: fn)
+guard let composeFn = library.makeFunction(name: "composeBH") else {
+    fail("Metal function composeBH not found in default library")
+}
+let composePipeline = try device.makeComputePipelineState(function: composeFn)
+guard let cloudHistFn = library.makeFunction(name: "composeCloudHist") else {
+    fail("Metal function composeCloudHist not found in default library")
+}
+let cloudHistPipeline = try device.makeComputePipelineState(function: cloudHistFn)
+guard let lumHistFn = library.makeFunction(name: "composeLumHist") else {
+    fail("Metal function composeLumHist not found in default library")
+}
+let lumHistPipeline = try device.makeComputePipelineState(function: lumHistFn)
 
 let width = intArg("--width", default: 1200)
 let height = intArg("--height", default: 1200)
@@ -172,6 +373,15 @@ let rcp = doubleArg("--rcp", default: baseRcp)
 let diskHFactor = doubleArg("--diskH", default: baseDiskH)
 let maxStepsArg = intArg("--maxSteps", default: baseMaxSteps)
 let outPath = stringArg("--output", default: "collisions.bin")
+let composeGPU = CommandLine.arguments.contains("--compose-gpu")
+let gpuFullCompose = CommandLine.arguments.contains("--gpu-full-compose")
+let discardCollisionOutput = CommandLine.arguments.contains("--discard-collisions")
+let imageOutPath = stringArg("--image-out", default: "")
+let downsampleArg = max(1, intArg("--downsample", default: 1))
+if !(downsampleArg == 1 || downsampleArg == 2 || downsampleArg == 4) {
+    FileHandle.standardError.write(Data("error: --downsample must be one of 1, 2, 4\n".utf8))
+    exit(2)
+}
 let metricName = stringArg("--metric", default: "schwarzschild").lowercased()
 let metricArg: Int32 = (metricName == "kerr") ? 1 : 0
 let spectralEncoding = (metricName == "kerr") ? "gfactor_v1" : "legacy_vectors"
@@ -188,8 +398,47 @@ let kerrEscapeMultArg = max(1.0, doubleArg("--kerr-escape-mult", default: 3.0))
 let kerrRadialScaleArg = max(0.01, doubleArg("--kerr-radial-scale", default: defaultKerrRadialScale))
 let kerrAzimuthScaleArg = max(0.01, doubleArg("--kerr-azimuth-scale", default: defaultKerrAzimuthScale))
 let kerrImpactScaleArg = max(0.1, doubleArg("--kerr-impact-scale", default: defaultKerrImpactScale))
+let tileSizeArg = max(0, intArg("--tile-size", default: 0))
+let autoTile = width * height > 8_000_000
+let tileSize = (tileSizeArg > 0) ? tileSizeArg : (autoTile ? 1024 : max(width, height))
+let composeLook = stringArg("--look", default: preset).lowercased()
+let composeLookID: UInt32
+switch composeLook {
+case "interstellar": composeLookID = 1
+case "eht": composeLookID = 2
+default: composeLookID = 0
+}
+let composeDitherArg = Float(doubleArg("--dither", default: 0.75))
+let composeInnerEdgeArg = Float(max(1.0, doubleArg("--inner-edge-mult", default: 1.4)))
+let composeSpectralStepArg = Float(max(0.25, doubleArg("--spectral-step", default: 5.0)))
+let composeChunkArg = max(1, intArg("--chunk", default: 160000))
+let exposureSamplesArg = max(0, intArg("--exposure-samples", default: 200000))
+let exposureArg = Float(doubleArg("--exposure", default: -1.0))
+let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
+let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
+let composeExposureBase: Float = {
+    if exposureArg > 0 { return exposureArg }
+    switch composeLookID {
+    case 1: return 7.0e-18   // interstellar default
+    case 2: return 5.2e-18   // eht default
+    default: return 6.8e-18  // balanced default
+    }
+}()
+let spectralEncodingID: UInt32 = (spectralEncoding == "gfactor_v1") ? 1 : 0
+var composeExposure = composeExposureBase
 
-print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg))")
+if composeGPU {
+    if imageOutPath.isEmpty {
+        FileHandle.standardError.write(Data("error: --compose-gpu requires --image-out <path>\n".utf8))
+        exit(2)
+    }
+    if (width % downsampleArg) != 0 || (height % downsampleArg) != 0 {
+        FileHandle.standardError.write(Data("error: width/height must be divisible by --downsample\n".utf8))
+        exit(2)
+    }
+}
+
+print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg)")
 
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
@@ -215,6 +464,10 @@ let d = Float(Double(width) / (2.0 * tan(fovDeg * Double.pi / 360.0)))
 var params = Params(
     width: UInt32(width),
     height: UInt32(height),
+    fullWidth: UInt32(width),
+    fullHeight: UInt32(height),
+    offsetX: 0,
+    offsetY: 0,
     camPos: camPos,
     planeX: planeX,
     planeY: planeY,
@@ -242,33 +495,934 @@ var params = Params(
     _padMetric1: 0
 )
 
-let paramBuf = device.makeBuffer(bytes: &params, length: MemoryLayout<Params>.stride, options: [])!
-
 let count = width * height
-let outSize = count * MemoryLayout<CollisionInfo>.stride
-let outBuf = device.makeBuffer(length: outSize, options: .storageModeShared)!
-
-let cmd = queue.makeCommandBuffer()!
-let enc = cmd.makeComputeCommandEncoder()!
-enc.setComputePipelineState(pipeline)
-enc.setBuffer(paramBuf, offset: 0, index: 0)
-enc.setBuffer(outBuf, offset: 0, index: 1)
+let stride = MemoryLayout<CollisionInfo>.stride
+let outSize = count * stride
+let url = URL(fileURLWithPath: outPath)
+let useInMemoryCollisions = composeGPU && gpuFullCompose
+if discardCollisionOutput && !useInMemoryCollisions {
+    fail("--discard-collisions is only supported with --gpu-full-compose")
+}
+let collisionBuffer: MTLBuffer? = useInMemoryCollisions ? device.makeBuffer(length: outSize, options: .storageModeShared) : nil
+if useInMemoryCollisions, collisionBuffer == nil {
+    fail("failed to allocate in-memory collision buffer (\(outSize) bytes)")
+}
+let collisionBase = collisionBuffer?.contents()
+var outHandle: FileHandle? = nil
+if !useInMemoryCollisions && !discardCollisionOutput {
+    _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+    outHandle = try FileHandle(forWritingTo: url)
+    try outHandle?.truncate(atOffset: UInt64(outSize))
+}
+defer {
+    try? outHandle?.close()
+}
 
 let tg = MTLSize(width: 16, height: 16, depth: 1)
-let grid = MTLSize(width: width, height: height, depth: 1)
-enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
-enc.endEncoding()
+let dsForTile = composeGPU ? downsampleArg : 1
+let baseTile = max(1, tileSize)
+let alignedTile = max(dsForTile, (baseTile / dsForTile) * dsForTile)
+let effectiveTile = alignedTile
+if effectiveTile < max(width, height) {
+    print("tile rendering enabled: \(effectiveTile)x\(effectiveTile)")
+}
+guard let traceParamBuf = device.makeBuffer(length: MemoryLayout<Params>.stride, options: .storageModeShared) else {
+    fail("failed to allocate trace param buffer")
+}
+let maxTraceTilePixels = effectiveTile * effectiveTile
+guard let traceTileBuf = device.makeBuffer(length: maxTraceTilePixels * stride, options: .storageModeShared) else {
+    fail("failed to allocate trace tile buffer")
+}
 
-cmd.commit()
-cmd.waitUntilCompleted()
-
-let ptr = outBuf.contents().bindMemory(to: CollisionInfo.self, capacity: count)
 var hitCount = 0
-for i in 0..<count where ptr[i].hit != 0 { hitCount += 1 }
+var donePixels = 0
+let totalPixels = count
+let outWidth = width / downsampleArg
+let outHeight = height / downsampleArg
+let composePrepassOpsTarget = (composeGPU && gpuFullCompose && exposureArg <= 0) ? (2 * count) : 0
+let composeOps = composeGPU ? (composePrepassOpsTarget + outWidth * outHeight) : 0
+let totalOps = totalPixels + composeOps
+let progressStep = max(1, totalOps / 256)
+var nextProgressMark = progressStep
+var lastProgressPrint = Date().timeIntervalSince1970
+print("ETA_PROGRESS 0 \(totalOps) swift_trace")
+var ty = 0
+while ty < height {
+    let tileH = min(effectiveTile, height - ty)
+    var tx = 0
+    while tx < width {
+        let tileW = min(effectiveTile, width - tx)
 
-let data = Data(bytesNoCopy: outBuf.contents(), count: outSize, deallocator: .none)
-let url = URL(fileURLWithPath: outPath)
-try data.write(to: url)
+        var tileParams = params
+        tileParams.width = UInt32(tileW)
+        tileParams.height = UInt32(tileH)
+        tileParams.fullWidth = UInt32(width)
+        tileParams.fullHeight = UInt32(height)
+        tileParams.offsetX = UInt32(tx)
+        tileParams.offsetY = UInt32(ty)
+
+        updateBuffer(traceParamBuf, with: &tileParams)
+        let tileCount = tileW * tileH
+
+        let cmd = queue.makeCommandBuffer()!
+        let enc = cmd.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pipeline)
+        enc.setBuffer(traceParamBuf, offset: 0, index: 0)
+        enc.setBuffer(traceTileBuf, offset: 0, index: 1)
+
+        let grid = MTLSize(width: tileW, height: tileH, depth: 1)
+        enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
+        enc.endEncoding()
+        cmd.commit()
+        cmd.waitUntilCompleted()
+
+        let ptr = traceTileBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
+        for i in 0..<tileCount where ptr[i].hit != 0 { hitCount += 1 }
+
+        for row in 0..<tileH {
+            let rowBytes = tileW * stride
+            let src = traceTileBuf.contents().advanced(by: row * rowBytes)
+            let dstOffset = ((ty + row) * width + tx) * stride
+            if let collisionBase {
+                memcpy(collisionBase.advanced(by: dstOffset), src, rowBytes)
+            } else if let outHandle {
+                try outHandle.seek(toOffset: UInt64(dstOffset))
+                try outHandle.write(contentsOf: Data(bytes: src, count: rowBytes))
+            } else if discardCollisionOutput {
+                // intentionally skip collision writes when output is marked disposable
+            } else {
+                fail("no collision output sink available")
+            }
+        }
+        donePixels += tileCount
+        let now = Date().timeIntervalSince1970
+        if donePixels >= totalPixels || donePixels >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
+            print("ETA_PROGRESS \(donePixels) \(totalOps) swift_trace")
+            lastProgressPrint = now
+            while nextProgressMark <= donePixels {
+                nextProgressMark += progressStep
+            }
+        }
+        tx += tileW
+    }
+    ty += tileH
+}
+
+if composeGPU {
+    if !useInMemoryCollisions {
+        try outHandle?.synchronize()
+    }
+
+    var composeParamsBase = params
+    if gpuFullCompose {
+        guard let collisionBase else {
+            fail("gpu-full-compose requires in-memory collision buffer")
+        }
+        let cloudBins = 8192
+        let lumBins = 4096
+        let lumLogMin: Float = 8.0
+        let lumLogMax: Float = 20.0
+        let cloudHistBytes = cloudBins * MemoryLayout<UInt32>.stride
+        let lumHistBytes = lumBins * MemoryLayout<UInt32>.stride
+        let tgCloud1D = MTLSize(width: max(1, min(256, cloudHistPipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
+        let tgLum1D = MTLSize(width: max(1, min(256, lumHistPipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
+
+        var globalCloudQ10: Float = 0.0
+        var globalCloudQ90: Float = 1.0
+        var globalCloudInvSpan = 1.0 / max(globalCloudQ90 - globalCloudQ10, 1e-6)
+        let tileCloudMinSpan: Float = 0.02
+        var cachedTileCloudQ10: [Float] = []
+        var cachedTileCloudInvSpan: [Float] = []
+        let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])!
+        var composePrepassOps = 0
+
+        var composeParamsTemplate = ComposeParams(
+            tileWidth: 0,
+            tileHeight: 0,
+            downsample: UInt32(downsampleArg),
+            outTileWidth: 0,
+            outTileHeight: 0,
+            srcOffsetX: 0,
+            srcOffsetY: 0,
+            outOffsetX: 0,
+            outOffsetY: 0,
+            fullInputHeight: UInt32(height),
+            exposure: composeExposure,
+            dither: composeDitherArg,
+            innerEdgeMult: composeInnerEdgeArg,
+            spectralStep: composeSpectralStepArg,
+            cloudQ10: globalCloudQ10,
+            cloudInvSpan: globalCloudInvSpan,
+            look: composeLookID,
+            spectralEncoding: spectralEncodingID,
+            precisionMode: composePrecisionID,
+            cloudBins: UInt32(cloudBins),
+            lumBins: UInt32(lumBins),
+            lumLogMin: lumLogMin,
+            lumLogMax: lumLogMax
+        )
+
+        let rawComposeRows = max(1, composeChunkArg / max(width, 1))
+        var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
+        if composeRows <= 0 { composeRows = downsampleArg }
+        if composeRows > height { composeRows = height }
+        let maxComposeTileCount = width * composeRows
+        let maxComposeOutTileCount = (width / downsampleArg) * (composeRows / downsampleArg)
+        guard let composeTileInBuf = device.makeBuffer(length: maxComposeTileCount * stride, options: .storageModeShared) else {
+            fail("failed to allocate compose input tile buffer")
+        }
+        guard let composeParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
+            fail("failed to allocate compose param buffer")
+        }
+        guard let cloudParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
+            fail("failed to allocate cloud hist param buffer")
+        }
+        guard let lumParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
+            fail("failed to allocate luminance hist param buffer")
+        }
+        guard let cloudHistBuf = device.makeBuffer(length: cloudHistBytes, options: .storageModeShared) else {
+            fail("failed to allocate cloud histogram buffer")
+        }
+        guard let lumHistBuf = device.makeBuffer(length: lumHistBytes, options: .storageModeShared) else {
+            fail("failed to allocate luminance histogram buffer")
+        }
+        guard let composeOutBuf = device.makeBuffer(length: maxComposeOutTileCount * 4, options: .storageModeShared) else {
+            fail("failed to allocate compose output tile buffer")
+        }
+
+        if exposureArg <= 0 {
+            var cloudHistGlobal = [UInt32](repeating: 0, count: cloudBins)
+            var cloudSampleCount: UInt64 = 0
+            var lumHistGlobal = [UInt32](repeating: 0, count: lumBins)
+            var lumSampleCount: UInt64 = 0
+
+            var pty = 0
+            while pty < height {
+                let tileH = min(composeRows, height - pty)
+                let tileW = width
+                let tileCount = tileW * tileH
+                copyCollisionTileRows(
+                    sourceBase: UnsafeRawPointer(collisionBase),
+                    fullWidth: width,
+                    stride: stride,
+                    srcX: 0,
+                    srcY: pty,
+                    tileWidth: tileW,
+                    tileHeight: tileH,
+                    destinationBase: composeTileInBuf.contents()
+                )
+
+                composeParamsTemplate.tileWidth = UInt32(tileW)
+                composeParamsTemplate.tileHeight = UInt32(tileH)
+                composeParamsTemplate.srcOffsetY = UInt32(pty)
+                composeParamsTemplate.outTileWidth = UInt32(tileW / downsampleArg)
+                composeParamsTemplate.outTileHeight = UInt32(tileH / downsampleArg)
+                composeParamsTemplate.outOffsetY = UInt32((height - pty - tileH) / downsampleArg)
+
+                memset(cloudHistBuf.contents(), 0, cloudHistBytes)
+                var cloudHistParams = composeParamsTemplate
+                updateBuffer(cloudParamBuf, with: &cloudHistParams)
+                let cloudCmd = queue.makeCommandBuffer()!
+                let cloudEnc = cloudCmd.makeComputeCommandEncoder()!
+                cloudEnc.setComputePipelineState(cloudHistPipeline)
+                cloudEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+                cloudEnc.setBuffer(cloudParamBuf, offset: 0, index: 1)
+                cloudEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                cloudEnc.setBuffer(cloudHistBuf, offset: 0, index: 3)
+                cloudEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgCloud1D)
+                cloudEnc.endEncoding()
+                cloudCmd.commit()
+                cloudCmd.waitUntilCompleted()
+
+                let cloudPtr = cloudHistBuf.contents().bindMemory(to: UInt32.self, capacity: cloudBins)
+                let cloudHist = UnsafeBufferPointer(start: cloudPtr, count: cloudBins)
+                let tileQ10 = quantileFromUniformHistogram(cloudHist, 0.08, 0.0, 1.0)
+                let tileQ90 = quantileFromUniformHistogram(cloudHist, 0.92, 0.0, 1.0)
+                let tileInvSpan = 1.0 / max(tileQ90 - tileQ10, 1e-6)
+                cachedTileCloudQ10.append(tileQ10)
+                cachedTileCloudInvSpan.append(tileInvSpan)
+                for i in 0..<cloudBins {
+                    let c = cloudPtr[i]
+                    cloudHistGlobal[i] = cloudHistGlobal[i] &+ c
+                    cloudSampleCount += UInt64(c)
+                }
+                composeParamsTemplate.cloudQ10 = tileQ10
+                composeParamsTemplate.cloudInvSpan = tileInvSpan
+
+                memset(lumHistBuf.contents(), 0, lumHistBytes)
+                var lumHistParams = composeParamsTemplate
+                updateBuffer(lumParamBuf, with: &lumHistParams)
+                let lumCmd = queue.makeCommandBuffer()!
+                let lumEnc = lumCmd.makeComputeCommandEncoder()!
+                lumEnc.setComputePipelineState(lumHistPipeline)
+                lumEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+                lumEnc.setBuffer(lumParamBuf, offset: 0, index: 1)
+                lumEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                lumEnc.setBuffer(lumHistBuf, offset: 0, index: 3)
+                lumEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgLum1D)
+                lumEnc.endEncoding()
+                lumCmd.commit()
+                lumCmd.waitUntilCompleted()
+
+                let lumPtr = lumHistBuf.contents().bindMemory(to: UInt32.self, capacity: lumBins)
+                for i in 0..<lumBins {
+                    let c = lumPtr[i]
+                    lumHistGlobal[i] = lumHistGlobal[i] &+ c
+                    lumSampleCount += UInt64(c)
+                }
+
+                composePrepassOps += tileCount * 2
+                let doneAll = totalPixels + composePrepassOps
+                let now = Date().timeIntervalSince1970
+                if doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
+                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_prepass")
+                    lastProgressPrint = now
+                    while nextProgressMark <= doneAll {
+                        nextProgressMark += progressStep
+                    }
+                }
+
+                pty += tileH
+            }
+
+            if cloudSampleCount > 0 {
+                globalCloudQ10 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.08, 0.0, 1.0) }
+                globalCloudQ90 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.92, 0.0, 1.0) }
+                globalCloudInvSpan = 1.0 / max(globalCloudQ90 - globalCloudQ10, 1e-6)
+            }
+
+            if lumSampleCount == 0 {
+                composeExposure = 1.0
+            } else {
+                let p50Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.50, lumLogMin, lumLogMax) }
+                let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, lumLogMin, lumLogMax) }
+                let p50 = pow(10.0, Double(p50Log))
+                let p995 = pow(10.0, Double(p995Log))
+                var targetWhite: Float = 0.8
+                if composeLookID == 1 { targetWhite = 0.9 }
+                else if composeLookID == 2 { targetWhite = 0.6 }
+                composeExposure = targetWhite / max(Float(p995), 1e-12)
+                print("lum(hist) p50=\(p50), p99.5=\(p995), samples=\(lumSampleCount)")
+            }
+        }
+
+        composeParamsTemplate.exposure = composeExposure
+        composeParamsTemplate.cloudQ10 = globalCloudQ10
+        composeParamsTemplate.cloudInvSpan = globalCloudInvSpan
+        print("compose cloud normalization q10=\(globalCloudQ10) q90=\(globalCloudQ90)")
+        print("exposure=\(composeExposure) (auto=\(exposureArg <= 0), gpuFullCompose=true)")
+
+        var rgb = [UInt8](repeating: 0, count: outWidth * outHeight * 3)
+        let composePixelOps = outWidth * outHeight
+
+        var cachedTileIndex = 0
+        var composed = 0
+        var cty = 0
+        while cty < height {
+            let tileH = min(composeRows, height - cty)
+            let tileW = width
+            let tileCount = tileW * tileH
+
+            copyCollisionTileRows(
+                sourceBase: UnsafeRawPointer(collisionBase),
+                fullWidth: width,
+                stride: stride,
+                srcX: 0,
+                srcY: cty,
+                tileWidth: tileW,
+                tileHeight: tileH,
+                destinationBase: composeTileInBuf.contents()
+            )
+
+            let outTileW = tileW / downsampleArg
+            let outTileH = tileH / downsampleArg
+            let outTileCount = outTileW * outTileH
+            let outOffsetY = (height - cty - tileH) / downsampleArg
+
+            var tileQ10 = globalCloudQ10
+            var tileInvSpan = globalCloudInvSpan
+            if exposureArg <= 0, cachedTileIndex < cachedTileCloudQ10.count {
+                tileQ10 = cachedTileCloudQ10[cachedTileIndex]
+                tileInvSpan = cachedTileCloudInvSpan[cachedTileIndex]
+            } else {
+                memset(cloudHistBuf.contents(), 0, cloudHistBytes)
+                var histParams = composeParamsTemplate
+                histParams.tileWidth = UInt32(tileW)
+                histParams.tileHeight = UInt32(tileH)
+                updateBuffer(cloudParamBuf, with: &histParams)
+                let histCmd = queue.makeCommandBuffer()!
+                let histEnc = histCmd.makeComputeCommandEncoder()!
+                histEnc.setComputePipelineState(cloudHistPipeline)
+                histEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+                histEnc.setBuffer(cloudParamBuf, offset: 0, index: 1)
+                histEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                histEnc.setBuffer(cloudHistBuf, offset: 0, index: 3)
+                histEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgCloud1D)
+                histEnc.endEncoding()
+                histCmd.commit()
+                histCmd.waitUntilCompleted()
+
+                let cloudPtr = cloudHistBuf.contents().bindMemory(to: UInt32.self, capacity: cloudBins)
+                let cloudHist = UnsafeBufferPointer(start: cloudPtr, count: cloudBins)
+                let localQ10 = quantileFromUniformHistogram(cloudHist, 0.08, 0.0, 1.0)
+                let localQ90 = quantileFromUniformHistogram(cloudHist, 0.92, 0.0, 1.0)
+                tileQ10 = localQ10
+                tileInvSpan = 1.0 / max(localQ90 - localQ10, 1e-6)
+            }
+            let tileSpan = 1.0 / max(tileInvSpan, 1e-6)
+            if tileSpan < tileCloudMinSpan {
+                tileQ10 = globalCloudQ10
+                tileInvSpan = globalCloudInvSpan
+            }
+
+            composeParamsTemplate.tileWidth = UInt32(tileW)
+            composeParamsTemplate.tileHeight = UInt32(tileH)
+            composeParamsTemplate.outTileWidth = UInt32(outTileW)
+            composeParamsTemplate.outTileHeight = UInt32(outTileH)
+            composeParamsTemplate.srcOffsetX = 0
+            composeParamsTemplate.srcOffsetY = UInt32(cty)
+            composeParamsTemplate.outOffsetX = 0
+            composeParamsTemplate.outOffsetY = UInt32(outOffsetY)
+            composeParamsTemplate.cloudQ10 = tileQ10
+            composeParamsTemplate.cloudInvSpan = tileInvSpan
+
+            updateBuffer(composeParamBuf, with: &composeParamsTemplate)
+
+            let cmd = queue.makeCommandBuffer()!
+            let enc = cmd.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(composePipeline)
+            enc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+            enc.setBuffer(composeParamBuf, offset: 0, index: 1)
+            enc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+            enc.setBuffer(composeOutBuf, offset: 0, index: 3)
+            enc.dispatchThreads(MTLSize(width: outTileW, height: outTileH, depth: 1), threadsPerThreadgroup: tg)
+            enc.endEncoding()
+            cmd.commit()
+            cmd.waitUntilCompleted()
+
+            let outPtr = composeOutBuf.contents().bindMemory(to: UInt8.self, capacity: outTileCount * 4)
+            for row in 0..<outTileH {
+                var dst = ((outOffsetY + row) * outWidth) * 3
+                let srcBase = row * outTileW * 4
+                for col in 0..<outTileW {
+                    let s = srcBase + col * 4
+                    rgb[dst + 0] = outPtr[s + 0]
+                    rgb[dst + 1] = outPtr[s + 1]
+                    rgb[dst + 2] = outPtr[s + 2]
+                    dst += 3
+                }
+            }
+
+            composed += outTileCount
+            let doneAll = totalPixels + composePrepassOps + composed
+            let now = Date().timeIntervalSince1970
+            if composed >= composePixelOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
+                print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+                lastProgressPrint = now
+                while nextProgressMark <= doneAll {
+                    nextProgressMark += progressStep
+                }
+            }
+            cty += tileH
+            cachedTileIndex += 1
+        }
+
+        let ext = URL(fileURLWithPath: imageOutPath).pathExtension.lowercased()
+        if ext == "ppm" {
+            try writePPM(path: imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
+        } else {
+            let tmpPPM = imageOutPath + ".tmp.ppm"
+            try writePPM(path: tmpPPM, width: outWidth, height: outHeight, rgb: rgb)
+            let pyConverter = FileManager.default.currentDirectoryPath + "/scripts/ppm_to_png.py"
+            var rc: Int32 = -1
+            if FileManager.default.fileExists(atPath: pyConverter) {
+                rc = runProcess("/usr/bin/python3", [pyConverter, "--input", tmpPPM, "--output", imageOutPath])
+            }
+            if rc != 0 {
+                rc = runProcess("/usr/bin/sips", ["-s", "format", "png", tmpPPM, "--out", imageOutPath])
+            }
+            try? FileManager.default.removeItem(atPath: tmpPPM)
+            if rc != 0 {
+                throw NSError(domain: "Blackhole", code: 3, userInfo: [NSLocalizedDescriptionKey: "sips conversion failed"])
+            }
+        }
+        print("Saved image at: \(imageOutPath)")
+    } else {
+    let hitOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.hit) ?? 0
+    let tOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.T) ?? 8
+    let vDiskOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.v_disk) ?? 16
+    let directOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.direct_world) ?? 32
+    let noiseOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.noise) ?? 48
+    let cloudQ10: Float = 0.0
+    let cloudQ90: Float = 1.0
+    let cloudInvSpan = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
+    var cpuP995ForCompose: Float = 0.0
+    var sampledHits = 0
+
+    if exposureArg <= 0 {
+        var lumSamples: [Float] = []
+        let sampleStride = (exposureSamplesArg > 0) ? max(1, count / max(exposureSamplesArg, 1)) : 1
+        let stepNm = Double(max(composeSpectralStepArg, 0.25))
+        let luma = SIMD3<Double>(0.2126, 0.7152, 0.0722)
+        let rs = Double(params.rs)
+        let ghM = 1.0e35
+        let gg = 6.67430e-11
+        let cc = 299_792_458.0
+        let xyzRow0 = SIMD3<Double>(3.2406, -1.5372, -0.4986)
+        let xyzRow1 = SIMD3<Double>(-0.9689, 1.8758, 0.0415)
+        let xyzRow2 = SIMD3<Double>(0.0557, -0.2040, 1.0570)
+        let sampleHandle = try FileHandle(forReadingFrom: url)
+        defer { try? sampleHandle.close() }
+        let scanRecords = max(1, composeChunkArg)
+        let scanBytes = scanRecords * stride
+        var globalStart = 0
+        while true {
+            let data = try sampleHandle.read(upToCount: scanBytes) ?? Data()
+            if data.isEmpty { break }
+
+            let recCount = data.count / stride
+            var chunkT: [Double] = []
+            var chunkV: [SIMD3<Double>] = []
+            var chunkD: [SIMD3<Double>] = []
+            var chunkN: [Double] = []
+            chunkT.reserveCapacity(min(recCount, 8192))
+            chunkV.reserveCapacity(min(recCount, 8192))
+            chunkD.reserveCapacity(min(recCount, 8192))
+            chunkN.reserveCapacity(min(recCount, 8192))
+
+            data.withUnsafeBytes { raw in
+                guard let basePtr = raw.baseAddress else { return }
+                for i in 0..<recCount {
+                    let absIdx = globalStart + i
+                    if exposureSamplesArg > 0 && ((absIdx % sampleStride) != 0) {
+                        continue
+                    }
+                    let base = i * stride
+                    var hit: UInt32 = 0
+                    withUnsafeMutableBytes(of: &hit) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + hitOffset), count: MemoryLayout<UInt32>.size))
+                    }
+                    if hit == 0 { continue }
+
+                    var t: Float = 0
+                    withUnsafeMutableBytes(of: &t) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + tOffset), count: MemoryLayout<Float>.size))
+                    }
+                    var v4 = SIMD4<Float>(repeating: 0)
+                    withUnsafeMutableBytes(of: &v4) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + vDiskOffset), count: MemoryLayout<SIMD4<Float>>.size))
+                    }
+                    var d4 = SIMD4<Float>(repeating: 0)
+                    withUnsafeMutableBytes(of: &d4) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + directOffset), count: MemoryLayout<SIMD4<Float>>.size))
+                    }
+                    var n: Float = 0
+                    withUnsafeMutableBytes(of: &n) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + noiseOffset), count: MemoryLayout<Float>.size))
+                    }
+
+                    chunkT.append(max(Double(t), 1.0))
+                    chunkV.append(SIMD3<Double>(Double(v4.x), Double(v4.y), Double(v4.z)))
+                    chunkD.append(SIMD3<Double>(Double(d4.x), Double(d4.y), Double(d4.z)))
+                    chunkN.append(Double(n))
+                }
+            }
+
+            if !chunkT.isEmpty {
+                var procNoise = chunkN
+                if spectralEncodingID == 0 {
+                    var maxAbsN = 0.0
+                    for n in procNoise { maxAbsN = max(maxAbsN, abs(n)) }
+                    if maxAbsN < 1e-6 {
+                        let re = max(rcp, 1.2) * rs
+                        for i in 0..<procNoise.count {
+                            let vx = chunkV[i].x
+                            let vy = chunkV[i].y
+                            let speed = max(hypot(vx, vy), 1e-30)
+                            let r = gg * ghM / max(speed * speed, 1e-30)
+                            let u = min(max((r - rs) / max(re - rs, 1e-12), 0.0), 1.0)
+                            let phi = atan2(-vx, vy)
+                            let theta = phi + 1.9 * log(max(r / rs, 1.0))
+                            procNoise[i] = min(max(0.65 * sin(18.0 * u + 3.0 * cos(theta)) + 0.35 * cos(11.0 * theta), -1.0), 1.0)
+                        }
+                    }
+                }
+
+                var cloudVals = [Float](repeating: 0, count: procNoise.count)
+                for i in 0..<procNoise.count {
+                    let n = min(max(procNoise[i], -1.0), 1.0)
+                    let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
+                    cloudVals[i] = Float(c)
+                }
+                var sortedCloud = cloudVals
+                sortedCloud.sort()
+                let q10 = percentileSorted(sortedCloud, 0.08)
+                let q90 = percentileSorted(sortedCloud, 0.92)
+                let invSpan = 1.0 / max(q90 - q10, 1e-6)
+
+                var chunkLum: [Float] = []
+                chunkLum.reserveCapacity(chunkT.count)
+                for i in 0..<chunkT.count {
+                    let v = chunkV[i]
+                    let d = chunkD[i]
+                    let gTotal: Double
+                    let rEmit: Double
+                    if spectralEncodingID == 1 {
+                        gTotal = min(max(v.x, 1e-4), 1e4)
+                        rEmit = max(v.y, rs * 1.0001)
+                    } else {
+                        let vNorm = max(sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 1e-30)
+                        let dNorm = max(sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1e-30)
+                        let beta = min(max(vNorm / cc, 0.0), 0.999999)
+                        let gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-18))
+                        let vd = v.x * d.x + v.y * d.y + v.z * d.z
+                        let cosTheta = min(max(vd / (vNorm * dNorm), -1.0), 1.0)
+                        let delta = 1.0 / max(gamma * (1.0 + beta * cosTheta), 1e-9)
+                        let rOrbit = gg * ghM / max(vNorm * vNorm, 1e-30)
+                        rEmit = max(rOrbit, rs * 1.0001)
+                        let gGr = sqrt(min(max(1.0 - rs / rEmit, 1e-8), 1.0))
+                        gTotal = min(max(delta * gGr, 1e-4), 1e4)
+                    }
+
+                    let tObs = max(chunkT[i] * gTotal, 1.0)
+                    var X = 0.0
+                    var Y = 0.0
+                    var Z = 0.0
+                    var lam = 380.0
+                    while lam <= 750.001 {
+                        let (xb, yb, zb) = cieXYZBar(lam)
+                        let lamM = lam * 1e-9
+                        let b = planckLambda(lamM, tObs) * pow(gTotal, 3.0)
+                        X += b * xb
+                        Y += b * yb
+                        Z += b * zb
+                        lam += stepNm
+                    }
+                    var rgb = SIMD3<Double>(
+                        xyzRow0.x * X + xyzRow0.y * Y + xyzRow0.z * Z,
+                        xyzRow1.x * X + xyzRow1.y * Y + xyzRow1.z * Z,
+                        xyzRow2.x * X + xyzRow2.y * Y + xyzRow2.z * Z
+                    )
+                    rgb.x = max(rgb.x, 0.0)
+                    rgb.y = max(rgb.y, 0.0)
+                    rgb.z = max(rgb.z, 0.0)
+
+                    let rIn = max(Double(composeInnerEdgeArg), 1.0) * rs
+                    let boundary = min(max(1.0 - sqrt(rIn / max(rEmit, rIn)), 0.0), 1.0)
+                    let mu = abs(d.z) / max(sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1e-30)
+                    let limb = 0.4 + 0.6 * min(max(mu, 0.0), 1.0)
+                    rgb *= (boundary * limb)
+
+                    var cloud = min(max((Double(cloudVals[i]) - Double(q10)) * Double(invSpan), 0.0), 1.0)
+                    cloud = 0.18 + 0.82 * cloud
+                    let core = pow(cloud, 1.15)
+                    let clump = pow(core, 2.2)
+                    let vvoid = pow(1.0 - cloud, 1.8)
+                    let density = 0.62 + 1.28 * core
+                    rgb *= density
+                    rgb *= (1.0 + 0.34 * clump)
+                    rgb *= (1.0 - 0.14 * vvoid)
+                    rgb.x *= (1.0 + 0.12 * clump)
+                    rgb.z *= (1.0 - 0.08 * clump)
+                    chunkLum.append(Float(rgb.x * luma.x + rgb.y * luma.y + rgb.z * luma.z))
+                }
+
+                if !chunkLum.isEmpty {
+                    let lumStride = max(1, chunkLum.count / 8192)
+                    var j = 0
+                    while j < chunkLum.count {
+                        lumSamples.append(chunkLum[j])
+                        sampledHits += 1
+                        j += lumStride
+                    }
+                }
+            }
+
+            globalStart += recCount
+        }
+
+        if lumSamples.isEmpty {
+            composeExposure = 1.0
+        } else {
+            lumSamples.sort()
+            let p50 = percentileSorted(lumSamples, 0.50)
+            let p995 = percentileSorted(lumSamples, 0.995)
+            var targetWhite: Float = 0.8
+            if composeLookID == 1 { targetWhite = 0.9 }
+            else if composeLookID == 2 { targetWhite = 0.6 }
+            composeExposure = targetWhite / max(p995, 1e-12)
+            cpuP995ForCompose = p995
+            print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
+        }
+    }
+    print("compose cloud normalization q10=\(cloudQ10) q90=\(cloudQ90)")
+    print("exposure=\(composeExposure) (auto=\(exposureArg <= 0))")
+
+    var composeParamsTemplate = ComposeParams(
+        tileWidth: 0,
+        tileHeight: 0,
+        downsample: UInt32(downsampleArg),
+        outTileWidth: 0,
+        outTileHeight: 0,
+        srcOffsetX: 0,
+        srcOffsetY: 0,
+        outOffsetX: 0,
+        outOffsetY: 0,
+        fullInputHeight: UInt32(height),
+        exposure: composeExposure,
+        dither: composeDitherArg,
+        innerEdgeMult: composeInnerEdgeArg,
+        spectralStep: composeSpectralStepArg,
+        cloudQ10: cloudQ10,
+        cloudInvSpan: cloudInvSpan,
+        look: composeLookID,
+        spectralEncoding: spectralEncodingID,
+        precisionMode: composePrecisionID,
+        cloudBins: 2048,
+        lumBins: 4096,
+        lumLogMin: 8.0,
+        lumLogMax: 20.0
+    )
+    let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])!
+
+    let rawComposeRows = max(1, composeChunkArg / max(width, 1))
+    var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
+    if composeRows <= 0 { composeRows = downsampleArg }
+    if composeRows > height { composeRows = height }
+
+    if cpuP995ForCompose > 0 {
+        var lumHistGlobal = [UInt32](repeating: 0, count: 4096)
+        let lumTg = MTLSize(width: max(1, min(256, lumHistPipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
+        let corrHandle = try FileHandle(forReadingFrom: url)
+        defer { try? corrHandle.close() }
+        var pty = 0
+        while pty < height {
+            let tileH = min(composeRows, height - pty)
+            let tileW = width
+            let tileCount = tileW * tileH
+            let rowBytes = tileW * stride
+            let tileInBuf = device.makeBuffer(length: tileCount * stride, options: .storageModeShared)!
+            for row in 0..<tileH {
+                let offset = ((pty + row) * width) * stride
+                try corrHandle.seek(toOffset: UInt64(offset))
+                let rowData = try corrHandle.read(upToCount: rowBytes) ?? Data()
+                if rowData.count != rowBytes {
+                    throw NSError(domain: "Blackhole", code: 2, userInfo: [NSLocalizedDescriptionKey: "short read while compose exposure correction"])
+                }
+                _ = rowData.withUnsafeBytes { raw in
+                    memcpy(tileInBuf.contents().advanced(by: row * rowBytes), raw.baseAddress!, rowBytes)
+                }
+            }
+
+            var tileQ10 = cloudQ10
+            var tileInvSpan = cloudInvSpan
+            do {
+                let ptr = tileInBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
+                var cloudSamples: [Float] = []
+                cloudSamples.reserveCapacity(tileCount)
+                var i = 0
+                while i < tileCount {
+                    let rec = ptr[i]
+                    if rec.hit != 0 {
+                        var n = rec.noise
+                        if n < -1.0 { n = -1.0 }
+                        if n > 1.0 { n = 1.0 }
+                        let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
+                        cloudSamples.append(c)
+                    }
+                    i += 1
+                }
+                if !cloudSamples.isEmpty {
+                    cloudSamples.sort()
+                    let q10 = percentileSorted(cloudSamples, 0.08)
+                    let q90 = percentileSorted(cloudSamples, 0.92)
+                    tileQ10 = q10
+                    tileInvSpan = 1.0 / max(q90 - q10, 1e-6)
+                }
+            }
+
+            var lumParams = composeParamsTemplate
+            lumParams.tileWidth = UInt32(tileW)
+            lumParams.tileHeight = UInt32(tileH)
+            lumParams.srcOffsetX = 0
+            lumParams.srcOffsetY = UInt32(pty)
+            lumParams.cloudQ10 = tileQ10
+            lumParams.cloudInvSpan = tileInvSpan
+            let lumParamBuf = device.makeBuffer(bytes: &lumParams, length: MemoryLayout<ComposeParams>.stride, options: [])!
+            let lumHistBuf = device.makeBuffer(length: 4096 * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+            memset(lumHistBuf.contents(), 0, 4096 * MemoryLayout<UInt32>.stride)
+
+            let lumCmd = queue.makeCommandBuffer()!
+            let lumEnc = lumCmd.makeComputeCommandEncoder()!
+            lumEnc.setComputePipelineState(lumHistPipeline)
+            lumEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+            lumEnc.setBuffer(lumParamBuf, offset: 0, index: 1)
+            lumEnc.setBuffer(tileInBuf, offset: 0, index: 2)
+            lumEnc.setBuffer(lumHistBuf, offset: 0, index: 3)
+            lumEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: lumTg)
+            lumEnc.endEncoding()
+            lumCmd.commit()
+            lumCmd.waitUntilCompleted()
+
+            let lp = lumHistBuf.contents().bindMemory(to: UInt32.self, capacity: 4096)
+            for i in 0..<4096 {
+                lumHistGlobal[i] = lumHistGlobal[i] &+ lp[i]
+            }
+            pty += tileH
+        }
+
+        let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, 8.0, 20.0) }
+        let gpuP995 = Float(pow(10.0, Double(p995Log)))
+        if gpuP995 > 0 {
+            let corr = cpuP995ForCompose / max(gpuP995, 1e-12)
+            composeExposure *= corr
+            print("compose exposure correction cpu_p99.5=\(cpuP995ForCompose), gpu_p99.5=\(gpuP995), gain=\(corr)")
+        }
+    }
+    composeParamsTemplate.exposure = composeExposure
+
+    var rgb = [UInt8](repeating: 0, count: outWidth * outHeight * 3)
+    let readHandle = try FileHandle(forReadingFrom: url)
+    defer { try? readHandle.close() }
+
+    var composed = 0
+    var cty = 0
+    while cty < height {
+        let tileH = min(composeRows, height - cty)
+        let ctx = 0
+        let tileW = width
+        let tileCount = tileW * tileH
+        let rowBytes = tileW * stride
+
+        let tileInBuf = device.makeBuffer(length: tileCount * stride, options: .storageModeShared)!
+        for row in 0..<tileH {
+            let offset = ((cty + row) * width + ctx) * stride
+            try readHandle.seek(toOffset: UInt64(offset))
+            let rowData = try readHandle.read(upToCount: rowBytes) ?? Data()
+            if rowData.count != rowBytes {
+                throw NSError(domain: "Blackhole", code: 2, userInfo: [NSLocalizedDescriptionKey: "short read while composing"])
+            }
+            _ = rowData.withUnsafeBytes { raw in
+                memcpy(tileInBuf.contents().advanced(by: row * rowBytes), raw.baseAddress!, rowBytes)
+            }
+        }
+
+        let outTileW = tileW / downsampleArg
+        let outTileH = tileH / downsampleArg
+        let outTileCount = outTileW * outTileH
+        let outOffsetX = ctx / downsampleArg
+        let outOffsetY = (height - cty - tileH) / downsampleArg
+
+        // Match Python compose behavior more closely: normalize cloud density per chunk.
+        var tileQ10 = cloudQ10
+        var tileInvSpan = cloudInvSpan
+        do {
+            let ptr = tileInBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
+            var cloudSamples: [Float] = []
+            cloudSamples.reserveCapacity(tileCount)
+            var i = 0
+            while i < tileCount {
+                let rec = ptr[i]
+                if rec.hit != 0 {
+                    var n = rec.noise
+                    if n < -1.0 { n = -1.0 }
+                    if n > 1.0 { n = 1.0 }
+                    let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
+                    cloudSamples.append(c)
+                }
+                i += 1
+            }
+            if !cloudSamples.isEmpty {
+                cloudSamples.sort()
+                let q10 = percentileSorted(cloudSamples, 0.08)
+                let q90 = percentileSorted(cloudSamples, 0.92)
+                tileQ10 = q10
+                tileInvSpan = 1.0 / max(q90 - q10, 1e-6)
+            }
+        }
+
+        composeParamsTemplate.tileWidth = UInt32(tileW)
+        composeParamsTemplate.tileHeight = UInt32(tileH)
+        composeParamsTemplate.outTileWidth = UInt32(outTileW)
+        composeParamsTemplate.outTileHeight = UInt32(outTileH)
+        composeParamsTemplate.srcOffsetX = UInt32(ctx)
+        composeParamsTemplate.srcOffsetY = UInt32(cty)
+        composeParamsTemplate.outOffsetX = UInt32(outOffsetX)
+        composeParamsTemplate.outOffsetY = UInt32(outOffsetY)
+        composeParamsTemplate.cloudQ10 = tileQ10
+        composeParamsTemplate.cloudInvSpan = tileInvSpan
+
+        let composeParamBuf = device.makeBuffer(bytes: &composeParamsTemplate, length: MemoryLayout<ComposeParams>.stride, options: [])!
+        let outBuf = device.makeBuffer(length: outTileCount * 4, options: .storageModeShared)!
+
+        let cmd = queue.makeCommandBuffer()!
+        let enc = cmd.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(composePipeline)
+        enc.setBuffer(composeBaseBuf, offset: 0, index: 0)
+        enc.setBuffer(composeParamBuf, offset: 0, index: 1)
+        enc.setBuffer(tileInBuf, offset: 0, index: 2)
+        enc.setBuffer(outBuf, offset: 0, index: 3)
+        let grid = MTLSize(width: outTileW, height: outTileH, depth: 1)
+        enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
+        enc.endEncoding()
+        cmd.commit()
+        cmd.waitUntilCompleted()
+
+        let outPtr = outBuf.contents().bindMemory(to: UInt8.self, capacity: outTileCount * 4)
+        for row in 0..<outTileH {
+            var dst = ((outOffsetY + row) * outWidth + outOffsetX) * 3
+            let srcBase = row * outTileW * 4
+            for col in 0..<outTileW {
+                let s = srcBase + col * 4
+                rgb[dst + 0] = outPtr[s + 0]
+                rgb[dst + 1] = outPtr[s + 1]
+                rgb[dst + 2] = outPtr[s + 2]
+                dst += 3
+            }
+        }
+
+        composed += outTileCount
+        let doneAll = totalPixels + composed
+        let now = Date().timeIntervalSince1970
+        if composed >= composeOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
+            print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+            lastProgressPrint = now
+            while nextProgressMark <= doneAll {
+                nextProgressMark += progressStep
+            }
+        }
+        cty += tileH
+    }
+
+    let ext = URL(fileURLWithPath: imageOutPath).pathExtension.lowercased()
+    if ext == "ppm" {
+        try writePPM(path: imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
+    } else {
+        let tmpPPM = imageOutPath + ".tmp.ppm"
+        try writePPM(path: tmpPPM, width: outWidth, height: outHeight, rgb: rgb)
+        let pyConverter = FileManager.default.currentDirectoryPath + "/scripts/ppm_to_png.py"
+        var rc: Int32 = -1
+        if FileManager.default.fileExists(atPath: pyConverter) {
+            rc = runProcess("/usr/bin/python3", [pyConverter, "--input", tmpPPM, "--output", imageOutPath])
+        }
+        if rc != 0 {
+            rc = runProcess("/usr/bin/sips", ["-s", "format", "png", tmpPPM, "--out", imageOutPath])
+        }
+        try? FileManager.default.removeItem(atPath: tmpPPM)
+        if rc != 0 {
+            throw NSError(domain: "Blackhole", code: 3, userInfo: [NSLocalizedDescriptionKey: "sips conversion failed"])
+        }
+    }
+    print("Saved image at: \(imageOutPath)")
+    }
+}
+
+if useInMemoryCollisions && !discardCollisionOutput {
+    guard let collisionBase else {
+        fail("in-memory collision buffer unexpectedly missing at flush")
+    }
+    try writeRawBuffer(to: url, sourceBase: UnsafeRawPointer(collisionBase), byteCount: outSize)
+}
 
 let meta = RenderMeta(
     version: "dense_pruned_v3",
@@ -293,14 +1447,24 @@ let meta = RenderMeta(
     kerrRadialScale: kerrRadialScaleArg,
     kerrAzimuthScale: kerrAzimuthScaleArg,
     kerrImpactScale: kerrImpactScaleArg,
+    tileSize: effectiveTile,
+    composeGPU: composeGPU,
+    downsample: downsampleArg,
+    outputWidth: outWidth,
+    outputHeight: outHeight,
+    exposure: Double(composeExposure),
+    look: composeLook,
     collisionStride: MemoryLayout<CollisionInfo>.stride
 )
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-let metaData = try encoder.encode(meta)
-let metaURL = URL(fileURLWithPath: outPath + ".json")
-try metaData.write(to: metaURL)
-
-print("Saved at:", url.path)
-print("Saved collisions.bin (\(outSize) bytes, hits=\(hitCount))")
-print("Saved meta at:", metaURL.path)
+if !discardCollisionOutput {
+    let metaData = try encoder.encode(meta)
+    let metaURL = URL(fileURLWithPath: outPath + ".json")
+    try metaData.write(to: metaURL)
+    print("Saved at:", url.path)
+    print("Saved collisions.bin (\(outSize) bytes, hits=\(hitCount))")
+    print("Saved meta at:", metaURL.path)
+} else {
+    print("Collision output skipped (discard mode), hits=\(hitCount)")
+}
