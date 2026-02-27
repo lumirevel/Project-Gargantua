@@ -720,17 +720,11 @@ else
 fi
 
 if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
-  if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    log_section "Stage 1/1 - Swift Trace+Compose (gpu-only, in-memory)"
-  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-    log_section "Stage 1/1 - Swift Trace+Compose (gpu-only, streamed-linear32)"
-  else
-    log_section "Stage 1/1 - Swift Trace+Compose (gpu)"
-  fi
+  log_section "Stage 1/1 - Swift"
 elif [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-  log_section "Stage 1/2 - Swift Trace (cpu-mixed)"
+  log_section "Stage 1/2 - Swift"
 else
-  log_section "Stage 1/2 - Swift Trace"
+  log_section "Stage 1/2 - Swift"
 fi
 if [[ -f "$ETA_SCRIPT" ]]; then
   python3 "$ETA_SCRIPT" \
@@ -763,9 +757,9 @@ if [[ "$COMPOSE_BACKEND" == "python" || ( "$COMPOSE_BACKEND" == "gpu" && "$MATCH
   fi
 
   if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-    log_section "Stage 2/2 - Python Compose (cpu-mixed)"
+    log_section "Stage 2/2 - Python"
   else
-    log_section "Stage 2/2 - Python Compose"
+    log_section "Stage 2/2 - Python"
   fi
   if [[ -f "$ETA_SCRIPT" ]]; then
     python3 "$ETA_SCRIPT" \

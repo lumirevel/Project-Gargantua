@@ -200,11 +200,7 @@ def main() -> int:
     )
     predicted, spw, _history_count = pick_prediction(history, args, work)
 
-    print(
-        f"[eta] stage={args.stage} metric={args.metric} size={args.width}x{args.height} "
-        f"pred={fmt_duration(predicted)}",
-        file=sys.stderr,
-    )
+    print(f"[eta] pred={fmt_duration(predicted)}", file=sys.stderr)
 
     start = time.time()
     proc = subprocess.Popen(
@@ -312,7 +308,7 @@ def main() -> int:
             mode = "ops" if op_total > 0.0 else "pred"
             phase_txt = f" {progress_phase}" if progress_phase else ""
             status_text = (
-                f"[eta][{args.stage}] {progress * 100:5.1f}% "
+                f"[eta] {progress * 100:5.1f}% "
                 f"elapsed {fmt_duration(elapsed)} "
                 f"remaining {fmt_duration(remain)} "
                 f"pred {fmt_duration(predicted)} "
@@ -332,11 +328,11 @@ def main() -> int:
     error_pct = (abs(actual - predicted) / max(actual, 1e-6)) * 100.0
     clear_status()
     if proc.returncode != 0 and args.relay_output != "none" and buffered_lines:
-        print(f"[eta][{args.stage}] command failed, recent output:", file=sys.stderr)
+        print("[eta] command failed, recent output:", file=sys.stderr)
         for ln in buffered_lines:
             print(ln, file=sys.stderr)
     print(
-        f"[eta][{args.stage}] done elapsed {fmt_duration(actual)} "
+        f"[eta] done elapsed {fmt_duration(actual)} "
         f"pred {fmt_duration(predicted)} err {error_pct:4.1f}%",
         file=sys.stderr,
     )
