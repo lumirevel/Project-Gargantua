@@ -719,6 +719,18 @@ else
   fi
 fi
 
+ETA_VARIANT_SWIFT="swift-trace"
+if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
+  if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+    ETA_VARIANT_SWIFT="swift-gpu-linear32"
+  elif [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
+    ETA_VARIANT_SWIFT="swift-gpu-inmem"
+  else
+    ETA_VARIANT_SWIFT="swift-gpu"
+  fi
+fi
+ETA_VARIANT_PY="python-compose"
+
 if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
   log_section "Stage 1/1 - Swift"
 elif [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
@@ -730,6 +742,7 @@ if [[ -f "$ETA_SCRIPT" ]]; then
   python3 "$ETA_SCRIPT" \
     --history "$ETA_HISTORY" \
     --stage swift \
+    --variant "$ETA_VARIANT_SWIFT" \
     --metric "$METRIC_VALUE" \
     --width "$RENDER_WIDTH" \
     --height "$RENDER_HEIGHT" \
@@ -765,6 +778,7 @@ if [[ "$COMPOSE_BACKEND" == "python" || ( "$COMPOSE_BACKEND" == "gpu" && "$MATCH
     python3 "$ETA_SCRIPT" \
       --history "$ETA_HISTORY" \
       --stage python \
+      --variant "$ETA_VARIANT_PY" \
       --metric "$METRIC_VALUE" \
       --width "$RENDER_WIDTH" \
       --height "$RENDER_HEIGHT" \

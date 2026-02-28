@@ -150,6 +150,14 @@ func doubleArg(_ name: String, default defaultValue: Double) -> Double {
     return Double(CommandLine.arguments[idx + 1]) ?? defaultValue
 }
 
+@inline(__always)
+func emitETAProgress(_ done: Int, _ total: Int, _ phase: String, _ extra: String = "") {
+    let safeTotal = max(total, 1)
+    let suffix = extra.isEmpty ? "" : " " + extra
+    let line = "ETA_PROGRESS \(done) \(safeTotal) \(phase)\(suffix)\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
+
 func stringArg(_ name: String, default defaultValue: String) -> String {
     guard let idx = CommandLine.arguments.firstIndex(of: name), idx + 1 < CommandLine.arguments.count else {
         return defaultValue
@@ -618,7 +626,11 @@ let totalOps = totalPixels + composeOps
 let progressStep = max(1, totalOps / 256)
 var nextProgressMark = progressStep
 var lastProgressPrint = Date().timeIntervalSince1970
-print("ETA_PROGRESS 0 \(totalOps) swift_trace")
+let traceTilesX = max(1, (width + effectiveTile - 1) / effectiveTile)
+let traceTilesY = max(1, (height + effectiveTile - 1) / effectiveTile)
+let traceTileTotal = max(1, traceTilesX * traceTilesY)
+var traceTileIndex = 0
+emitETAProgress(0, totalOps, "swift_trace", "task=trace tile=0/\(traceTileTotal)")
 var ty = 0
 while ty < height {
     let tileH = min(effectiveTile, height - ty)
@@ -732,9 +744,10 @@ while ty < height {
             }
         }
         donePixels += tileCount
+        traceTileIndex += 1
         let now = Date().timeIntervalSince1970
         if donePixels >= totalPixels || donePixels >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-            print("ETA_PROGRESS \(donePixels) \(totalOps) swift_trace")
+            emitETAProgress(donePixels, totalOps, "swift_trace", "task=trace tile=\(traceTileIndex)/\(traceTileTotal)")
             lastProgressPrint = now
             while nextProgressMark <= donePixels {
                 nextProgressMark += progressStep
@@ -793,6 +806,8 @@ if composeGPU {
 
             var pty = 0
             var prepassDone = 0
+            let prepassTileTotal = max(1, (height + composeRows - 1) / composeRows)
+            var prepassTileIndex = 0
             while pty < height {
                 let tileH = min(composeRows, height - pty)
                 let tileW = width
@@ -858,10 +873,11 @@ if composeGPU {
                 }
 
                 prepassDone += tileCount
+                prepassTileIndex += 1
                 let doneAll = totalPixels + prepassDone
                 let now = Date().timeIntervalSince1970
                 if doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_prepass")
+                    emitETAProgress(min(doneAll, totalOps), totalOps, "swift_prepass", "task=linear32_lumhist tile=\(prepassTileIndex)/\(prepassTileTotal)")
                     lastProgressPrint = now
                     while nextProgressMark <= doneAll {
                         nextProgressMark += progressStep
@@ -946,6 +962,7 @@ if composeGPU {
         var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
         if composeRows <= 0 { composeRows = downsampleArg }
         if composeRows > height { composeRows = height }
+        let composeTileTotal = max(1, (height + composeRows - 1) / composeRows)
         let maxComposeTileCount = width * composeRows
         let maxComposeOutTileCount = (width / downsampleArg) * (composeRows / downsampleArg)
         guard let composeTileInBuf = device.makeBuffer(length: maxComposeTileCount * stride, options: .storageModeShared) else {
@@ -987,6 +1004,7 @@ if composeGPU {
 
             // Pass A: compute cloud histogram per tile and global cloud stats.
             var pty = 0
+            var cloudHistTileIndex = 0
             while pty < height {
                 let tileH = min(composeRows, height - pty)
                 let tileW = width
@@ -1038,10 +1056,11 @@ if composeGPU {
                 }
 
                 composePrepassOps += tileCount
+                cloudHistTileIndex += 1
                 let doneAll = totalPixels + composePrepassOps
                 let now = Date().timeIntervalSince1970
                 if doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_prepass")
+                    emitETAProgress(min(doneAll, totalOps), totalOps, "swift_prepass", "task=cloud_hist tile=\(cloudHistTileIndex)/\(composeTileTotal)")
                     lastProgressPrint = now
                     while nextProgressMark <= doneAll {
                         nextProgressMark += progressStep
@@ -1139,7 +1158,8 @@ if composeGPU {
                 let doneAll = totalPixels + composePrepassOps
                 let now = Date().timeIntervalSince1970
                 if doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_prepass")
+                    let tileNow = prepassTileIndex + 1
+                    emitETAProgress(min(doneAll, totalOps), totalOps, "swift_prepass", "task=linear_lumhist tile=\(tileNow)/\(composeTileTotal)")
                     lastProgressPrint = now
                     while nextProgressMark <= doneAll {
                         nextProgressMark += progressStep
@@ -1176,6 +1196,7 @@ if composeGPU {
 
         var composed = 0
         var cty = 0
+        var composeTileIndex = 0
         if exposureArg <= 0 {
             guard let composeLinearFullBuf else {
                 fail("linear RGB buffer missing before compose stage")
@@ -1223,10 +1244,11 @@ if composeGPU {
                 }
 
                 composed += outTileCount
+                composeTileIndex += 1
                 let doneAll = totalPixels + composePrepassOps + composed
                 let now = Date().timeIntervalSince1970
                 if composed >= composePixelOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+                    emitETAProgress(min(doneAll, totalOps), totalOps, "swift_compose", "task=compose_linear tile=\(composeTileIndex)/\(composeTileTotal)")
                     lastProgressPrint = now
                     while nextProgressMark <= doneAll {
                         nextProgressMark += progressStep
@@ -1325,10 +1347,11 @@ if composeGPU {
                 }
 
                 composed += outTileCount
+                composeTileIndex += 1
                 let doneAll = totalPixels + composePrepassOps + composed
                 let now = Date().timeIntervalSince1970
                 if composed >= composePixelOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-                    print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+                    emitETAProgress(min(doneAll, totalOps), totalOps, "swift_compose", "task=compose_collision tile=\(composeTileIndex)/\(composeTileTotal)")
                     lastProgressPrint = now
                     while nextProgressMark <= doneAll {
                         nextProgressMark += progressStep
@@ -1392,6 +1415,7 @@ if composeGPU {
     var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
     if composeRows <= 0 { composeRows = downsampleArg }
     if composeRows > height { composeRows = height }
+    let composeTileTotal = max(1, (height + composeRows - 1) / composeRows)
 
     let maxComposeTileCount = width * composeRows
     let maxComposeOutTileCount = (width / downsampleArg) * (composeRows / downsampleArg)
@@ -1411,6 +1435,7 @@ if composeGPU {
 
     var composed = 0
     var cty = 0
+    var composeTileIndex = 0
     while cty < height {
         let tileH = min(composeRows, height - cty)
         let tileW = width
@@ -1467,10 +1492,11 @@ if composeGPU {
         }
 
         composed += outTileCount
+        composeTileIndex += 1
         let doneAll = totalPixels + composePrepassOpsTarget + composed
         let now = Date().timeIntervalSince1970
         if composed >= composeOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-            print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+            emitETAProgress(min(doneAll, totalOps), totalOps, "swift_compose", "task=linear32_compose tile=\(composeTileIndex)/\(composeTileTotal)")
             lastProgressPrint = now
             while nextProgressMark <= doneAll {
                 nextProgressMark += progressStep
@@ -1743,6 +1769,7 @@ if composeGPU {
     var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
     if composeRows <= 0 { composeRows = downsampleArg }
     if composeRows > height { composeRows = height }
+    let composeTileTotal = max(1, (height + composeRows - 1) / composeRows)
 
     if cpuP995ForCompose > 0 {
         var lumHistGlobal = [UInt32](repeating: 0, count: 4096)
@@ -1841,6 +1868,7 @@ if composeGPU {
 
     var composed = 0
     var cty = 0
+    var composeTileIndex = 0
     while cty < height {
         let tileH = min(composeRows, height - cty)
         let ctx = 0
@@ -1936,10 +1964,11 @@ if composeGPU {
         }
 
         composed += outTileCount
+        composeTileIndex += 1
         let doneAll = totalPixels + composed
         let now = Date().timeIntervalSince1970
         if composed >= composeOps || doneAll >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-            print("ETA_PROGRESS \(min(doneAll, totalOps)) \(totalOps) swift_compose")
+            emitETAProgress(min(doneAll, totalOps), totalOps, "swift_compose", "task=cpu_compose tile=\(composeTileIndex)/\(composeTileTotal)")
             lastProgressPrint = now
             while nextProgressMark <= doneAll {
                 nextProgressMark += progressStep

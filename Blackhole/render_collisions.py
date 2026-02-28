@@ -426,13 +426,14 @@ def main():
     lam_m, x_bar, y_bar, z_bar = build_sensitivity(args.spectral_step)
     progress_last_t = 0.0
 
-    def emit_progress(done_ops: int, total_ops: int, phase: str, force: bool = False) -> None:
+    def emit_progress(done_ops: int, total_ops: int, phase: str, task: str = "", force: bool = False) -> None:
         nonlocal progress_last_t
         now = time.monotonic()
         if not force and (now - progress_last_t) < 0.35:
             return
         progress_last_t = now
-        print(f"ETA_PROGRESS {int(done_ops)} {int(max(total_ops, 1))} {phase}")
+        extra = f" task={task}" if task else ""
+        print(f"ETA_PROGRESS {int(done_ops)} {int(max(total_ops, 1))} {phase}{extra}", flush=True)
 
     eps = 1e-12
     lum_samples = []
@@ -520,7 +521,7 @@ def main():
     first_pass_ops = sample_hits if args.exposure <= 0.0 else 0
     total_ops = first_pass_ops + hit_total
     done_ops = first_pass_ops
-    emit_progress(done_ops, total_ops, "python_compose", force=True)
+    emit_progress(done_ops, total_ops, "python_compose", task="compose", force=True)
     processed_hits = 0
 
     for hit_idx, rec in iter_hit_chunks(mem, total, args.chunk):
@@ -560,9 +561,9 @@ def main():
             np.add.at(accum, (y_out, x_out), rgb_srgb.astype(np.float32))
         processed_hits += int(rec.shape[0])
         done_ops = first_pass_ops + processed_hits
-        emit_progress(done_ops, total_ops, "python_compose")
+        emit_progress(done_ops, total_ops, "python_compose", task="compose")
 
-    emit_progress(total_ops, total_ops, "python_compose", force=True)
+    emit_progress(total_ops, total_ops, "python_compose", task="compose", force=True)
 
     if ds > 1:
         img_f = np.clip(accum / float(ds * ds), 0.0, 1.0)

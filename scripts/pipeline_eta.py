@@ -3,8 +3,10 @@ import argparse
 from collections import deque
 import json
 import math
+import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kerr-substeps", type=int, default=4)
     parser.add_argument("--spectral-step", type=float, default=5.0)
     parser.add_argument("--ssaa", type=int, default=1)
+    parser.add_argument("--variant", type=str, default="")
     parser.add_argument("--relay-output", type=str, choices=("always", "errors", "none"), default="errors")
     parser.add_argument("--buffer-lines", type=int, default=120)
     parser.add_argument("--cmd", nargs=argparse.REMAINDER, required=True)
@@ -87,8 +90,17 @@ def pick_prediction(history: list[dict], args: argparse.Namespace, work: float) 
     candidates = [
         e
         for e in history
-        if e.get("stage") == stage and e.get("metric") == metric and float(e.get("duration", 0.0)) > 0.0 and float(e.get("work", 0.0)) > 0.0
+        if e.get("stage") == stage
+        and e.get("metric") == metric
+        and bool(e.get("success", True))
+        and float(e.get("duration", 0.0)) > 0.0
+        and float(e.get("work", 0.0)) > 0.0
     ]
+
+    if args.variant:
+        vpool = [e for e in candidates if str(e.get("variant", "")) == args.variant]
+        if len(vpool) >= 3:
+            candidates = vpool
 
     if stage == "swift":
         near = [
@@ -175,7 +187,24 @@ def reader_thread(pipe, out_q: "queue.Queue[str]") -> None:
     finally:
         out_q.put("")
 
-PROGRESS_RE = re.compile(r"^ETA_PROGRESS\s+(\d+)\s+(\d+)(?:\s+([A-Za-z0-9_.-]+))?$")
+PROGRESS_RE = re.compile(r"^ETA_PROGRESS\s+(\d+)\s+(\d+)(?:\s+([A-Za-z0-9_.-]+))?(?:\s+(.*))?$")
+
+
+def fit_status_to_terminal(text: str) -> str:
+    cols = 120
+    try:
+        if sys.stderr.isatty():
+            cols = os.get_terminal_size(sys.stderr.fileno()).columns
+        else:
+            cols = shutil.get_terminal_size(fallback=(120, 24)).columns
+    except OSError:
+        cols = shutil.get_terminal_size(fallback=(120, 24)).columns
+    max_len = max(4, cols - 1)
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return text[: max_len - 3] + "..."
 
 
 def main() -> int:
@@ -217,6 +246,7 @@ def main() -> int:
     t.start()
 
     last_draw = 0.0
+    needs_draw = False
     done_reader = False
     status_text = ""
     is_tty = sys.stderr.isatty()
@@ -224,9 +254,13 @@ def main() -> int:
     op_done = 0.0
     op_total = 0.0
     progress_phase = ""
+    progress_task = ""
+    progress_tile = ""
     ema_rate = None
+    progress_samples = 0
     last_prog_time = None
     last_prog_done = None
+    predicted_dynamic = predicted
 
     def clear_status() -> None:
         nonlocal status_text
@@ -241,30 +275,79 @@ def main() -> int:
             buffered_lines.append(f"[{args.stage}] {clean}")
 
     def ingest_progress(line: str, now: float) -> bool:
-        nonlocal op_done, op_total, progress_phase, ema_rate, last_prog_time, last_prog_done
+        nonlocal op_done, op_total, progress_phase, progress_task, progress_tile, ema_rate, progress_samples, last_prog_time, last_prog_done, predicted_dynamic, needs_draw
         m = PROGRESS_RE.match(line.strip())
         if not m:
             return False
         cur = float(m.group(1))
         tot = float(m.group(2))
         phase = m.group(3) or ""
+        extra = m.group(4) or ""
+        task = ""
+        tile = ""
+        if extra:
+            for token in extra.split():
+                if "=" not in token:
+                    continue
+                k, v = token.split("=", 1)
+                if k == "task":
+                    task = v.replace("_", " ")
+                elif k == "tile":
+                    tile = v
+        if not task and phase:
+            if phase.startswith("swift_trace"):
+                task = "trace"
+            elif phase.startswith("swift_prepass"):
+                task = "prepass"
+            elif phase.startswith("swift_compose"):
+                task = "compose"
+            elif phase.startswith("python_compose"):
+                task = "compose"
         if tot > 0.0:
             cur = min(max(cur, 0.0), tot)
             op_done = cur
             op_total = tot
             progress_phase = phase
+            progress_task = task
+            progress_tile = tile
+            needs_draw = True
             if last_prog_time is not None and last_prog_done is not None:
                 dt = now - last_prog_time
                 dd = cur - last_prog_done
                 if dt > 1e-6 and dd >= 0.0:
                     inst_rate = dd / dt
                     if inst_rate > 0.0:
+                        progress_samples += 1
                         if ema_rate is None:
                             ema_rate = inst_rate
                         else:
                             ema_rate = 0.75 * ema_rate + 0.25 * inst_rate
             last_prog_time = now
             last_prog_done = cur
+
+            # Update dynamic total estimate even when not running on a TTY.
+            elapsed = max(now - start, 1e-6)
+            if op_done > 0.0:
+                progress = min(max(op_done / op_total, 0.0), 0.999)
+                avg_rate = op_done / elapsed
+                if ema_rate is not None and ema_rate > 1e-9:
+                    if progress_samples >= 4 and avg_rate > 1e-9:
+                        rate = 0.65 * ema_rate + 0.35 * avg_rate
+                    else:
+                        rate = ema_rate
+                else:
+                    rate = avg_rate
+                remain_ops = max(op_total - op_done, 0.0)
+                remain = remain_ops / max(rate, 1e-9)
+                total_est = max(elapsed + remain, elapsed)
+                if progress < 0.10:
+                    alpha = 0.20
+                elif progress < 0.50:
+                    alpha = 0.35
+                else:
+                    alpha = 0.55
+                predicted_dynamic = (1.0 - alpha) * predicted_dynamic + alpha * total_est
+                predicted_dynamic = max(predicted_dynamic, elapsed)
         return True
 
     while True:
@@ -290,33 +373,57 @@ def main() -> int:
                 sys.stdout.flush()
 
         now = time.time()
-        if is_tty and (now - last_draw >= 1.5):
+        if is_tty and (needs_draw or (now - last_draw >= 1.5)):
             elapsed = now - start
             if op_total > 0.0:
                 progress = min(max(op_done / op_total, 0.0), 0.999)
                 remain_ops = max(op_total - op_done, 0.0)
-                if ema_rate is not None and ema_rate > 1e-9:
-                    remain = remain_ops / ema_rate
+                if ema_rate is not None and ema_rate > 1e-9 and elapsed > 1e-6 and op_done > 0.0:
+                    avg_rate = op_done / elapsed
+                    if progress_samples >= 4 and avg_rate > 1e-9:
+                        rate = 0.65 * ema_rate + 0.35 * avg_rate
+                    else:
+                        rate = ema_rate
+                    remain = remain_ops / max(rate, 1e-9)
                 elif progress > 1e-6:
                     rate = op_done / max(elapsed, 1e-6)
                     remain = remain_ops / max(rate, 1e-9)
                 else:
-                    remain = max(predicted - elapsed, 0.0)
+                    remain = max(predicted_dynamic - elapsed, 0.0)
             else:
-                remain = max(predicted - elapsed, 0.0)
-                progress = min(elapsed / predicted, 0.999) if predicted > 0.0 else 0.0
-            mode = "ops" if op_total > 0.0 else "pred"
-            phase_txt = f" {progress_phase}" if progress_phase else ""
+                remain = max(predicted_dynamic - elapsed, 0.0)
+                progress = min(elapsed / predicted_dynamic, 0.999) if predicted_dynamic > 0.0 else 0.0
+
+            if op_total > 0.0 and op_done > 0.0:
+                total_est = max(elapsed + remain, elapsed)
+                if progress < 0.10:
+                    alpha = 0.20
+                elif progress < 0.50:
+                    alpha = 0.35
+                else:
+                    alpha = 0.55
+                predicted_dynamic = (1.0 - alpha) * predicted_dynamic + alpha * total_est
+                predicted_dynamic = max(predicted_dynamic, elapsed)
+
             status_text = (
                 f"[eta] {progress * 100:5.1f}% "
-                f"elapsed {fmt_duration(elapsed)} "
-                f"remaining {fmt_duration(remain)} "
-                f"pred {fmt_duration(predicted)} "
-                f"[{mode}{phase_txt}]"
+                f"{fmt_duration(elapsed)}<{fmt_duration(remain)} "
+                f"({fmt_duration(predicted_dynamic)})"
             )
-            sys.stderr.write("\r\033[2K" + status_text)
+            if progress_task or progress_tile:
+                task_parts = []
+                if progress_task:
+                    task_parts.append(progress_task)
+                if progress_tile:
+                    task_parts.append(progress_tile)
+                status_text += " [" + " ".join(task_parts) + "]"
+            elif progress_phase:
+                status_text += f" [{progress_phase}]"
+            render_text = fit_status_to_terminal(status_text)
+            sys.stderr.write("\r\033[2K" + render_text)
             sys.stderr.flush()
             last_draw = now
+            needs_draw = False
 
         rc = proc.poll()
         if rc is not None and done_reader and not drained:
@@ -325,15 +432,20 @@ def main() -> int:
 
     end = time.time()
     actual = end - start
-    error_pct = (abs(actual - predicted) / max(actual, 1e-6)) * 100.0
+    if op_total > 0.0 and op_done > 0.0:
+        predicted_dynamic = max(predicted_dynamic, actual * 0.5)
+    error_pct = (abs(actual - predicted_dynamic) / max(actual, 1e-6)) * 100.0
     clear_status()
     if proc.returncode != 0 and args.relay_output != "none" and buffered_lines:
         print("[eta] command failed, recent output:", file=sys.stderr)
         for ln in buffered_lines:
             print(ln, file=sys.stderr)
+    done_task = f" task={progress_task}" if progress_task else ""
+    done_tile = f" tile={progress_tile}" if progress_tile else ""
     print(
         f"[eta] done elapsed {fmt_duration(actual)} "
-        f"pred {fmt_duration(predicted)} err {error_pct:4.1f}%",
+        f"pred {fmt_duration(predicted_dynamic)} err {error_pct:4.1f}%"
+        f"{done_task}{done_tile}",
         file=sys.stderr,
     )
 
@@ -345,12 +457,13 @@ def main() -> int:
             "width": args.width,
             "height": args.height,
             "ssaa": args.ssaa,
+            "variant": args.variant,
             "max_steps": args.max_steps,
             "kerr_substeps": args.kerr_substeps if args.metric.lower() == "kerr" else 1,
             "spectral_step": args.spectral_step,
             "work": work,
             "spw": spw,
-            "predicted": predicted,
+            "predicted": predicted_dynamic,
             "duration": actual,
             "success": (proc.returncode == 0),
         }
