@@ -43,8 +43,24 @@ struct Params {
     var kerrRadialScale: Float
     var kerrAzimuthScale: Float
     var kerrImpactScale: Float
-    var _padMetric0: Float
-    var _padMetric1: Int32
+    var diskFlowTime: Float
+    var diskOrbitalBoost: Float
+    var diskRadialDrift: Float
+    var diskTurbulence: Float
+    var diskFlowStep: Float
+    var diskFlowSteps: Float
+    var diskAtlasMode: UInt32
+    var diskAtlasWidth: UInt32
+    var diskAtlasHeight: UInt32
+    var diskAtlasWrapPhi: UInt32
+    var diskAtlasTempScale: Float
+    var diskAtlasDensityBlend: Float
+    var diskAtlasVrScale: Float
+    var diskAtlasVphiScale: Float
+    var diskAtlasRNormMin: Float
+    var diskAtlasRNormMax: Float
+    var diskAtlasRNormWarp: Float
+    var diskNoiseModel: UInt32
 }
 
 struct CollisionInfo {
@@ -55,9 +71,9 @@ struct CollisionInfo {
     var v_disk: SIMD4<Float>
     var direct_world: SIMD4<Float>
     var noise: Float
-    var _pad3_0: Float
-    var _pad3_1: Float
-    var _pad3_2: Float
+    var emit_r_norm: Float
+    var emit_phi: Float
+    var emit_z_norm: Float
 }
 
 struct ExposureSample {
@@ -97,6 +113,9 @@ struct ComposeParams {
 struct RenderMeta: Codable {
     var version: String
     var spectralEncoding: String
+    var diskModel: String
+    var bridgeCoordinateFrame: String
+    var bridgeFields: [String]
     var width: Int
     var height: Int
     var preset: String
@@ -117,6 +136,23 @@ struct RenderMeta: Codable {
     var kerrRadialScale: Double
     var kerrAzimuthScale: Double
     var kerrImpactScale: Double
+    var diskFlowTime: Double
+    var diskOrbitalBoost: Double
+    var diskRadialDrift: Double
+    var diskTurbulence: Double
+    var diskFlowStep: Double
+    var diskFlowSteps: Int
+    var diskAtlasEnabled: Bool
+    var diskAtlasPath: String
+    var diskAtlasWidth: Int
+    var diskAtlasHeight: Int
+    var diskAtlasTempScale: Double
+    var diskAtlasDensityBlend: Double
+    var diskAtlasVrScale: Double
+    var diskAtlasVphiScale: Double
+    var diskAtlasRNormMin: Double
+    var diskAtlasRNormMax: Double
+    var diskAtlasRNormWarp: Double
     var tileSize: Int
     var composeGPU: Bool
     var downsample: Int
@@ -125,6 +161,16 @@ struct RenderMeta: Codable {
     var exposure: Double
     var look: String
     var collisionStride: Int
+}
+
+struct DiskAtlasMeta: Codable {
+    var width: Int
+    var height: Int
+    var format: String?
+    var channels: [String]?
+    var rNormMin: Double?
+    var rNormMax: Double?
+    var rNormWarp: Double?
 }
 
 func normalize(_ v: SIMD3<Float>) -> SIMD3<Float> {
@@ -222,6 +268,7 @@ func writeRawBuffer(to url: URL, sourceBase: UnsafeRawPointer, byteCount: Int) t
     let handle = try FileHandle(forWritingTo: url)
     defer { try? handle.close() }
     try handle.truncate(atOffset: UInt64(byteCount))
+    try handle.seek(toOffset: 0)
     let chunkBytes = 4 * 1024 * 1024
     var offset = 0
     while offset < byteCount {
@@ -293,6 +340,49 @@ func planckLambda(_ lambdaMeters: Double, _ temp: Double) -> Double {
 func fail(_ message: String, code: Int32 = 3) -> Never {
     FileHandle.standardError.write(Data(("error: " + message + "\n").utf8))
     exit(code)
+}
+
+func loadDiskAtlas(path: String, widthOverride: Int, heightOverride: Int) throws -> (data: Data, width: Int, height: Int, rNormMin: Double?, rNormMax: Double?, rNormWarp: Double?) {
+    let atlasURL = URL(fileURLWithPath: path)
+    let atlasData = try Data(contentsOf: atlasURL, options: [.mappedIfSafe])
+
+    var width = widthOverride
+    var height = heightOverride
+    var rNormMin: Double? = nil
+    var rNormMax: Double? = nil
+    var rNormWarp: Double? = nil
+    if width <= 0 || height <= 0 {
+        let metaURL = URL(fileURLWithPath: path + ".json")
+        if FileManager.default.fileExists(atPath: metaURL.path) {
+            let metaData = try Data(contentsOf: metaURL)
+            let meta = try JSONDecoder().decode(DiskAtlasMeta.self, from: metaData)
+            width = meta.width
+            height = meta.height
+            rNormMin = meta.rNormMin
+            rNormMax = meta.rNormMax
+            rNormWarp = meta.rNormWarp
+        }
+    } else {
+        let metaURL = URL(fileURLWithPath: path + ".json")
+        if FileManager.default.fileExists(atPath: metaURL.path) {
+            let metaData = try Data(contentsOf: metaURL)
+            let meta = try JSONDecoder().decode(DiskAtlasMeta.self, from: metaData)
+            rNormMin = meta.rNormMin
+            rNormMax = meta.rNormMax
+            rNormWarp = meta.rNormWarp
+        }
+    }
+
+    if width <= 0 || height <= 0 {
+        throw NSError(domain: "Blackhole", code: 10, userInfo: [NSLocalizedDescriptionKey: "disk atlas needs width/height (pass --disk-atlas-width/--disk-atlas-height or provide <atlas>.json)"])
+    }
+
+    let expectedBytes = width * height * MemoryLayout<SIMD4<Float>>.stride
+    if atlasData.count != expectedBytes {
+        throw NSError(domain: "Blackhole", code: 11, userInfo: [NSLocalizedDescriptionKey: "disk atlas size mismatch: got \(atlasData.count), expected \(expectedBytes) for \(width)x\(height) float4"])
+    }
+
+    return (atlasData, width, height, rNormMin, rNormMax, rNormWarp)
 }
 
 if CommandLine.arguments.contains("--kerr-use-u") {
@@ -433,6 +523,23 @@ let kerrEscapeMultArg = max(1.0, doubleArg("--kerr-escape-mult", default: 3.0))
 let kerrRadialScaleArg = max(0.01, doubleArg("--kerr-radial-scale", default: defaultKerrRadialScale))
 let kerrAzimuthScaleArg = max(0.01, doubleArg("--kerr-azimuth-scale", default: defaultKerrAzimuthScale))
 let kerrImpactScaleArg = max(0.1, doubleArg("--kerr-impact-scale", default: defaultKerrImpactScale))
+let diskFlowTimeArg = doubleArg("--disk-time", default: 0.0)
+let diskOrbitalBoostArg = max(0.05, doubleArg("--disk-orbital-boost", default: 1.0))
+let diskRadialDriftArg = max(0.0, doubleArg("--disk-radial-drift", default: 0.02))
+let diskTurbulenceArg = max(0.0, doubleArg("--disk-turbulence", default: 0.30))
+let diskFlowStepArg = max(0.03, doubleArg("--disk-flow-step", default: 0.22))
+let diskFlowStepsArg = max(2, min(24, intArg("--disk-flow-steps", default: 8)))
+let diskModelArg = stringArg("--disk-model", default: "auto").lowercased()
+let diskAtlasPathArg = stringArg("--disk-atlas", default: "")
+let diskAtlasWidthArg = max(0, intArg("--disk-atlas-width", default: 0))
+let diskAtlasHeightArg = max(0, intArg("--disk-atlas-height", default: 0))
+let diskAtlasTempScaleArg = max(0.0, doubleArg("--disk-atlas-temp-scale", default: 1.0))
+let diskAtlasDensityBlendArg = max(0.0, min(1.0, doubleArg("--disk-atlas-density-blend", default: 0.70)))
+let diskAtlasVrScaleArg = max(0.0, doubleArg("--disk-atlas-vr-scale", default: 0.35))
+let diskAtlasVphiScaleArg = max(0.0, doubleArg("--disk-atlas-vphi-scale", default: 1.0))
+let diskAtlasRMinArg = doubleArg("--disk-atlas-r-min", default: -1.0)
+let diskAtlasRMaxArg = doubleArg("--disk-atlas-r-max", default: -1.0)
+let diskAtlasRWarpArg = doubleArg("--disk-atlas-r-warp", default: -1.0)
 let tileSizeArg = max(0, intArg("--tile-size", default: 0))
 let autoTile = width * height > 8_000_000
 let tileSize = (tileSizeArg > 0) ? tileSizeArg : (autoTile ? 1024 : max(width, height))
@@ -462,6 +569,60 @@ let composeExposureBase: Float = {
 let spectralEncodingID: UInt32 = (spectralEncoding == "gfactor_v1") ? 1 : 0
 var composeExposure = composeExposureBase
 let useLinear32Intermediate = composeGPU && !gpuFullCompose && linear32Intermediate
+let diskModelResolved: String
+switch diskModelArg {
+case "procedural", "legacy", "noise":
+    diskModelResolved = "procedural"
+case "perlin":
+    diskModelResolved = "perlin"
+case "atlas":
+    diskModelResolved = "atlas"
+case "auto":
+    diskModelResolved = diskAtlasPathArg.isEmpty ? "procedural" : "atlas"
+default:
+    fail("invalid --disk-model \(diskModelArg). use one of: procedural, perlin, atlas, auto")
+}
+if diskModelResolved == "atlas" && diskAtlasPathArg.isEmpty {
+    fail("--disk-model atlas requires --disk-atlas <path>")
+}
+if (diskModelResolved == "procedural" || diskModelResolved == "perlin") && !diskAtlasPathArg.isEmpty {
+    FileHandle.standardError.write(Data("warn: --disk-model \(diskModelResolved) ignores --disk-atlas and atlas tuning args\n".utf8))
+}
+let diskAtlasEnabled = (diskModelResolved == "atlas")
+let diskNoiseModel: UInt32 = (diskModelResolved == "perlin") ? 1 : 0
+let diskAtlasWrapPhi: UInt32 = 1
+
+let diskAtlasData: Data
+let diskAtlasWidth: Int
+let diskAtlasHeight: Int
+var diskAtlasMetaRMin: Double? = nil
+var diskAtlasMetaRMax: Double? = nil
+var diskAtlasMetaRWarp: Double? = nil
+if diskAtlasEnabled {
+    do {
+        let loaded = try loadDiskAtlas(path: diskAtlasPathArg, widthOverride: diskAtlasWidthArg, heightOverride: diskAtlasHeightArg)
+        diskAtlasData = loaded.data
+        diskAtlasWidth = loaded.width
+        diskAtlasHeight = loaded.height
+        diskAtlasMetaRMin = loaded.rNormMin
+        diskAtlasMetaRMax = loaded.rNormMax
+        diskAtlasMetaRWarp = loaded.rNormWarp
+    } catch {
+        fail("failed to load --disk-atlas: \(error.localizedDescription)")
+    }
+} else {
+    var fallback = SIMD4<Float>(1.0, 0.0, 0.0, 1.0)
+    diskAtlasData = withUnsafeBytes(of: &fallback) { Data($0) }
+    diskAtlasWidth = 1
+    diskAtlasHeight = 1
+}
+let diskAtlasRMinDefault = 1.0
+let diskAtlasRMaxDefault = max(diskAtlasRMinDefault + 1e-6, rcp)
+let diskAtlasRMin = max(0.0, (diskAtlasRMinArg >= 0.0) ? diskAtlasRMinArg : (diskAtlasMetaRMin ?? diskAtlasRMinDefault))
+let diskAtlasRMaxCandidate = (diskAtlasRMaxArg >= 0.0) ? diskAtlasRMaxArg : (diskAtlasMetaRMax ?? diskAtlasRMaxDefault)
+let diskAtlasRMax = max(diskAtlasRMin + 1e-6, diskAtlasRMaxCandidate)
+let diskAtlasRWarpCandidate = (diskAtlasRWarpArg >= 0.0) ? diskAtlasRWarpArg : (diskAtlasMetaRWarp ?? 1.0)
+let diskAtlasRWarp = max(1e-3, diskAtlasRWarpCandidate)
 
 if composeGPU {
     if imageOutPath.isEmpty {
@@ -474,7 +635,7 @@ if composeGPU {
     }
 }
 
-print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate)")
+print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate)")
 
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
@@ -527,8 +688,24 @@ var params = Params(
     kerrRadialScale: Float(kerrRadialScaleArg),
     kerrAzimuthScale: Float(kerrAzimuthScaleArg),
     kerrImpactScale: Float(kerrImpactScaleArg),
-    _padMetric0: 0.0,
-    _padMetric1: 0
+    diskFlowTime: Float(diskFlowTimeArg),
+    diskOrbitalBoost: Float(diskOrbitalBoostArg),
+    diskRadialDrift: Float(diskRadialDriftArg),
+    diskTurbulence: Float(diskTurbulenceArg),
+    diskFlowStep: Float(diskFlowStepArg),
+    diskFlowSteps: Float(diskFlowStepsArg),
+    diskAtlasMode: diskAtlasEnabled ? 1 : 0,
+    diskAtlasWidth: UInt32(diskAtlasWidth),
+    diskAtlasHeight: UInt32(diskAtlasHeight),
+    diskAtlasWrapPhi: diskAtlasWrapPhi,
+    diskAtlasTempScale: Float(diskAtlasTempScaleArg),
+    diskAtlasDensityBlend: Float(diskAtlasDensityBlendArg),
+    diskAtlasVrScale: Float(diskAtlasVrScaleArg),
+    diskAtlasVphiScale: Float(diskAtlasVphiScaleArg),
+    diskAtlasRNormMin: Float(diskAtlasRMin),
+    diskAtlasRNormMax: Float(diskAtlasRMax),
+    diskAtlasRNormWarp: Float(diskAtlasRWarp),
+    diskNoiseModel: diskNoiseModel
 )
 
 let count = width * height
@@ -577,6 +754,13 @@ guard let traceParamBuf = device.makeBuffer(length: MemoryLayout<Params>.stride,
 let maxTraceTilePixels = effectiveTile * effectiveTile
 guard let traceTileBuf = device.makeBuffer(length: maxTraceTilePixels * stride, options: .storageModeShared) else {
     fail("failed to allocate trace tile buffer")
+}
+guard let diskAtlasBuf = device.makeBuffer(length: diskAtlasData.count, options: .storageModeShared) else {
+    fail("failed to allocate disk atlas buffer")
+}
+_ = diskAtlasData.withUnsafeBytes { raw in
+    guard let base = raw.baseAddress else { return }
+    memcpy(diskAtlasBuf.contents(), base, diskAtlasData.count)
 }
 let composeLinearTileBuf: MTLBuffer? = useLinear32Intermediate
     ? device.makeBuffer(length: maxTraceTilePixels * linearStride, options: .storageModeShared)
@@ -654,6 +838,7 @@ while ty < height {
         enc.setComputePipelineState(pipeline)
         enc.setBuffer(traceParamBuf, offset: 0, index: 0)
         enc.setBuffer(traceTileBuf, offset: 0, index: 1)
+        enc.setBuffer(diskAtlasBuf, offset: 0, index: 2)
 
         let grid = MTLSize(width: tileW, height: tileH, depth: 1)
         enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
@@ -925,9 +1110,6 @@ if composeGPU {
         var globalCloudQ10: Float = 0.0
         var globalCloudQ90: Float = 1.0
         var globalCloudInvSpan = 1.0 / max(globalCloudQ90 - globalCloudQ10, 1e-6)
-        let tileCloudMinSpan: Float = 0.02
-        var cachedTileCloudQ10: [Float] = []
-        var cachedTileCloudInvSpan: [Float] = []
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])!
         var composePrepassOps = 0
 
@@ -1043,12 +1225,6 @@ if composeGPU {
                 cloudCmd.waitUntilCompleted()
 
                 let cloudPtr = cloudHistBuf.contents().bindMemory(to: UInt32.self, capacity: cloudBins)
-                let cloudHist = UnsafeBufferPointer(start: cloudPtr, count: cloudBins)
-                let tileQ10 = quantileFromUniformHistogram(cloudHist, 0.08, 0.0, 1.0)
-                let tileQ90 = quantileFromUniformHistogram(cloudHist, 0.92, 0.0, 1.0)
-                let tileInvSpan = 1.0 / max(tileQ90 - tileQ10, 1e-6)
-                cachedTileCloudQ10.append(tileQ10)
-                cachedTileCloudInvSpan.append(tileInvSpan)
                 for i in 0..<cloudBins {
                     let c = cloudPtr[i]
                     cloudHistGlobal[i] = cloudHistGlobal[i] &+ c
@@ -1094,20 +1270,6 @@ if composeGPU {
                     destinationBase: composeTileInBuf.contents()
                 )
 
-                var tileQ10 = globalCloudQ10
-                var tileInvSpan = globalCloudInvSpan
-                if prepassTileIndex < cachedTileCloudQ10.count {
-                    tileQ10 = cachedTileCloudQ10[prepassTileIndex]
-                    tileInvSpan = cachedTileCloudInvSpan[prepassTileIndex]
-                }
-                let tileSpan = 1.0 / max(tileInvSpan, 1e-6)
-                if tileSpan < tileCloudMinSpan {
-                    tileQ10 = globalCloudQ10
-                    tileInvSpan = globalCloudInvSpan
-                }
-                cachedTileCloudQ10[prepassTileIndex] = tileQ10
-                cachedTileCloudInvSpan[prepassTileIndex] = tileInvSpan
-
                 composeParamsTemplate.tileWidth = UInt32(tileW)
                 composeParamsTemplate.tileHeight = UInt32(tileH)
                 composeParamsTemplate.srcOffsetX = 0
@@ -1116,8 +1278,9 @@ if composeGPU {
                 composeParamsTemplate.outTileHeight = UInt32(tileH / downsampleArg)
                 composeParamsTemplate.outOffsetX = 0
                 composeParamsTemplate.outOffsetY = UInt32((height - pty - tileH) / downsampleArg)
-                composeParamsTemplate.cloudQ10 = tileQ10
-                composeParamsTemplate.cloudInvSpan = tileInvSpan
+                // Use global cloud normalization to avoid tile-boundary banding artifacts.
+                composeParamsTemplate.cloudQ10 = globalCloudQ10
+                composeParamsTemplate.cloudInvSpan = globalCloudInvSpan
 
                 var linearParams = composeParamsTemplate
                 updateBuffer(lumParamBuf, with: &linearParams)
@@ -1260,7 +1423,6 @@ if composeGPU {
             while cty < height {
                 let tileH = min(composeRows, height - cty)
                 let tileW = width
-                let tileCount = tileW * tileH
 
                 copyCollisionTileRows(
                     sourceBase: UnsafeRawPointer(collisionBase),
@@ -1278,37 +1440,6 @@ if composeGPU {
                 let outTileCount = outTileW * outTileH
                 let outOffsetY = (height - cty - tileH) / downsampleArg
 
-                var tileQ10 = globalCloudQ10
-                var tileInvSpan = globalCloudInvSpan
-                memset(cloudHistBuf.contents(), 0, cloudHistBytes)
-                var histParams = composeParamsTemplate
-                histParams.tileWidth = UInt32(tileW)
-                histParams.tileHeight = UInt32(tileH)
-                updateBuffer(cloudParamBuf, with: &histParams)
-                let histCmd = queue.makeCommandBuffer()!
-                let histEnc = histCmd.makeComputeCommandEncoder()!
-                histEnc.setComputePipelineState(cloudHistPipeline)
-                histEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
-                histEnc.setBuffer(cloudParamBuf, offset: 0, index: 1)
-                histEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
-                histEnc.setBuffer(cloudHistBuf, offset: 0, index: 3)
-                histEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgCloud1D)
-                histEnc.endEncoding()
-                histCmd.commit()
-                histCmd.waitUntilCompleted()
-
-                let cloudPtr = cloudHistBuf.contents().bindMemory(to: UInt32.self, capacity: cloudBins)
-                let cloudHist = UnsafeBufferPointer(start: cloudPtr, count: cloudBins)
-                let localQ10 = quantileFromUniformHistogram(cloudHist, 0.08, 0.0, 1.0)
-                let localQ90 = quantileFromUniformHistogram(cloudHist, 0.92, 0.0, 1.0)
-                tileQ10 = localQ10
-                tileInvSpan = 1.0 / max(localQ90 - localQ10, 1e-6)
-                let tileSpan = 1.0 / max(tileInvSpan, 1e-6)
-                if tileSpan < tileCloudMinSpan {
-                    tileQ10 = globalCloudQ10
-                    tileInvSpan = globalCloudInvSpan
-                }
-
                 composeParamsTemplate.tileWidth = UInt32(tileW)
                 composeParamsTemplate.tileHeight = UInt32(tileH)
                 composeParamsTemplate.outTileWidth = UInt32(outTileW)
@@ -1317,8 +1448,9 @@ if composeGPU {
                 composeParamsTemplate.srcOffsetY = UInt32(cty)
                 composeParamsTemplate.outOffsetX = 0
                 composeParamsTemplate.outOffsetY = UInt32(outOffsetY)
-                composeParamsTemplate.cloudQ10 = tileQ10
-                composeParamsTemplate.cloudInvSpan = tileInvSpan
+                // Keep cloud normalization global to avoid horizontal/vertical seams.
+                composeParamsTemplate.cloudQ10 = globalCloudQ10
+                composeParamsTemplate.cloudInvSpan = globalCloudInvSpan
                 updateBuffer(composeParamBuf, with: &composeParamsTemplate)
 
                 let cmd = queue.makeCommandBuffer()!
@@ -1795,40 +1927,13 @@ if composeGPU {
                 }
             }
 
-            var tileQ10 = cloudQ10
-            var tileInvSpan = cloudInvSpan
-            do {
-                let ptr = tileInBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
-                var cloudSamples: [Float] = []
-                cloudSamples.reserveCapacity(tileCount)
-                var i = 0
-                while i < tileCount {
-                    let rec = ptr[i]
-                    if rec.hit != 0 {
-                        var n = rec.noise
-                        if n < -1.0 { n = -1.0 }
-                        if n > 1.0 { n = 1.0 }
-                        let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
-                        cloudSamples.append(c)
-                    }
-                    i += 1
-                }
-                if !cloudSamples.isEmpty {
-                    cloudSamples.sort()
-                    let q10 = percentileSorted(cloudSamples, 0.08)
-                    let q90 = percentileSorted(cloudSamples, 0.92)
-                    tileQ10 = q10
-                    tileInvSpan = 1.0 / max(q90 - q10, 1e-6)
-                }
-            }
-
             var lumParams = composeParamsTemplate
             lumParams.tileWidth = UInt32(tileW)
             lumParams.tileHeight = UInt32(tileH)
             lumParams.srcOffsetX = 0
             lumParams.srcOffsetY = UInt32(pty)
-            lumParams.cloudQ10 = tileQ10
-            lumParams.cloudInvSpan = tileInvSpan
+            lumParams.cloudQ10 = cloudQ10
+            lumParams.cloudInvSpan = cloudInvSpan
             let lumParamBuf = device.makeBuffer(bytes: &lumParams, length: MemoryLayout<ComposeParams>.stride, options: [])!
             let lumHistBuf = device.makeBuffer(length: 4096 * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
             memset(lumHistBuf.contents(), 0, 4096 * MemoryLayout<UInt32>.stride)
@@ -1895,34 +2000,6 @@ if composeGPU {
         let outOffsetX = ctx / downsampleArg
         let outOffsetY = (height - cty - tileH) / downsampleArg
 
-        // Match Python compose behavior more closely: normalize cloud density per chunk.
-        var tileQ10 = cloudQ10
-        var tileInvSpan = cloudInvSpan
-        do {
-            let ptr = tileInBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
-            var cloudSamples: [Float] = []
-            cloudSamples.reserveCapacity(tileCount)
-            var i = 0
-            while i < tileCount {
-                let rec = ptr[i]
-                if rec.hit != 0 {
-                    var n = rec.noise
-                    if n < -1.0 { n = -1.0 }
-                    if n > 1.0 { n = 1.0 }
-                    let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
-                    cloudSamples.append(c)
-                }
-                i += 1
-            }
-            if !cloudSamples.isEmpty {
-                cloudSamples.sort()
-                let q10 = percentileSorted(cloudSamples, 0.08)
-                let q90 = percentileSorted(cloudSamples, 0.92)
-                tileQ10 = q10
-                tileInvSpan = 1.0 / max(q90 - q10, 1e-6)
-            }
-        }
-
         composeParamsTemplate.tileWidth = UInt32(tileW)
         composeParamsTemplate.tileHeight = UInt32(tileH)
         composeParamsTemplate.outTileWidth = UInt32(outTileW)
@@ -1931,8 +2008,8 @@ if composeGPU {
         composeParamsTemplate.srcOffsetY = UInt32(cty)
         composeParamsTemplate.outOffsetX = UInt32(outOffsetX)
         composeParamsTemplate.outOffsetY = UInt32(outOffsetY)
-        composeParamsTemplate.cloudQ10 = tileQ10
-        composeParamsTemplate.cloudInvSpan = tileInvSpan
+        composeParamsTemplate.cloudQ10 = cloudQ10
+        composeParamsTemplate.cloudInvSpan = cloudInvSpan
 
         let composeParamBuf = device.makeBuffer(bytes: &composeParamsTemplate, length: MemoryLayout<ComposeParams>.stride, options: [])!
         let outBuf = device.makeBuffer(length: outTileCount * 4, options: .storageModeShared)!
@@ -2008,8 +2085,11 @@ if useInMemoryCollisions && !discardCollisionOutput {
 }
 
 let meta = RenderMeta(
-    version: "dense_pruned_v3",
+    version: "dense_pruned_v6",
     spectralEncoding: spectralEncoding,
+    diskModel: diskAtlasEnabled ? "stage3_atlas_v1" : (diskModelResolved == "perlin" ? "perlin_texture_v1" : "streamline_particles_v1"),
+    bridgeCoordinateFrame: "camera_world_xy_disk, r_norm=r/rs, z_norm=z/rs, phi=atan2(y,x)",
+    bridgeFields: ["emit_r_norm", "emit_phi", "emit_z_norm", "ct", "T", "v_disk", "direct_world", "noise"],
     width: width,
     height: height,
     preset: preset,
@@ -2030,6 +2110,23 @@ let meta = RenderMeta(
     kerrRadialScale: kerrRadialScaleArg,
     kerrAzimuthScale: kerrAzimuthScaleArg,
     kerrImpactScale: kerrImpactScaleArg,
+    diskFlowTime: diskFlowTimeArg,
+    diskOrbitalBoost: diskOrbitalBoostArg,
+    diskRadialDrift: diskRadialDriftArg,
+    diskTurbulence: diskTurbulenceArg,
+    diskFlowStep: diskFlowStepArg,
+    diskFlowSteps: diskFlowStepsArg,
+    diskAtlasEnabled: diskAtlasEnabled,
+    diskAtlasPath: diskAtlasEnabled ? diskAtlasPathArg : "",
+    diskAtlasWidth: diskAtlasWidth,
+    diskAtlasHeight: diskAtlasHeight,
+    diskAtlasTempScale: diskAtlasTempScaleArg,
+    diskAtlasDensityBlend: diskAtlasDensityBlendArg,
+    diskAtlasVrScale: diskAtlasVrScaleArg,
+    diskAtlasVphiScale: diskAtlasVphiScaleArg,
+    diskAtlasRNormMin: diskAtlasRMin,
+    diskAtlasRNormMax: diskAtlasRMax,
+    diskAtlasRNormWarp: diskAtlasRWarp,
     tileSize: effectiveTile,
     composeGPU: composeGPU,
     downsample: downsampleArg,

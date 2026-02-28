@@ -34,7 +34,8 @@ PY_MODE=0
 LOOK_SET=0
 PRESET_VALUE=""
 ETA_SCRIPT="$ROOT_DIR/scripts/pipeline_eta.py"
-ETA_HISTORY="$ROOT_DIR/.pipeline_eta_history.json"
+ETA_HISTORY_OLD="$ROOT_DIR/.pipeline_eta_history.json"
+ETA_HISTORY="${BH_ETA_HISTORY:-$ROOT_DIR/pipeline_eta_history.json}"
 ETA_RELAY="${BH_ETA_RELAY:-errors}"
 COMPOSE_BACKEND="python"
 MATCH_CPU=1
@@ -42,6 +43,10 @@ GPU_FULL_COMPOSE=0
 GPU_STREAM_LINEAR32=0
 LINEAR32_OUT=""
 LEGACY_COMPOSE_OVERRIDE=""
+DISK_MODEL_VALUE="auto"
+DISK_MODEL_SET=0
+DISK_ATLAS_VALUE=""
+DISK_ATLAS_SET=0
 
 case "$ETA_RELAY" in
   always|errors|none) ;;
@@ -50,6 +55,11 @@ case "$ETA_RELAY" in
     exit 2
     ;;
 esac
+
+# Migrate old hidden ETA history path to the new visible default path.
+if [[ -z "${BH_ETA_HISTORY:-}" && -f "$ETA_HISTORY_OLD" && ! -f "$ETA_HISTORY" ]]; then
+  mv "$ETA_HISTORY_OLD" "$ETA_HISTORY" 2>/dev/null || cp "$ETA_HISTORY_OLD" "$ETA_HISTORY"
+fi
 
 log_section() {
   printf "\n== %s ==\n" "$1"
@@ -90,7 +100,9 @@ One-command pipeline:
 
 Routing rules:
 - Shared: --width --height --rcp
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-flow-step --disk-flow-steps --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp
+- Disk model values: --disk-model {procedural|perlin|atlas|auto}
+- Atlas auto path: when --disk-model atlas is set and --disk-atlas is omitted, auto-search order is BH_DISK_ATLAS, ./disk_atlas.bin, /tmp/stage3_ab/disk_atlas.bin
 - Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look
 - Pipeline quality: --ssaa {1|2|4} (2=2x2, 4=4x4 supersampling)
 - Swift memory: --tile-size <pixels> (optional, e.g. 512/1024)
@@ -116,10 +128,49 @@ Output controls:
 - --image-out <path>: alias of --output
 - --collisions-out <path>: optional explicit intermediate path (advanced)
 
+Special mode:
+- stage3-ab (or --stage3-ab): run stage-3 A/B automation in one shot
+  - forwards remaining args to scripts/compare_stage3_ab.py
+  - example: ./run_pipeline.sh stage3-ab --no-build --width 640 --height 640 --preset interstellar --metric kerr --spin 0.92 --atlas-r-warp 0.65
+
 Example:
   ./run_pipeline.sh --width 1200 --height 1200 --preset interstellar --output blackhole_gpu.png
 USAGE
 }
+
+STAGE3_AB_MODE=0
+if [[ "$#" -gt 0 ]]; then
+  for raw_arg in "$@"; do
+    arg="$(normalize_dash "$raw_arg")"
+    if [[ "$arg" == "stage3-ab" || "$arg" == "--stage3-ab" ]]; then
+      STAGE3_AB_MODE=1
+      break
+    fi
+  done
+fi
+
+if [[ "$STAGE3_AB_MODE" -eq 1 ]]; then
+  COMPARE_STAGE3_SCRIPT="$ROOT_DIR/scripts/compare_stage3_ab.py"
+  if [[ ! -f "$COMPARE_STAGE3_SCRIPT" ]]; then
+    echo "error: stage3-ab helper script not found: $COMPARE_STAGE3_SCRIPT" >&2
+    exit 2
+  fi
+
+  STAGE3_AB_ARGS=()
+  for raw_arg in "$@"; do
+    arg="$(normalize_dash "$raw_arg")"
+    if [[ "$arg" == "stage3-ab" || "$arg" == "--stage3-ab" ]]; then
+      continue
+    fi
+    STAGE3_AB_ARGS+=("$raw_arg")
+  done
+
+  log_section "Mode"
+  log_item "stage3" "ab-report"
+  log_item "script" "$COMPARE_STAGE3_SCRIPT"
+  python3 "$COMPARE_STAGE3_SCRIPT" --run-pipeline "$ROOT_DIR/Blackhole/run_pipeline.sh" "${STAGE3_AB_ARGS[@]}"
+  exit $?
+fi
 
 while [[ "$#" -gt 0 ]]; do
   raw_arg="$1"
@@ -365,6 +416,22 @@ while [[ "$#" -gt 0 ]]; do
       METRIC_VALUE="$val"
       SWIFT_ARGS+=("$arg" "$val")
       ;;
+    --disk-model)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      DISK_MODEL_VALUE="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+      DISK_MODEL_SET=1
+      SWIFT_ARGS+=("$arg" "$val")
+      ;;
+    --disk-atlas)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      DISK_ATLAS_VALUE="$val"
+      DISK_ATLAS_SET=1
+      SWIFT_ARGS+=("$arg" "$val")
+      ;;
     --maxSteps)
       need_value "$arg" "$@"
       val="$1"
@@ -394,7 +461,7 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
       exit 2
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-flow-step|--disk-flow-steps|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -454,6 +521,39 @@ done
 if [[ "$LOOK_SET" -eq 0 && -n "$PRESET_VALUE" ]]; then
   SWIFT_ARGS+=(--look "$PRESET_VALUE")
   PY_ARGS+=(--look "$PRESET_VALUE")
+fi
+
+# Atlas auto-discovery: when atlas is requested but path is omitted.
+if [[ "$DISK_ATLAS_SET" -eq 0 ]]; then
+  case "$DISK_MODEL_VALUE" in
+    atlas)
+      AUTO_ATLAS_CANDIDATES=()
+      if [[ -n "${BH_DISK_ATLAS:-}" ]]; then
+        AUTO_ATLAS_CANDIDATES+=("$BH_DISK_ATLAS")
+      fi
+      AUTO_ATLAS_CANDIDATES+=(
+        "$ROOT_DIR/disk_atlas.bin"
+        "/tmp/stage3_ab/disk_atlas.bin"
+      )
+      AUTO_ATLAS_FOUND=""
+      for p in "${AUTO_ATLAS_CANDIDATES[@]}"; do
+        if [[ -n "$p" && -f "$p" ]]; then
+          AUTO_ATLAS_FOUND="$p"
+          break
+        fi
+      done
+      if [[ -n "$AUTO_ATLAS_FOUND" ]]; then
+        SWIFT_ARGS+=(--disk-atlas "$AUTO_ATLAS_FOUND")
+        DISK_ATLAS_SET=1
+        DISK_ATLAS_VALUE="$AUTO_ATLAS_FOUND"
+        echo "info: auto-selected atlas: $AUTO_ATLAS_FOUND" >&2
+      elif [[ "$DISK_MODEL_VALUE" == "atlas" ]]; then
+        echo "error: --disk-model atlas requested but no --disk-atlas provided and no auto atlas found." >&2
+        echo "hint: set BH_DISK_ATLAS or place atlas at $ROOT_DIR/disk_atlas.bin" >&2
+        exit 2
+      fi
+      ;;
+  esac
 fi
 
 # Canonical routing: compose backend is implied by pipeline mode.
@@ -639,6 +739,7 @@ log_item "output_size" "${TARGET_WIDTH}x${TARGET_HEIGHT}"
 log_item "render_size" "${RENDER_WIDTH}x${RENDER_HEIGHT}"
 log_item "tile_size" "$TILE_INFO"
 log_item "eta_output" "$ETA_RELAY"
+log_item "eta_history" "$ETA_HISTORY"
 if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
   if [[ -n "$TEMP_COLLISIONS" ]]; then
     log_item "collisions_out" "$COLLISIONS_OUT (temporary, unused)"

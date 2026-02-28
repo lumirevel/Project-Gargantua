@@ -45,8 +45,24 @@ struct Params {
     float  kerrRadialScale;  // Kerr ray-init radial calibration
     float  kerrAzimuthScale; // Kerr ray-init angular calibration
     float  kerrImpactScale;
-    float  _padMetric0;
-    int    _padMetric1;
+    float  diskFlowTime;
+    float  diskOrbitalBoost;
+    float  diskRadialDrift;
+    float  diskTurbulence;
+    float  diskFlowStep;
+    float  diskFlowSteps;
+    uint   diskAtlasMode;
+    uint   diskAtlasWidth;
+    uint   diskAtlasHeight;
+    uint   diskAtlasWrapPhi;
+    float  diskAtlasTempScale;
+    float  diskAtlasDensityBlend;
+    float  diskAtlasVrScale;
+    float  diskAtlasVphiScale;
+    float  diskAtlasRNormMin;
+    float  diskAtlasRNormMax;
+    float  diskAtlasRNormWarp;
+    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin texture
 };
 
 struct CollisionInfo {
@@ -57,9 +73,9 @@ struct CollisionInfo {
     float4 v_disk;       // x/y/z used, w padding
     float4 direct_world; // x/y/z used, w padding
     float  noise;        // 1단계는 0으로
-    float  _pad3_0;
-    float  _pad3_1;
-    float  _pad3_2;
+    float  emit_r_norm;  // r / rs at sampled emission point
+    float  emit_phi;     // atan2(y, x) in world disk plane
+    float  emit_z_norm;  // z / rs at sampled emission point
 };
 
 static inline float3 conv(float r, float theta, float phi) {
@@ -612,6 +628,13 @@ static inline float hash13(float3 p3) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+static inline float2 hash23(float2 p) {
+    float3 p3 = fract(float3(p.x, p.y, p.x) * float3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract(float2((p3.x + p3.y) * p3.z,
+                        (p3.x + p3.z) * p3.y));
+}
+
 static inline float noise3D(float3 p) {
     float3 i = floor(p);
     float3 f = fract(p);
@@ -648,35 +671,311 @@ static inline float fbm(float3 p) {
     return total;
 }
 
-static inline float disk_cloud_noise(float r, float phi, float z, constant Params& P) {
-    float r_norm = (r - P.rs) / max(P.re - P.rs, 1e-6);
-    float h_norm = z / max(P.he, 1e-6);
+static inline float2 disk_div_free_turbulence(float2 q, float phase) {
+    const float eps = 0.07;
+    float3 base = float3(q * 4.5, phase * 0.3);
+    float psiXm = noise3D(base + float3(-eps, 0.0, 0.0));
+    float psiXp = noise3D(base + float3( eps, 0.0, 0.0));
+    float psiYm = noise3D(base + float3(0.0, -eps, 0.0));
+    float psiYp = noise3D(base + float3(0.0,  eps, 0.0));
+    float dpsiDx = (psiXp - psiXm) / (2.0 * eps);
+    float dpsiDy = (psiYp - psiYm) / (2.0 * eps);
+    return float2(dpsiDy, -dpsiDx);
+}
 
-    float shear_speed = 15.0 / (sqrt(max(r_norm, 0.0)) + 0.1);
-    float angle = phi + shear_speed;
+static inline float disk_particle_cell_density(float2 uv, float phase) {
+    float2 cell = floor(uv);
+    float2 f = fract(uv);
+    float bestD2 = 1e9;
+    for (int oy = -1; oy <= 1; ++oy) {
+        for (int ox = -1; ox <= 1; ++ox) {
+            float2 g = float2(float(ox), float(oy));
+            float2 id = cell + g;
+            float2 jitter = hash23(id + float2(phase * 0.37, -phase * 0.23));
+            float2 center = g + jitter;
+            float2 d = f - center;
+            bestD2 = min(bestD2, dot(d, d));
+        }
+    }
+    float dist = sqrt(bestD2);
+    return smoothstep(0.62, 0.10, dist);
+}
 
-    float3 pos = float3(r_norm * 4.0 * cos(angle),
-                        r_norm * 4.0 * sin(angle),
-                        h_norm * 1.5);
+static inline float perlin_fade(float t) {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
 
-    float3 warp;
-    warp.x = fbm(pos + float3(1.2, 3.4, 0.0));
-    warp.y = fbm(pos + float3(8.3, 0.7, 0.0));
-    warp.z = fbm(pos + float3(0.1, 5.2, 0.0));
+static inline float perlin_lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
 
-    float n = fbm(pos + warp * 1.8);
+static inline uint perlin_hash2(uint x, uint y, uint seed) {
+    uint h = x * 374761393u + y * 668265263u + seed * 2246822519u + 3266489917u;
+    h ^= (h >> 13);
+    h *= 1274126177u;
+    h ^= (h >> 16);
+    return h;
+}
 
-    float radial_edge = smoothstep(0.0, 0.1, r_norm) * (1.0 - smoothstep(0.9, 1.0, r_norm));
-    // Rays are recorded at disk-entry points, so keep boundary density non-zero.
-    float vertical_edge = 1.0 - smoothstep(0.8, 1.6, abs(h_norm));
+static inline float perlin_grad2(uint h, float x, float y) {
+    switch (h & 7u) {
+        case 0u: return  x + y;
+        case 1u: return -x + y;
+        case 2u: return  x - y;
+        case 3u: return -x - y;
+        case 4u: return  x;
+        case 5u: return -x;
+        case 6u: return  y;
+        default: return -y;
+    }
+}
 
-    n = (n - 0.4) * 2.5;
+static inline int perlin_pos_mod(int x, int m) {
+    int r = x % m;
+    return (r < 0) ? (r + m) : r;
+}
 
-    return clamp(n * radial_edge * vertical_edge, 0.0, 1.0);
+static inline float perlin2_repeat(float x, float y, int repeatX, int repeatY, uint base) {
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+
+    float xf = x - float(x0);
+    float yf = y - float(y0);
+
+    int rx0 = perlin_pos_mod(x0, repeatX);
+    int ry0 = perlin_pos_mod(y0, repeatY);
+    int rx1 = perlin_pos_mod(x1, repeatX);
+    int ry1 = perlin_pos_mod(y1, repeatY);
+
+    float n00 = perlin_grad2(perlin_hash2(uint(rx0), uint(ry0), base), xf, yf);
+    float n10 = perlin_grad2(perlin_hash2(uint(rx1), uint(ry0), base), xf - 1.0, yf);
+    float n01 = perlin_grad2(perlin_hash2(uint(rx0), uint(ry1), base), xf, yf - 1.0);
+    float n11 = perlin_grad2(perlin_hash2(uint(rx1), uint(ry1), base), xf - 1.0, yf - 1.0);
+
+    float u = perlin_fade(xf);
+    float v = perlin_fade(yf);
+    float nx0 = perlin_lerp(n00, n10, u);
+    float nx1 = perlin_lerp(n01, n11, u);
+    return perlin_lerp(nx0, nx1, v);
+}
+
+static inline float disk_perlin_texture_noise(float dxy, float phi, float z, constant Params& P) {
+    float denom = max(P.re - P.rs, 1e-6);
+    float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
+
+    float spiral = phi + 1.8 * log(max(dxy / P.rs, 1.0));
+    float c = cos(spiral);
+    float s = sin(spiral);
+
+    float bx = 12.0 * u + 2.6 * c;
+    float by = 2.6 * s;
+
+    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
+    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+
+    float fbmVal = 0.0;
+    float amp = 1.0;
+    float freq = 1.0;
+    float ampSum = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        float nx = (bx + 0.20 * w1) * freq;
+        float ny = (by + 0.18 * w2) * freq;
+        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+        fbmVal += amp * n;
+        ampSum += amp;
+        amp *= 0.55;
+        freq *= 2.0;
+    }
+    fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
+
+    float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
+    float edgeIn = smoothstep(0.01, 0.08, u);
+    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
+    float radialFade = edgeIn * edgeOut;
+
+    // Normalize to [0,1] so compose path remains consistent with cloud normalization.
+    float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
+    return 0.5 + 0.5 * n;
+}
+
+static inline float disk_kepler_omega(float rRs, constant Params& P) {
+    float rr = max(rRs, 1.0001);
+    float omega = 1.0 / max(pow(rr, 1.5), 1e-6);
+    if (P.metric == 1) {
+        float a = clamp(P.spin, 0.0, 0.999);
+        float frameDrag = a / max(rr * rr * rr, 1e-6);
+        omega *= (1.0 + 0.85 * frameDrag);
+    }
+    return P.diskOrbitalBoost * omega;
+}
+
+static inline float disk_cloud_noise(float r, float phi, float z, float ctLen, constant Params& P) {
+    float rs = max(P.rs, 1e-6);
+    float reRs = max(P.re / rs, 1.02);
+    float heRs = max(P.he / rs, 1e-5);
+    float heRsSafe = max(heRs, 1e-6);
+    float spanRs = max(reRs - 1.0, 1e-6);
+
+    float rRs = clamp(r / rs, 1.0005, reRs * 1.10);
+    float phiFlow = phi;
+    float zRs = z / rs;
+
+    float accum = 0.0;
+    float wsum = 0.0;
+    float phase = P.diskFlowTime + 0.28 * (ctLen / rs);
+    int streamSteps = clamp((int)round(P.diskFlowSteps), 2, 24);
+    float baseDt = clamp(P.diskFlowStep, 0.02, 0.60);
+    const float invTwoPi = 0.5 / M_PI;
+
+    for (int i = 0; i < streamSteps; ++i) {
+        float radialNorm = clamp((rRs - 1.0) / spanRs, 0.0, 1.0);
+        float dt = baseDt * mix(0.55, 1.0, radialNorm);
+        float2 er = float2(cos(phiFlow), sin(phiFlow));
+        float2 ephi = float2(-er.y, er.x);
+        float2 q = radialNorm * er;
+        float localPhase = phase - float(i) * dt;
+
+        float2 turbPlane = disk_div_free_turbulence(q + 0.35 * ephi, localPhase);
+        float turbR = dot(turbPlane, er);
+        float turbPhi = dot(turbPlane, ephi);
+        float turbZ = 2.0 * noise3D(float3(q * 5.0, localPhase * 0.8 + 17.0)) - 1.0;
+
+        float omega = disk_kepler_omega(rRs, P);
+        omega += (0.18 * P.diskTurbulence * turbPhi) / max(rRs, 1.0);
+
+        float inward = P.diskRadialDrift * (0.35 + 0.65 * sqrt(1.0 / max(rRs, 1.0)));
+        float vR = -inward + 0.28 * P.diskTurbulence * turbR;
+        float vZ = -0.30 * (zRs / heRsSafe) + 0.22 * P.diskTurbulence * turbZ;
+
+        // Backtrace streamline so local density reflects particles flowing from upstream.
+        rRs = clamp(rRs - vR * dt, 1.0005, reRs * 1.15);
+        phiFlow -= omega * dt;
+        zRs -= vZ * dt * heRs;
+
+        float phiWrap = phiFlow * invTwoPi;
+        float azCells = mix(48.0, 180.0, 1.0 - radialNorm);
+        float2 uv = float2(radialNorm * 14.0,
+                           phiWrap * azCells + localPhase * (2.0 + 3.0 * (1.0 - radialNorm)));
+        float particle = disk_particle_cell_density(uv, localPhase + 19.3 * radialNorm);
+
+        float3 filPos = float3(q * (8.0 + 4.0 * (1.0 - radialNorm)),
+                               (zRs / heRsSafe) * 0.9);
+        filPos.z += localPhase * 0.33;
+        float fil = fbm(filPos);
+        float ridge = 1.0 - abs(2.0 * fil - 1.0);
+        float filament = smoothstep(0.38, 0.86, ridge);
+
+        float radialEdge = smoothstep(0.01, 0.10, radialNorm) * (1.0 - smoothstep(0.90, 1.0, radialNorm));
+        float verticalEdge = 1.0 - smoothstep(0.75, 1.9, abs(zRs) / heRsSafe);
+        float sample = mix(particle, filament, 0.35) * radialEdge * verticalEdge;
+
+        float w = pow(0.74, float(i));
+        accum += sample * w;
+        wsum += w;
+    }
+
+    if (!(wsum > 0.0)) return 0.0;
+    float density = accum / wsum;
+    density = pow(clamp(density, 0.0, 1.0), 0.85);
+    return density;
+}
+
+static inline uint disk_atlas_index(uint x, uint y, constant Params& P) {
+    return y * P.diskAtlasWidth + x;
+}
+
+static inline float4 disk_sample_atlas(float r, float phi, constant Params& P, device const float4* diskAtlas) {
+    if (P.diskAtlasMode == 0u || P.diskAtlasWidth == 0u || P.diskAtlasHeight == 0u) {
+        return float4(1.0, 0.0, 0.0, 1.0);
+    }
+
+    float rs = max(P.rs, 1e-6);
+    float reRs = max(P.re / rs, 1.0001);
+    float atlasRMin = max(P.diskAtlasRNormMin, 0.0);
+    float atlasRMax = max(P.diskAtlasRNormMax, atlasRMin + 1e-6);
+    if (!(atlasRMax > atlasRMin)) {
+        atlasRMin = 1.0;
+        atlasRMax = reRs;
+    }
+    float r01 = clamp((r / rs - atlasRMin) / max(atlasRMax - atlasRMin, 1e-6), 0.0, 1.0);
+    float rWarp = max(P.diskAtlasRNormWarp, 1e-3);
+    float rNorm = pow(r01, rWarp);
+    float phiNorm = phi * (0.5 / M_PI);
+    if (P.diskAtlasWrapPhi != 0u) {
+        phiNorm = fract(phiNorm);
+    } else {
+        phiNorm = clamp(phiNorm, 0.0, 1.0);
+    }
+
+    float atlasX = phiNorm * float(max(P.diskAtlasWidth - 1u, 0u));
+    float atlasY = rNorm * float(max(P.diskAtlasHeight - 1u, 0u));
+    uint x0 = uint(floor(atlasX));
+    uint y0 = uint(floor(atlasY));
+    uint x1 = (P.diskAtlasWrapPhi != 0u) ? ((x0 + 1u) % max(P.diskAtlasWidth, 1u)) : min(x0 + 1u, P.diskAtlasWidth - 1u);
+    uint y1 = min(y0 + 1u, P.diskAtlasHeight - 1u);
+    float tx = atlasX - float(x0);
+    float ty = atlasY - float(y0);
+
+    float4 a00 = diskAtlas[disk_atlas_index(x0, y0, P)];
+    float4 a10 = diskAtlas[disk_atlas_index(x1, y0, P)];
+    float4 a01 = diskAtlas[disk_atlas_index(x0, y1, P)];
+    float4 a11 = diskAtlas[disk_atlas_index(x1, y1, P)];
+    float4 a0 = mix(a00, a10, tx);
+    float4 a1 = mix(a01, a11, tx);
+    return mix(a0, a1, ty);
+}
+
+static inline void init_collision_info(thread CollisionInfo& info) {
+    info.hit = 0;
+    info.ct  = 0.0;
+    info.T   = 0.0;
+    info.v_disk = float4(0);
+    info.direct_world = float4(0);
+    info.noise = 0.0;
+    info.emit_r_norm = 0.0;
+    info.emit_phi = 0.0;
+    info.emit_z_norm = 0.0;
+}
+
+static inline float3 disk_sample_probe_pos(float3 hitPos,
+                                           float3 world0,
+                                           float3 worldPos,
+                                           constant Params& P)
+{
+    float3 segProbe = worldPos - world0;
+    float segProbeLen2 = dot(segProbe, segProbe);
+    float3 samplePos = hitPos;
+    if (segProbeLen2 > 1e-20) {
+        float3 probe = hitPos + normalize(segProbe) * (0.35 * P.he);
+        if (inside_disk_volume(probe, P)) samplePos = probe;
+    }
+    return samplePos;
+}
+
+static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
+                                             float3 samplePos,
+                                             float ctLen,
+                                             constant Params& P,
+                                             device const float4* diskAtlas)
+{
+    float sampleR = length(float2(samplePos.x, samplePos.y));
+    float phiPos = atan2(samplePos.y, samplePos.x);
+    float baseNoise = (P.diskNoiseModel == 1u)
+        ? disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P)
+        : disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
+    float atlasDensity = clamp(disk_sample_atlas(sampleR, phiPos, P, diskAtlas).y, 0.0, 1.0);
+    float densityBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
+    info.noise = mix(baseNoise, atlasDensity, densityBlend);
+    info.emit_r_norm = sampleR / max(P.rs, 1e-6);
+    info.emit_phi = phiPos;
+    info.emit_z_norm = samplePos.z / max(P.rs, 1e-6);
 }
 
 kernel void renderBH(constant Params& P [[buffer(0)]],
                      device CollisionInfo* outInfo [[buffer(1)]],
+                     device const float4* diskAtlas [[buffer(2)]],
                      uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= P.width || gid.y >= P.height) return;
@@ -705,12 +1004,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
     float3 world0 = float3(0);
 
     CollisionInfo info;
-    info.hit = 0;
-    info.ct  = 0.0;
-    info.T   = 0.0;
-    info.v_disk = float4(0);
-    info.direct_world = float4(0);
-    info.noise = 0.0;
+    init_collision_info(info);
 
     float4 p = float4(0.0, r0, M_PI * 0.5, 0.0);
     float dt   = 0.1;
@@ -722,6 +1016,8 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         float horizonRadius = P.rs * (1.0 + P.eps);
 
         for (int i=0; i<P.maxSteps; ++i) {
+            float4 pPrev = p;
+            float4 vPrev = v;
             rk4_step(p, v, P);
 
             float3 localPos = conv(p.y, p.z, p.w);
@@ -729,13 +1025,39 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
             if (hasPrev) {
                 float tEnter = 0.0;
-                if (segment_enter_disk(world0, worldPos, P, tEnter)) {
-                    float3 hitPos = mix(world0, worldPos, tEnter);
+                bool entered = false;
+                float3 hitPos = float3(0.0);
+
+                // Curved-path guard: split one Schwarzschild RK step into two half steps.
+                float4 pMid = pPrev;
+                float4 vMid = vPrev;
+                rk4_step_h(pMid, vMid, P, 0.5 * P.h);
+                float3 localMid = conv(pMid.y, pMid.z, pMid.w);
+                float3 worldMid = localMid.x * newX + localMid.y * newY + localMid.z * newZ;
+                if (segment_enter_disk(world0, worldMid, P, tEnter)) {
+                    hitPos = mix(world0, worldMid, tEnter);
+                    entered = true;
+                } else if (segment_enter_disk(worldMid, worldPos, P, tEnter)) {
+                    hitPos = mix(worldMid, worldPos, tEnter);
+                    entered = true;
+                }
+                if (!entered && segment_enter_disk(world0, worldPos, P, tEnter)) {
+                    hitPos = mix(world0, worldPos, tEnter);
+                    entered = true;
+                }
+
+                if (entered) {
                     float dxy = length(float2(hitPos.x, hitPos.y));
                     if (dxy > P.rs && dxy < P.re) {
+                        float phiHit = atan2(hitPos.y, hitPos.x);
+                        float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
                         float absV = sqrt(P.G * P.M / dxy);
-                        float3 phiVec = normalize(float3(hitPos.y, -hitPos.x, 0.0));
-                        float3 v_disk = absV * phiVec;
+                        float invDxy = 1.0 / max(dxy, 1e-6);
+                        float3 er = float3(hitPos.x * invDxy, hitPos.y * invDxy, 0.0);
+                        float3 ephi = float3(hitPos.y * invDxy, -hitPos.x * invDxy, 0.0);
+                        float vrRatio = atlas.z * P.diskAtlasVrScale;
+                        float vphiScale = max(0.0, atlas.w * P.diskAtlasVphiScale);
+                        float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
 
                         float rState = p.y;
                         float phi = p.w;
@@ -745,23 +1067,18 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                         float3 direct = normalize(worldVel);
 
                         float T0 = pow((3.0 * P.G * P.M) / (8.0 * M_PI * pow(P.rs, 3.0) * P.k), 0.25);
-                        float T  = T0 * pow(dxy / P.rs, -0.75);
+                        float T = T0 * pow(dxy / P.rs, -0.75);
+                        float tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                        T *= tempScale;
 
+                        float ctLen = P.c * p.x;
                         info.hit = 1;
-                        info.ct  = P.c * p.x;
+                        info.ct  = ctLen;
                         info.T   = T;
                         info.v_disk = float4(v_disk, 0.0);
                         info.direct_world = float4(-direct, 0.0);
-                        float3 segProbe = worldPos - world0;
-                        float segProbeLen2 = dot(segProbe, segProbe);
-                        float3 samplePos = hitPos;
-                        if (segProbeLen2 > 1e-20) {
-                            float3 probe = hitPos + normalize(segProbe) * (0.35 * P.he);
-                            if (inside_disk_volume(probe, P)) samplePos = probe;
-                        }
-                        float sampleR = length(float2(samplePos.x, samplePos.y));
-                        float phiPos = atan2(samplePos.y, samplePos.x);
-                        info.noise = disk_cloud_noise(sampleR, phiPos, samplePos.z, P);
+                        float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
+                        disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
 
                         outInfo[idx] = info;
                         return;
@@ -903,22 +1220,19 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                             float T_newtonian = T0 * pow(dxy / P.rs, -0.75);
                             float boundary_factor = pow(max(1.0 - sqrt(r_isco / r_M), 0.0), 0.25);
                             float T = T_newtonian * boundary_factor;
+                            float phiHit = atan2(hitPos.y, hitPos.x);
+                            float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
+                            float tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                            T *= tempScale;
 
+                            float ctLen = state.t * massLen;
                             info.hit = 1;
-                            info.ct  = state.t * massLen;
+                            info.ct  = ctLen;
                             info.T   = T;
                             info.v_disk = float4(g_factor, dxy, 0.0, 0.0);
                             info.direct_world = float4(-direct, 0.0);
-                            float3 segProbe = worldPos - world0;
-                            float segProbeLen2 = dot(segProbe, segProbe);
-                            float3 samplePos = hitPos;
-                            if (segProbeLen2 > 1e-20) {
-                                float3 probe = hitPos + normalize(segProbe) * (0.35 * P.he);
-                                if (inside_disk_volume(probe, P)) samplePos = probe;
-                            }
-                            float sampleR = length(float2(samplePos.x, samplePos.y));
-                            float phiPos = atan2(samplePos.y, samplePos.x);
-                            info.noise = disk_cloud_noise(sampleR, phiPos, samplePos.z, P);
+                            float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
+                            disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
 
                             outInfo[idx] = info;
                             return;
