@@ -1894,58 +1894,89 @@ static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
     float baseClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, c);
 
     float3 d = rec.direct_world.xyz;
-    float mu = abs(d.z) / max(length(d), 1e-30);
+    float dNorm = max(length(d), 1e-30);
+    float3 rayDir = d / dNorm;
+    float mu = abs(rayDir.z);
+
     float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
     float halfH = disk_half_thickness_m(rEmit, P);
-    float hScale = max(halfH / max(P.he, 1e-6), 0.25);
-    float path = (0.80 + 0.70 * hScale) / max(mu, 0.085);
     float span = max(P.re - P.rs, 1e-6);
     float u = clamp((rEmit - P.rs) / span, 0.0, 1.0);
     float innerBoost = 1.0 + 0.36 * (1.0 - smoothstep(0.06, 0.42, u));
 
+    // Use physical LOS distance through local disk volume (meters).
+    float pathMeters = (1.6 * halfH) / max(mu, 0.085);
+    pathMeters = clamp(pathMeters, 0.15 * P.rs, 3.5 * P.rs);
+    float pathRs = pathMeters / max(P.rs, 1e-6);
+
     uint nSteps = clamp(P.diskRTSteps, 0u, 32u);
     if (nSteps == 0u) {
-        float suggested = 6.0 + 0.9 * tau0 * innerBoost + 4.0 * path;
+        float suggested = 6.0 + 1.0 * tau0 * innerBoost + 4.5 * pathRs;
         nSteps = uint(clamp(suggested, 6.0, 24.0));
     }
     nSteps = max(nSteps, 4u);
 
-    float ds = path / float(nSteps);
-    float alphaBase = (tau0 * innerBoost) / max(path, 1e-6);
+    float ds = pathMeters / float(nSteps);
+    float alphaBase = (tau0 * innerBoost) / max(pathMeters, 1e-9);
     float phaseScatter = 0.5 * (1.0 + mu * mu); // Thomson-like angular term
     float3 I = rgb;
     float trans = 1.0;
     const float3 scatterTint = float3(1.08, 1.0, 0.93);
+    float rInner = disk_inner_radius_m(P);
+    float tRef = max(rec.T, 1.0);
+
+    float r0 = max(rec.emit_r_norm * P.rs, P.rs * 1.0001);
+    float phi0 = rec.emit_phi;
+    float z0 = rec.emit_z_norm * P.rs;
+    float3 emitPos = float3(r0 * cos(phi0), r0 * sin(phi0), z0);
 
     for (uint i = 0u; i < 32u; ++i) {
         if (i >= nSteps) break;
         float s = (float(i) + 0.5) / float(nSteps);
+        float signedOffset = (s - 0.5) * pathMeters;
+        float3 samplePos = emitPos + rayDir * signedOffset;
+        if (!inside_disk_volume(samplePos, P)) continue;
+
+        float sampleR = length(samplePos.xy);
+        float samplePhi = atan2(samplePos.y, samplePos.x);
+        float sampleZ = samplePos.z;
+        float ctLocal = rec.ct + signedOffset;
+
+        float localCloud = disk_cloud_noise(sampleR, samplePhi, sampleZ, ctLocal, P);
+        if (P.diskNoiseModel == 1u) {
+            float perlin = disk_perlin_texture_noise(sampleR, samplePhi, sampleZ, P);
+            localCloud = 0.55 * localCloud + 0.45 * clamp(0.5 + 0.5 * perlin, 0.0, 1.0);
+        }
         float phase = 2.0 * s - 1.0;
-        float seedA = comp_hash13(float3(73.1 * rec.emit_r_norm + 0.41 * rec.emit_phi + 1.9 * phase,
-                                         13.7 * rec.emit_phi + 27.3 * rec.emit_z_norm + 3.7 * phase,
-                                         5.1 * cloudRaw + rec.emit_r_norm * 9.0));
-        float seedB = comp_hash13(float3(41.9 * rec.emit_r_norm - 0.61 * rec.emit_phi - 2.7 * phase,
-                                         9.3 * rec.emit_phi + 33.1 * rec.emit_z_norm - 5.1 * phase,
-                                         7.7 * cloudRaw + rec.emit_z_norm * 12.0));
-        float localCloud = clamp(0.62 * seedA + 0.38 * seedB + 0.30 * (c - 0.5), 0.0, 1.0);
+        float jitter = comp_hash13(float3(21.0 * sampleR / max(P.rs, 1e-6) + 13.0 * phase,
+                                          9.0 * samplePhi - 7.0 * phase,
+                                          15.0 * sampleZ / max(P.rs, 1e-6) + 3.0 * localCloud));
+        localCloud = clamp(0.84 * localCloud + 0.16 * jitter, 0.0, 1.0);
+
         float localClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, localCloud);
-        float holeField = comp_hash13(float3(19.1 * rec.emit_r_norm + 11.0 * phase,
-                                             23.0 * rec.emit_phi - 7.0 * phase,
-                                             17.0 * rec.emit_z_norm + 13.0 * localCloud));
+        float holeField = comp_hash13(float3(19.1 * sampleR / max(P.rs, 1e-6) + 11.0 * phase,
+                                             23.0 * samplePhi - 7.0 * phase,
+                                             17.0 * sampleZ / max(P.rs, 1e-6) + 13.0 * localCloud));
         float holeThreshold = porosity * mix(0.94, 0.36, localClump);
         float occupied = smoothstep(holeThreshold - 0.07, holeThreshold + 0.07, holeField);
         float fill = clamp(localClump * occupied, 0.0, 1.0);
         fill = mix(fill, localClump, 0.18);
 
-        float density = mix(0.10, 1.0, fill);
+        float density = mix(0.06, 1.0, fill);
         float dTau = min(alphaBase * density * ds, 3.5);
         float stepTrans = exp(-dTau);
         float absorbed = 1.0 - stepTrans;
-        float3 thermalSrc = rgb * (0.14 + 0.86 * fill);
+
+        float tStep = disk_effective_temperature(sampleR, rInner, P);
+        tStep *= disk_precision_texture_factor(sampleR, samplePhi, sampleZ, P);
+        float tRatio = pow(clamp(tStep / tRef, 0.04, 12.0), 4.0);
+
+        float3 thermalSrc = rgb * tRatio * (0.10 + 0.90 * fill);
         float scatterAmp = (0.10 + 0.90 * phaseScatter) * (0.20 + 0.80 * fill);
         float lumI = dot(I, float3(0.2126, 0.7152, 0.0722));
         float3 scatterSrc = scatterTint * lumI * scatterAmp;
         float3 source = mix(thermalSrc, scatterSrc, albedo);
+
         I = I * stepTrans + source * absorbed;
         trans *= stepTrans;
     }
