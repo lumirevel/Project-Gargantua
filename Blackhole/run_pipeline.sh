@@ -107,6 +107,11 @@ VERIFY_OUT=""
 VERIFY_MAX_RMSE=""
 VERIFY_MAX_REL_L2=""
 VERIFY_MASK_LUMA=""
+STOKES_OUT=""
+STOKES_PNG=""
+STOKES_POL_FRAC=""
+STOKES_FARADAY=""
+STOKES_PITCH_DEG=""
 
 case "$ETA_RELAY" in
   always|errors|none) ;;
@@ -390,6 +395,11 @@ Output controls:
 - --verify-max-rmse <x>: optional verification fail threshold
 - --verify-max-rel-l2 <x>: optional verification fail threshold
 - --verify-mask-luma <0..1>: compare only pixels above reference luma threshold
+- --stokes-out <path>: post-render Stokes(I,Q,U) diagnostic JSON
+- --stokes-png <path>: optional polarization-fraction heatmap PNG
+- --stokes-pol-frac <0..1>: intrinsic polarization fraction (default 0.25)
+- --stokes-faraday <x>: Faraday depolarization strength (default 1.0)
+- --stokes-pitch-deg <deg>: magnetic pitch angle for diagnostic model (default 10)
 
 Special mode:
 - stage3-ab (or --stage3-ab): run stage-3 A/B automation in one shot
@@ -509,6 +519,36 @@ while [[ "$#" -gt 0 ]]; do
     --verify-mask-luma)
       need_value "$arg" "$@"
       VERIFY_MASK_LUMA="$1"
+      shift
+      continue
+      ;;
+    --stokes-out)
+      need_value "$arg" "$@"
+      STOKES_OUT="$1"
+      shift
+      continue
+      ;;
+    --stokes-png)
+      need_value "$arg" "$@"
+      STOKES_PNG="$1"
+      shift
+      continue
+      ;;
+    --stokes-pol-frac)
+      need_value "$arg" "$@"
+      STOKES_POL_FRAC="$1"
+      shift
+      continue
+      ;;
+    --stokes-faraday)
+      need_value "$arg" "$@"
+      STOKES_FARADAY="$1"
+      shift
+      continue
+      ;;
+    --stokes-pitch-deg)
+      need_value "$arg" "$@"
+      STOKES_PITCH_DEG="$1"
       shift
       continue
       ;;
@@ -1654,6 +1694,12 @@ if [[ "$COMPOSE_BACKEND" == "python" && ( "$DISK_PHYSICS_MODE_VALUE" == "precisi
   exit 2
 fi
 
+if [[ -n "$STOKES_OUT" && "$COLLISIONS_MODE" != "debug" ]]; then
+  echo "info: enabling --collisions debug for Stokes diagnostics output." >&2
+  COLLISIONS_MODE="debug"
+  MODE="debug"
+fi
+
 case "$COLLISIONS_MODE" in
   debug)
     COLLISIONS_POLICY="keep"
@@ -1848,6 +1894,12 @@ if [[ -n "$VERIFY_REF" ]]; then
     log_item "verify_out" "$VERIFY_OUT"
   fi
 fi
+if [[ -n "$STOKES_OUT" ]]; then
+  log_item "stokes_out" "$STOKES_OUT"
+  if [[ -n "$STOKES_PNG" ]]; then
+    log_item "stokes_png" "$STOKES_PNG"
+  fi
+fi
 
 if [[ -n "$MAX_STEPS_VALUE" ]]; then
   ETA_MAX_STEPS="$MAX_STEPS_VALUE"
@@ -2023,8 +2075,47 @@ if [[ -n "$VERIFY_REF" ]]; then
   "${VERIFY_CMD[@]}"
 fi
 
+if [[ -n "$STOKES_OUT" ]]; then
+  STOKES_SCRIPT="$ROOT_DIR/scripts/compute_stokes_from_collisions.py"
+  if [[ ! -f "$STOKES_SCRIPT" ]]; then
+    echo "error: stokes script not found: $STOKES_SCRIPT" >&2
+    exit 2
+  fi
+  if [[ ! -f "$COLLISIONS_OUT" || ! -f "$COLLISIONS_OUT.json" ]]; then
+    echo "error: Stokes diagnostics require collision outputs (.bin + .json)." >&2
+    echo "hint: rerun with --collisions debug (auto-enabled with --stokes-out)." >&2
+    exit 2
+  fi
+  STOKES_CMD=(
+    "$PYTHON_BIN" "$STOKES_SCRIPT"
+    --input "$COLLISIONS_OUT"
+    --meta "$COLLISIONS_OUT.json"
+    --output-json "$STOKES_OUT"
+  )
+  if [[ -n "$STOKES_PNG" ]]; then
+    STOKES_CMD+=(--output-png "$STOKES_PNG")
+  fi
+  if [[ -n "$STOKES_POL_FRAC" ]]; then
+    STOKES_CMD+=(--pol-frac "$STOKES_POL_FRAC")
+  fi
+  if [[ -n "$STOKES_FARADAY" ]]; then
+    STOKES_CMD+=(--faraday "$STOKES_FARADAY")
+  fi
+  if [[ -n "$STOKES_PITCH_DEG" ]]; then
+    STOKES_CMD+=(--pitch-deg "$STOKES_PITCH_DEG")
+  fi
+  log_section "Stage - Stokes"
+  "${STOKES_CMD[@]}"
+fi
+
 log_section "Outputs"
 log_item "image" "$IMAGE_OUT"
+if [[ -n "$STOKES_OUT" ]]; then
+  log_item "stokes" "$STOKES_OUT"
+fi
+if [[ -n "$STOKES_PNG" ]]; then
+  log_item "stokes_png" "$STOKES_PNG"
+fi
 if [[ "$COLLISIONS_MODE" == "none" ]]; then
   :
 elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
