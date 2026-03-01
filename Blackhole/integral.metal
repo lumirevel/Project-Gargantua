@@ -38,7 +38,7 @@ struct Params {
 
     float  eps;        // horizon guard (예: 1e-5)
     int    metric;     // 0=schwarzschild, 1=kerr
-    float  spin;       // a/M in [0,1)
+    float  spin;       // a/M in [-1,1)
     int    kerrSubsteps;
     float  kerrTol;    // adaptive RK45 relative tolerance
     float  kerrEscapeMult;
@@ -49,6 +49,12 @@ struct Params {
     float  diskOrbitalBoost;
     float  diskRadialDrift;
     float  diskTurbulence;
+    float  diskOrbitalBoostInner;
+    float  diskOrbitalBoostOuter;
+    float  diskRadialDriftInner;
+    float  diskRadialDriftOuter;
+    float  diskTurbulenceInner;
+    float  diskTurbulenceOuter;
     float  diskFlowStep;
     float  diskFlowSteps;
     uint   diskAtlasMode;
@@ -63,6 +69,22 @@ struct Params {
     float  diskAtlasRNormMax;
     float  diskAtlasRNormWarp;
     uint   diskNoiseModel; // 0=streamline cloud, 1=perlin texture
+    float  diskMdotEdd;    // mdot / mdot_edd
+    float  diskRadiativeEfficiency; // thin-disk eta
+    uint   diskPhysicsMode; // 0=thin, 1=thick/plasma, 2=precision-nt
+    float  diskPlungeFloor; // inner plunging emissivity floor (thick/precision)
+    float  diskThickScale;  // thick-mode vertical half-thickness multiplier
+    float  diskColorFactor; // hardening factor f_col (precision mode)
+    float  diskReturningRad; // returning-radiation boost strength (precision)
+    float  diskPrecisionTexture; // micro texture amplitude (precision)
+    float  diskCloudCoverage; // clump covering fraction (precision clouds)
+    float  diskCloudOpticalDepth; // reference LOS optical depth
+    float  diskCloudPorosity; // empty-gap probability control
+    float  diskCloudShadowStrength; // attenuation blend strength
+    uint   diskReturnBounces; // returning-radiation bounce order (precision)
+    uint   diskRTSteps; // volumetric RT march steps (0=adaptive)
+    float  diskScatteringAlbedo; // scattering albedo for precision clouds
+    float  _padPhysics;
 };
 
 struct CollisionInfo {
@@ -107,7 +129,7 @@ static inline float4 kerr_equatorial_accel(float4 p, float4 v, constant Params& 
     float r = max(p.y, P.rs * (1.0 + P.eps));
     float rs = P.rs;
     float c = P.c;
-    float a = clamp(P.spin, 0.0, 0.999) * (0.5 * rs);
+    float a = clamp(P.spin, -0.999, 0.999) * (0.5 * rs);
 
     float dt = v.x;
     float dr = v.y;
@@ -510,13 +532,7 @@ static inline bool kerr_init_hamiltonian(const float3 camPos,
     float nr = dot(dirWorld, eR);
     float nth = dot(dirWorld, eTheta);
     float nphi = dot(dirWorld, ePhi);
-    const float focusRange = 0.50;
-    float diskHNorm = P.he / max(P.rs, 1e-6);
-    float thinBlend = clamp((diskHNorm - 0.02) / 0.06, 0.0, 1.0);
-    float focusStrength = 0.25 * thinBlend;
-    float tangent = sqrt(max(nth * nth + nphi * nphi, 1e-12));
-    float focus = clamp((focusRange - tangent) / focusRange, 0.0, 1.0);
-    float radialScale = max(P.kerrRadialScale, 0.01) * (1.0 - focusStrength * focus);
+    float radialScale = max(P.kerrRadialScale, 0.01);
     float angularScaleInit = max(P.kerrAzimuthScale, 0.01);
     nr *= radialScale;
     nth *= angularScaleInit;
@@ -554,10 +570,6 @@ static inline bool kerr_init_hamiltonian(const float3 camPos,
     state.ptheta = (cov.gthetatheta * kth) / E;
     Lz = p_phi / E;
 
-    float angularScale = max(P.kerrImpactScale, 0.05);
-    Lz *= angularScale;
-    state.ptheta *= angularScale;
-
     KerrInvMetric inv = kerr_inv_metric(state.r, state.theta, a);
     float rest = inv.gtt
                + 2.0 * inv.gtphi * (-Lz)
@@ -571,9 +583,281 @@ static inline bool kerr_init_hamiltonian(const float3 camPos,
     return true;
 }
 
+static inline float disk_kerr_isco_M(float a) {
+    float aSafe = clamp(a, -0.999, 0.999);
+    float a2 = aSafe * aSafe;
+    float z1 = 1.0 + pow(max(1.0 - a2, 0.0), 1.0 / 3.0) * (pow(1.0 + aSafe, 1.0 / 3.0) + pow(1.0 - aSafe, 1.0 / 3.0));
+    float z2 = sqrt(max(3.0 * a2 + z1 * z1, 0.0));
+    float sgn = (aSafe >= 0.0) ? 1.0 : -1.0;
+    return 3.0 + z2 - sgn * sqrt(max((3.0 - z1) * (3.0 + z1 + 2.0 * z2), 0.0));
+}
+
+static inline float disk_horizon_radius_m(constant Params& P);
+
+static inline float disk_inner_radius_m(constant Params& P) {
+    if (P.metric == 0) {
+        // Schwarzschild prograde ISCO = 6M = 3rs.
+        return 3.0 * P.rs;
+    }
+    float massLen = 0.5 * P.rs;
+    float rI = disk_kerr_isco_M(clamp(P.spin, -0.999, 0.999)) * massLen;
+    float rH = disk_horizon_radius_m(P);
+    // Keep ISCO physically valid even when r_isco < rs at high prograde spin.
+    return max(rI, rH * (1.0 + 16.0 * P.eps));
+}
+
+static inline float disk_horizon_radius_m(constant Params& P) {
+    if (P.metric == 0) return P.rs;
+    float a = clamp(abs(P.spin), 0.0, 0.999);
+    float massLen = 0.5 * P.rs;
+    float rPlusM = 1.0 + sqrt(max(1.0 - a * a, 0.0));
+    return max(rPlusM * massLen, 0.25 * P.rs);
+}
+
+static inline float disk_emit_min_radius_m(constant Params& P) {
+    float rIn = disk_inner_radius_m(P);
+    if (P.diskPhysicsMode == 2u) {
+        float plungeFloor = clamp(P.diskPlungeFloor, 0.0, 1.0);
+        if (!(plungeFloor > 1e-6)) return rIn;
+        float rH = disk_horizon_radius_m(P);
+        float rPlungeMin = max(rH * (1.0 + 6.0 * P.eps), 0.90 * P.rs);
+        float w = clamp(plungeFloor * 1.8, 0.0, 1.0);
+        return mix(rIn, rPlungeMin, w);
+    }
+    if (P.diskPhysicsMode != 1u) return rIn;
+    float rH = disk_horizon_radius_m(P);
+    // Thick mode can emit inside ISCO, but avoid pushing too close to horizon by default.
+    return max(rH * (1.0 + 6.0 * P.eps), 0.80 * P.rs);
+}
+
+static inline float disk_half_thickness_m(float rEmitM, constant Params& P) {
+    if (P.diskPhysicsMode != 1u) return P.he;
+    float rr = rEmitM / max(P.rs, 1e-6);
+    // Thicker around inner/mid disk, taper near horizon and far outer edge.
+    float innerRamp = smoothstep(0.9, 1.6, rr);
+    float outerRamp = 1.0 - smoothstep(4.0, 9.0, rr);
+    float band = clamp(innerRamp * outerRamp, 0.0, 1.0);
+    float thickMul = 1.0 + (max(P.diskThickScale, 1.0) - 1.0) * band;
+    return max(P.he * thickMul, P.he);
+}
+
+static inline float disk_nt_flux_shape(float rM, float rMsM, float a) {
+    if (!(rM > rMsM)) return 0.0;
+    float aSafe = clamp(a, -0.999, 0.999);
+    float x = sqrt(max(rM, 1e-12));
+    float x0 = sqrt(max(rMsM, 1e-12));
+    float psi = acos(clamp(aSafe, -0.999999, 0.999999)) / 3.0;
+    float x1 =  2.0 * cos(psi - M_PI / 3.0);
+    float x2 =  2.0 * cos(psi + M_PI / 3.0);
+    float x3 = -2.0 * cos(psi);
+    float f0 = x - x0 - 1.5 * aSafe * log(max(x / max(x0, 1e-12), 1e-12));
+    float d1 = x1 * (x1 - x2) * (x1 - x3);
+    float d2 = x2 * (x2 - x1) * (x2 - x3);
+    float d3 = x3 * (x3 - x1) * (x3 - x2);
+    d1 = (abs(d1) > 1e-12) ? d1 : copysign(1e-12, d1);
+    d2 = (abs(d2) > 1e-12) ? d2 : copysign(1e-12, d2);
+    d3 = (abs(d3) > 1e-12) ? d3 : copysign(1e-12, d3);
+    float t1 = 3.0 * pow(x1 - aSafe, 2.0) / d1;
+    float t2 = 3.0 * pow(x2 - aSafe, 2.0) / d2;
+    float t3 = 3.0 * pow(x3 - aSafe, 2.0) / d3;
+    float e1 = (abs(x0 - x1) > 1e-12) ? (x0 - x1) : copysign(1e-12, x0 - x1);
+    float e2 = (abs(x0 - x2) > 1e-12) ? (x0 - x2) : copysign(1e-12, x0 - x2);
+    float e3 = (abs(x0 - x3) > 1e-12) ? (x0 - x3) : copysign(1e-12, x0 - x3);
+    float l1 = log(max((x - x1) / e1, 1e-12));
+    float l2 = log(max((x - x2) / e2, 1e-12));
+    float l3 = log(max((x - x3) / e3, 1e-12));
+    float q = f0 - t1 * l1 - t2 * l2 - t3 * l3;
+    float den = max(4.0 * M_PI * rM * x * x * (x * x * x - 3.0 * x + 2.0 * aSafe), 1e-12);
+    float fpt = 1.5 * q / den;
+    return (isfinite(fpt) && (fpt > 0.0)) ? fpt : 0.0;
+}
+
+static inline float disk_nt_flux_correction(float rM, float rMsM, float a) {
+    if (!(rM > rMsM)) return 0.0;
+    float fpt = disk_nt_flux_shape(rM, rMsM, a);
+    if (!(fpt > 0.0)) return 0.0;
+    float fnt = (3.0 / (8.0 * M_PI)) * pow(max(rM, 1e-9), -3.0) * max(1.0 - sqrt(rMsM / rM), 0.0);
+    if (!(fnt > 0.0)) return 0.0;
+    float corr = fpt / fnt;
+    if (!isfinite(corr)) return 0.0;
+    return clamp(corr, 0.0, 8.0);
+}
+
+static inline float disk_effective_temperature(float rEmitM, float rInnerM, constant Params& P) {
+    const float sigmaSB = 5.670374419e-8;
+    const float kappaEs = 0.04;
+    // Evaluate F(r) in dimensionless r/rs form to avoid float overflow.
+    // F = (3/8) * (mdotEdd/eta) * c^3/(kappa_es * rs) * rr^-3 * (1 - sqrt(rr_in/rr))
+    float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
+    float mdotNorm = max(P.diskMdotEdd, 1e-5);
+    float rsSafe = max(P.rs, 1e-6);
+    float rr = max(rEmitM / rsSafe, 1.0 + 1e-6);
+    float rrIn = max(rInnerM / rsSafe, 1.0);
+    float pref = (3.0 / 8.0) * (mdotNorm / eta) * (P.c * P.c * P.c) / max(kappaEs * rsSafe, 1e-20);
+    if (rr > rrIn) {
+        float boundary = max(1.0 - sqrt(rrIn / rr), 0.0);
+        float flux = pref * pow(rr, -3.0) * boundary;
+        if (P.diskPhysicsMode == 2u) {
+            float massLen = 0.5 * rsSafe;
+            float rM = rEmitM / max(massLen, 1e-12);
+            float rMsM = rInnerM / max(massLen, 1e-12);
+            float a = (P.metric == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+            float rel = disk_nt_flux_correction(rM, rMsM, a);
+            flux *= rel;
+        }
+        float t4 = flux / sigmaSB;
+        if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
+        float tEff = pow(t4, 0.25);
+        if (P.diskPhysicsMode == 2u) {
+            float fCol = max(P.diskColorFactor, 1.0);
+            return tEff * fCol;
+        }
+        return tEff;
+    }
+    if (P.diskPhysicsMode == 2u) {
+        float plungeFloor = clamp(P.diskPlungeFloor, 0.0, 1.0);
+        if (!(plungeFloor > 1e-6)) return 0.0;
+
+        // Precision mode: allow weak plunging emission continuation inside ISCO.
+        // This keeps NT-like behavior outside ISCO while avoiding an artificial hard void.
+        float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
+        float rrH = max(rH / rsSafe, 0.2);
+        float rrAnchor = rrIn * 1.02;
+        float boundaryAnchor = max(1.0 - sqrt(rrIn / rrAnchor), 0.0);
+        float fluxAnchor = pref * pow(rrAnchor, -3.0) * boundaryAnchor;
+        float tAnchor = pow(max(fluxAnchor / sigmaSB, 1e-20), 0.25);
+        if (!isfinite(tAnchor)) tAnchor = 0.0;
+
+        float x = clamp((rr - rrH) / max(rrIn - rrH, 1e-6), 0.0, 1.0);
+        float xSoft = smoothstep(0.0, 1.0, x);
+        float captureProfile = pow(max(xSoft, 1e-4), 2.8);
+        float floorProfile = pow(max(xSoft, 1e-4), 1.1);
+        float plungeMix = plungeFloor * floorProfile + (1.0 - plungeFloor) * captureProfile;
+        float advectiveCool = pow(max(rr / max(rrIn, 1e-4), 1e-4), 1.35);
+        float captureFade = smoothstep(0.20, 0.90, xSoft);
+
+        float fCol = max(P.diskColorFactor, 1.0);
+        float tPlunge = max(tAnchor * plungeMix * advectiveCool * captureFade * fCol, 0.0);
+        return isfinite(tPlunge) ? tPlunge : 0.0;
+    }
+
+    if (P.diskPhysicsMode != 1u) return 0.0;
+
+    // Thick mode: finite but smooth plunging emissivity continuation inside ISCO.
+    float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
+    float rrH = max(rH / rsSafe, 0.2);
+    float rrAnchor = rrIn * 1.03;
+    float boundaryAnchor = max(1.0 - sqrt(rrIn / rrAnchor), 0.0);
+    float fluxAnchor = pref * pow(rrAnchor, -3.0) * boundaryAnchor;
+    float tAnchor = pow(max(fluxAnchor / sigmaSB, 1e-20), 0.25);
+    if (!isfinite(tAnchor)) tAnchor = 0.0;
+
+    float x = clamp((rr - rrH) / max(rrIn - rrH, 1e-6), 0.0, 1.0);
+    float xSoft = smoothstep(0.0, 1.0, x);
+    float plungeFloor = clamp(P.diskPlungeFloor, 0.0, 1.0);
+    // Suppress horizon-proximate emission more strongly, while keeping a tunable floor.
+    float captureProfile = pow(max(xSoft, 1e-4), 2.3);
+    float floorProfile = max(xSoft, 1e-4);
+    float plungeMix = plungeFloor * floorProfile + (1.0 - plungeFloor) * captureProfile;
+    float advectiveCool = pow(max(rr / max(rrIn, 1e-4), 1e-4), 1.1);
+    float captureFade = smoothstep(0.15, 0.80, xSoft);
+    float thickT = max(tAnchor * plungeMix * advectiveCool * captureFade, 0.0);
+    return isfinite(thickT) ? thickT : 0.0;
+}
+
+static inline bool disk_schwarzschild_circular_constants(float rM,
+                                                         thread float& E,
+                                                         thread float& L)
+{
+    if (!(rM > 3.01)) return false;
+    float den = sqrt(max(rM * (rM - 3.0), 1e-12));
+    E = (rM - 2.0) / den;
+    L = rM / sqrt(max(rM - 3.0, 1e-12));
+    return isfinite(E) && isfinite(L) && (E > 0.0);
+}
+
+static inline bool disk_schwarzschild_plunge_local_beta(float rM,
+                                                        float rMsM,
+                                                        thread float& betaR,
+                                                        thread float& betaPhi)
+{
+    betaR = 0.0;
+    betaPhi = 0.0;
+    float Ems = 0.0;
+    float Lms = 0.0;
+    if (!disk_schwarzschild_circular_constants(rMsM, Ems, Lms)) return false;
+    float w = 1.0 - 2.0 / max(rM, 1e-6);
+    if (!(w > 1e-8)) return false;
+    float ur2 = Ems * Ems - w * (1.0 + (Lms * Lms) / max(rM * rM, 1e-12));
+    if (!(ur2 >= 0.0)) ur2 = 0.0;
+    float ur = -sqrt(max(ur2, 0.0)); // inward plunge
+    float ut = Ems / w;
+    if (!(ut > 1e-8)) return false;
+    float uphi = Lms / max(rM * rM, 1e-12);
+    float drdt = ur / ut;
+    betaR = drdt / w;
+    betaPhi = (rM * uphi / ut) / sqrt(max(w, 1e-12));
+    float beta2 = betaR * betaR + betaPhi * betaPhi;
+    if (!isfinite(beta2)) return false;
+    if (beta2 > 0.999 * 0.999) {
+        float scale = 0.999 / sqrt(max(beta2, 1e-12));
+        betaR *= scale;
+        betaPhi *= scale;
+    }
+    return true;
+}
+
+static inline bool disk_kerr_circular_constants(float rM,
+                                                float a,
+                                                thread float& E,
+                                                thread float& L)
+{
+    float rr = max(rM, 1e-6);
+    float x = sqrt(rr);
+    float denTerm = rr * x - 3.0 * x + 2.0 * a;
+    if (!(denTerm > 1e-10)) return false;
+    float den = pow(rr, 0.75) * sqrt(denTerm);
+    if (!(den > 1e-12)) return false;
+    E = (rr * x - 2.0 * x + a) / den;
+    L = (rr * rr - 2.0 * a * x + a * a) / den;
+    return isfinite(E) && isfinite(L) && (E > 0.0);
+}
+
+static inline bool disk_kerr_plunge_kinematics(float rM,
+                                               float rMsM,
+                                               float a,
+                                               thread float& omega,
+                                               thread float& drdt,
+                                               thread float& vrRatioOut)
+{
+    float Ems = 0.0;
+    float Lms = 0.0;
+    if (!disk_kerr_circular_constants(rMsM, a, Ems, Lms)) return false;
+    KerrCovMetric cov = kerr_cov_metric(rM, 0.5 * M_PI, a);
+    float det = cov.gtphi * cov.gtphi - cov.gtt * cov.gphiphi;
+    if (!(det > 1e-12)) return false;
+    float ut = (Ems * cov.gphiphi + Lms * cov.gtphi) / det;
+    float uphi = (-Ems * cov.gtphi - Lms * cov.gtt) / det;
+    if (!(ut > 1e-8) || !isfinite(uphi)) return false;
+    float ur2Num = -1.0
+                 - cov.gtt * ut * ut
+                 - 2.0 * cov.gtphi * ut * uphi
+                 - cov.gphiphi * uphi * uphi;
+    float ur2 = ur2Num / max(cov.grr, 1e-12);
+    float ur = -sqrt(max(ur2, 0.0)); // inward plunge
+    omega = uphi / ut;
+    drdt = ur / ut;
+    if (!isfinite(omega) || !isfinite(drdt)) return false;
+    float vrRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+    vrRatioOut = clamp(drdt / max(vrRef, 1e-6), -1.0, 1.0);
+    return true;
+}
+
 static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     float dxy = length(float2(pos.x, pos.y));
-    return (dxy > P.rs && dxy < P.re && abs(pos.z) < P.he);
+    float rMin = disk_emit_min_radius_m(P);
+    float halfH = disk_half_thickness_m(dxy, P);
+    return (dxy > rMin && dxy < P.re && abs(pos.z) < halfH);
 }
 
 static inline bool segment_enter_disk(float3 p0,
@@ -800,15 +1084,50 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
     return 0.5 + 0.5 * n;
 }
 
+static inline float disk_precision_texture_factor(float dxy, float phi, float z, constant Params& P) {
+    float amp = clamp(P.diskPrecisionTexture, 0.0, 1.0);
+    if (!(amp > 1e-6)) return 1.0;
+    float base = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
+    float centered = 2.0 * base - 1.0;
+    float rsSafe = max(P.rs, 1e-6);
+    float rr = dxy / rsSafe;
+    float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(10.0, 18.0, rr));
+    float vertical = exp(-abs(z) / max(1.5 * P.he, 1e-6));
+    float phaseWave = sin(7.0 * phi + 0.55 * log(max(rr, 1.0)));
+    float micro = 0.72 * centered + 0.28 * phaseWave;
+    float fac = 1.0 + (0.48 * amp * radial * vertical) * micro;
+    return clamp(fac, 0.20, 2.10);
+}
+
+static inline float disk_flow_radial_mix(float rRs, constant Params& P) {
+    float reRs = max(P.re / max(P.rs, 1e-6), 1.02);
+    float x = clamp((rRs - 1.0) / max(reRs - 1.0, 1e-6), 0.0, 1.0);
+    return smoothstep(0.0, 1.0, x);
+}
+
+static inline float disk_orbital_boost_at_r(float rRs, constant Params& P) {
+    float t = disk_flow_radial_mix(rRs, P);
+    return mix(P.diskOrbitalBoostInner, P.diskOrbitalBoostOuter, t);
+}
+
+static inline float disk_radial_drift_at_r(float rRs, constant Params& P) {
+    float t = disk_flow_radial_mix(rRs, P);
+    return mix(P.diskRadialDriftInner, P.diskRadialDriftOuter, t);
+}
+
+static inline float disk_turbulence_at_r(float rRs, constant Params& P) {
+    float t = disk_flow_radial_mix(rRs, P);
+    return mix(P.diskTurbulenceInner, P.diskTurbulenceOuter, t);
+}
+
 static inline float disk_kepler_omega(float rRs, constant Params& P) {
     float rr = max(rRs, 1.0001);
     float omega = 1.0 / max(pow(rr, 1.5), 1e-6);
     if (P.metric == 1) {
-        float a = clamp(P.spin, 0.0, 0.999);
-        float frameDrag = a / max(rr * rr * rr, 1e-6);
-        omega *= (1.0 + 0.85 * frameDrag);
+        float a = clamp(P.spin, -0.999, 0.999);
+        omega = 1.0 / max(pow(rr, 1.5) + a, 1e-6);
     }
-    return P.diskOrbitalBoost * omega;
+    return disk_orbital_boost_at_r(rr, P) * omega;
 }
 
 static inline float disk_cloud_noise(float r, float phi, float z, float ctLen, constant Params& P) {
@@ -841,13 +1160,14 @@ static inline float disk_cloud_noise(float r, float phi, float z, float ctLen, c
         float turbR = dot(turbPlane, er);
         float turbPhi = dot(turbPlane, ephi);
         float turbZ = 2.0 * noise3D(float3(q * 5.0, localPhase * 0.8 + 17.0)) - 1.0;
+        float turbAmp = disk_turbulence_at_r(rRs, P);
 
         float omega = disk_kepler_omega(rRs, P);
-        omega += (0.18 * P.diskTurbulence * turbPhi) / max(rRs, 1.0);
+        omega += (0.18 * turbAmp * turbPhi) / max(rRs, 1.0);
 
-        float inward = P.diskRadialDrift * (0.35 + 0.65 * sqrt(1.0 / max(rRs, 1.0)));
-        float vR = -inward + 0.28 * P.diskTurbulence * turbR;
-        float vZ = -0.30 * (zRs / heRsSafe) + 0.22 * P.diskTurbulence * turbZ;
+        float inward = disk_radial_drift_at_r(rRs, P) * (0.35 + 0.65 * sqrt(1.0 / max(rRs, 1.0)));
+        float vR = -inward + 0.28 * turbAmp * turbR;
+        float vZ = -0.30 * (zRs / heRsSafe) + 0.22 * turbAmp * turbZ;
 
         // Backtrace streamline so local density reflects particles flowing from upstream.
         rRs = clamp(rRs - vR * dt, 1.0005, reRs * 1.15);
@@ -967,6 +1287,16 @@ static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
         : disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
     float atlasDensity = clamp(disk_sample_atlas(sampleR, phiPos, P, diskAtlas).y, 0.0, 1.0);
     float densityBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
+    if (P.diskPhysicsMode == 1u) {
+        float rH = disk_horizon_radius_m(P);
+        float rIn = disk_inner_radius_m(P);
+        float x = clamp((sampleR - rH) / max(rIn - rH, 1e-6), 0.0, 1.0);
+        float xSoft = smoothstep(0.0, 1.0, x);
+        float plungeKeep = smoothstep(0.20, 0.95, xSoft);
+        // Reduce high-contrast texture inside plunging region to avoid stitched center look.
+        baseNoise = mix(0.12, baseNoise, plungeKeep);
+        densityBlend *= plungeKeep;
+    }
     info.noise = mix(baseNoise, atlasDensity, densityBlend);
     info.emit_r_norm = sampleR / max(P.rs, 1e-6);
     info.emit_phi = phiPos;
@@ -1014,6 +1344,8 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
     if (P.metric == 0) {
         float horizonRadius = P.rs * (1.0 + P.eps);
+        float diskInner = disk_inner_radius_m(P);
+        float diskEmitMin = disk_emit_min_radius_m(P);
 
         for (int i=0; i<P.maxSteps; ++i) {
             float4 pPrev = p;
@@ -1048,16 +1380,37 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
                 if (entered) {
                     float dxy = length(float2(hitPos.x, hitPos.y));
-                    if (dxy > P.rs && dxy < P.re) {
+                    if (dxy > diskEmitMin && dxy < P.re) {
                         float phiHit = atan2(hitPos.y, hitPos.x);
                         float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
                         float absV = sqrt(P.G * P.M / dxy);
                         float invDxy = 1.0 / max(dxy, 1e-6);
                         float3 er = float3(hitPos.x * invDxy, hitPos.y * invDxy, 0.0);
                         float3 ephi = float3(hitPos.y * invDxy, -hitPos.x * invDxy, 0.0);
-                        float vrRatio = atlas.z * P.diskAtlasVrScale;
-                        float vphiScale = max(0.0, atlas.w * P.diskAtlasVphiScale);
+                        float vrRatio = 0.0;
+                        float vphiScale = 1.0;
+                        float tempScale = 1.0;
+                        if (P.diskPhysicsMode != 2u) {
+                            vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
+                            vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
+                            tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                        }
                         float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
+                        if (P.diskPhysicsMode != 0u && dxy < diskInner * (1.0 - 1e-4)) {
+                            float massLen = 0.5 * P.rs;
+                            float rM = dxy / max(massLen, 1e-12);
+                            float rMsM = diskInner / max(massLen, 1e-12);
+                            float betaR = 0.0;
+                            float betaPhi = 0.0;
+                            if (disk_schwarzschild_plunge_local_beta(rM, rMsM, betaR, betaPhi)) {
+                                v_disk = P.c * (betaR * er + betaPhi * ephi);
+                                float vrRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+                                vrRatio = clamp(betaR / max(vrRef, 1e-6), -1.0, 1.0);
+                            }
+                        }
+                        float vMag = length(v_disk);
+                        float vCap = 0.999 * P.c;
+                        if (vMag > vCap && vMag > 1e-9) v_disk *= (vCap / vMag);
 
                         float rState = p.y;
                         float phi = p.w;
@@ -1065,18 +1418,27 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                         float dy = sin(phi) * v.y + rState * cos(phi) * v.w;
                         float3 worldVel = dx * newX + dy * newY;
                         float3 direct = normalize(worldVel);
+                        float3 obsDir = -direct;
 
-                        float T0 = pow((3.0 * P.G * P.M) / (8.0 * M_PI * pow(P.rs, 3.0) * P.k), 0.25);
-                        float T = T0 * pow(dxy / P.rs, -0.75);
-                        float tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                        float beta = clamp(length(v_disk) / max(P.c, 1e-9), 0.0, 0.999999);
+                        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+                        float cosTheta = clamp(dot(v_disk, obsDir) / max(length(v_disk) * length(obsDir), 1e-30), -1.0, 1.0);
+                        float doppler = 1.0 / max(gamma * (1.0 + beta * cosTheta), 1e-9);
+                        float g_gr = sqrt(clamp(1.0 - P.rs / max(dxy, 1.0001 * P.rs), 1e-8, 1.0));
+                        float g_factor = clamp(doppler * g_gr, 1e-4, 1e4);
+
+                        float T = disk_effective_temperature(dxy, diskInner, P);
                         T *= tempScale;
+                        if (P.diskPhysicsMode == 2u) {
+                            T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
+                        }
 
                         float ctLen = P.c * p.x;
                         info.hit = 1;
                         info.ct  = ctLen;
                         info.T   = T;
-                        info.v_disk = float4(v_disk, 0.0);
-                        info.direct_world = float4(-direct, 0.0);
+                        info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
+                        info.direct_world = float4(obsDir, 0.0);
                         float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
                         disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
 
@@ -1096,8 +1458,11 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         }
     } else {
         float massLen = 0.5 * P.rs;
-        float a = clamp(P.spin, 0.0, 0.999);
+        float a = clamp(P.spin, -0.999, 0.999);
         float escapeRadius = max(P.kerrEscapeMult, 1.0) * P.re;
+        float diskInner = disk_inner_radius_m(P);
+        float diskInnerM = diskInner / max(massLen, 1e-12);
+        float diskEmitMin = disk_emit_min_radius_m(P);
         KerrState state;
         float Lz = 0.0;
         float horizonGeom = 0.0;
@@ -1194,20 +1559,49 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                     if (entered) {
                         float dxy = length(float2(hitPos.x, hitPos.y));
                         float r_M = dxy / max(massLen, 1e-12);
+                        float rEmitMinM = diskEmitMin / max(massLen, 1e-12);
 
-                        float a2 = a * a;
-                        float z1 = 1.0 + pow(max(1.0 - a2, 0.0), 1.0 / 3.0) * (pow(1.0 + a, 1.0 / 3.0) + pow(1.0 - a, 1.0 / 3.0));
-                        float z2 = sqrt(max(3.0 * a2 + z1 * z1, 0.0));
-                        float r_isco = 3.0 + z2 - sqrt(max((3.0 - z1) * (3.0 + z1 + 2.0 * z2), 0.0));
-
-                        if (r_M > r_isco && dxy < P.re) {
-                            float omega = 1.0 / max(pow(r_M, 1.5) + a, 1e-8);
+                        if (r_M > rEmitMinM && dxy < P.re) {
+                            float phiHit = atan2(hitPos.y, hitPos.x);
+                            float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
+                            float vrRatio = 0.0;
+                            float vphiScale = 1.0;
+                            float tempScale = 1.0;
+                            if (P.diskPhysicsMode != 2u) {
+                                vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
+                                vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
+                                tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                            }
+                            float omegaK = 1.0 / max(pow(r_M, 1.5) + a, 1e-8);
+                            float omega = omegaK * vphiScale;
+                            float drdt = vrRatio * sqrt(1.0 / max(r_M, 1.0));
+                            if (P.diskPhysicsMode != 0u && r_M < diskInnerM * (1.0 - 1e-4)) {
+                                float plungeOmega = omega;
+                                float plungeDrdt = drdt;
+                                float plungeVrRatio = vrRatio;
+                                if (disk_kerr_plunge_kinematics(r_M, diskInnerM, a, plungeOmega, plungeDrdt, plungeVrRatio)) {
+                                    omega = plungeOmega;
+                                    drdt = plungeDrdt;
+                                    vrRatio = plungeVrRatio;
+                                }
+                            }
                             KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
                             float uDen = -(diskCov.gtt
                                          + 2.0 * omega * diskCov.gtphi
-                                         + omega * omega * diskCov.gphiphi);
+                                         + omega * omega * diskCov.gphiphi
+                                         + diskCov.grr * drdt * drdt);
+                            if (!(uDen > 1e-12)) {
+                                omega = omegaK;
+                                drdt = 0.0;
+                                uDen = -(diskCov.gtt
+                                       + 2.0 * omega * diskCov.gtphi
+                                       + omega * omega * diskCov.gphiphi);
+                            }
                             float u_t = 1.0 / sqrt(max(uDen, 1e-12));
-                            float E_emit = u_t * (1.0 - omega * Lz);
+                            float E_emit = u_t * (1.0 - omega * Lz - drdt * state.pr);
+                            if (!(E_emit > 1e-8)) {
+                                E_emit = u_t * max(1.0 - omega * Lz, 1e-8);
+                            }
                             float g_factor = 1.0 / max(E_emit, 1e-8);
                             if (!isfinite(g_factor)) g_factor = 1.0;
                             g_factor = clamp(g_factor, 1e-4, 1e4);
@@ -1215,22 +1609,20 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                             float3 segDir = worldPos - world0;
                             float segLen2 = dot(segDir, segDir);
                             float3 direct = (segLen2 > 1e-20) ? normalize(segDir) : normalize(dir);
+                            float3 obsDir = -direct;
 
-                            float T0 = pow((3.0 * P.G * P.M) / (8.0 * M_PI * pow(P.rs, 3.0) * P.k), 0.25);
-                            float T_newtonian = T0 * pow(dxy / P.rs, -0.75);
-                            float boundary_factor = pow(max(1.0 - sqrt(r_isco / r_M), 0.0), 0.25);
-                            float T = T_newtonian * boundary_factor;
-                            float phiHit = atan2(hitPos.y, hitPos.x);
-                            float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
-                            float tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                            float T = disk_effective_temperature(dxy, diskInner, P);
                             T *= tempScale;
+                            if (P.diskPhysicsMode == 2u) {
+                                T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
+                            }
 
                             float ctLen = state.t * massLen;
                             info.hit = 1;
                             info.ct  = ctLen;
                             info.T   = T;
-                            info.v_disk = float4(g_factor, dxy, 0.0, 0.0);
-                            info.direct_world = float4(-direct, 0.0);
+                            info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
+                            info.direct_world = float4(obsDir, 0.0);
                             float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
                             disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
 
@@ -1279,6 +1671,7 @@ struct ComposeParams {
     uint  look;
     uint  spectralEncoding;
     uint  precisionMode;
+    uint  analysisMode;
     uint  cloudBins;
     uint  lumBins;
     float lumLogMin;
@@ -1410,15 +1803,167 @@ static inline float3 comp_apply_cloud_to_rgb(float3 rgb, float cloudNorm) {
     return rgb;
 }
 
+static inline float comp_hash13(float3 p) {
+    float h = sin(dot(p, float3(12.9898, 78.233, 37.719)));
+    return fract(h * 43758.5453);
+}
+
+static inline float comp_limb_factor(float mu, constant Params& P) {
+    float m = clamp(mu, 0.0, 1.0);
+    if (P.diskPhysicsMode == 2u) {
+        // Scattering-dominated atmosphere (Chandrasekhar H-function linearized form).
+        return (3.0 / 7.0) * (1.0 + 2.0 * m);
+    }
+    return 0.4 + 0.6 * m;
+}
+
+static inline float comp_precision_returning_radiation_factor(const CollisionInfo rec,
+                                                             constant Params& P,
+                                                             constant ComposeParams& C,
+                                                             float cloudRaw)
+{
+    if (P.diskPhysicsMode != 2u) return 1.0;
+    float ret = clamp(P.diskReturningRad, 0.0, 1.0);
+    if (!(ret > 1e-6)) return 1.0;
+
+    float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+    float rIn = disk_inner_radius_m(P);
+    float rH = disk_horizon_radius_m(P);
+    float span = max(2.8 * rIn - rIn, 1e-6);
+    float x = clamp((rEmit - rIn) / span, 0.0, 1.0);
+    float innerWeight = 1.0 - smoothstep(0.0, 1.0, x);
+    float horizonGate = smoothstep(rH * (1.02 + 16.0 * P.eps), rIn, rEmit);
+
+    float spinFac = (P.metric == 0) ? 0.14 : pow(clamp(abs(P.spin), 0.0, 0.999), 1.6);
+
+    float3 d = rec.direct_world.xyz;
+    float mu = abs(d.z) / max(length(d), 1e-30);
+    float bending = 0.35 + 0.65 * pow(1.0 - clamp(mu, 0.0, 1.0), 0.72);
+
+    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+    float c = clamp((cloudNorm - 0.18) / 0.82, 0.0, 1.0);
+    float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+    float tau0 = max(P.diskCloudOpticalDepth, 0.0);
+    float albedo = clamp(P.diskScatteringAlbedo, 0.0, 1.0);
+    uint bounceCount = clamp(P.diskReturnBounces, 1u, 4u);
+    float reprocess = 1.0 - exp(-tau0 * (0.30 + 0.70 * coverage * c));
+    float absorbFrac = clamp(0.45 + 0.55 * reprocess, 0.0, 1.0);
+
+    float firstBounce = ret
+                      * (0.22 + 0.78 * spinFac)
+                      * innerWeight
+                      * bending
+                      * horizonGate
+                      * absorbFrac;
+    firstBounce = clamp(firstBounce, 0.0, 0.95);
+
+    // Multi-bounce geometric approximation: I_ret ~ f1 * (1 + q + q^2 + ...)
+    float q = albedo
+            * (0.20 + 0.55 * spinFac)
+            * (0.35 + 0.65 * bending)
+            * (0.40 + 0.60 * innerWeight)
+            * (0.55 + 0.45 * horizonGate);
+    q = clamp(q, 0.0, 0.88);
+
+    float accum = 0.0;
+    float term = firstBounce;
+    for (uint b = 0u; b < bounceCount; ++b) {
+        accum += term;
+        term *= q;
+    }
+    return 1.0 + clamp(accum, 0.0, 1.6);
+}
+
+static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
+                                                       const CollisionInfo rec,
+                                                       constant Params& P,
+                                                       constant ComposeParams& C,
+                                                       float cloudRaw)
+{
+    float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+    float tau0 = max(P.diskCloudOpticalDepth, 0.0);
+    float porosity = clamp(P.diskCloudPorosity, 0.0, 1.0);
+    float shadowStrength = clamp(P.diskCloudShadowStrength, 0.0, 1.0);
+    float albedo = clamp(P.diskScatteringAlbedo, 0.0, 1.0);
+    if (!(coverage > 1e-6) || (!(tau0 > 1e-6) && !(porosity > 1e-6) && !(shadowStrength > 1e-6))) {
+        return rgb;
+    }
+
+    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+    float c = clamp((cloudNorm - 0.18) / 0.82, 0.0, 1.0);
+    float baseClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, c);
+
+    float3 d = rec.direct_world.xyz;
+    float mu = abs(d.z) / max(length(d), 1e-30);
+    float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+    float halfH = disk_half_thickness_m(rEmit, P);
+    float hScale = max(halfH / max(P.he, 1e-6), 0.25);
+    float path = (0.80 + 0.70 * hScale) / max(mu, 0.085);
+    float span = max(P.re - P.rs, 1e-6);
+    float u = clamp((rEmit - P.rs) / span, 0.0, 1.0);
+    float innerBoost = 1.0 + 0.36 * (1.0 - smoothstep(0.06, 0.42, u));
+
+    uint nSteps = clamp(P.diskRTSteps, 0u, 32u);
+    if (nSteps == 0u) {
+        float suggested = 6.0 + 0.9 * tau0 * innerBoost + 4.0 * path;
+        nSteps = uint(clamp(suggested, 6.0, 24.0));
+    }
+    nSteps = max(nSteps, 4u);
+
+    float ds = path / float(nSteps);
+    float alphaBase = (tau0 * innerBoost) / max(path, 1e-6);
+    float phaseScatter = 0.5 * (1.0 + mu * mu); // Thomson-like angular term
+    float3 I = rgb;
+    float trans = 1.0;
+    const float3 scatterTint = float3(1.08, 1.0, 0.93);
+
+    for (uint i = 0u; i < 32u; ++i) {
+        if (i >= nSteps) break;
+        float s = (float(i) + 0.5) / float(nSteps);
+        float phase = 2.0 * s - 1.0;
+        float seedA = comp_hash13(float3(73.1 * rec.emit_r_norm + 0.41 * rec.emit_phi + 1.9 * phase,
+                                         13.7 * rec.emit_phi + 27.3 * rec.emit_z_norm + 3.7 * phase,
+                                         5.1 * cloudRaw + rec.emit_r_norm * 9.0));
+        float seedB = comp_hash13(float3(41.9 * rec.emit_r_norm - 0.61 * rec.emit_phi - 2.7 * phase,
+                                         9.3 * rec.emit_phi + 33.1 * rec.emit_z_norm - 5.1 * phase,
+                                         7.7 * cloudRaw + rec.emit_z_norm * 12.0));
+        float localCloud = clamp(0.62 * seedA + 0.38 * seedB + 0.30 * (c - 0.5), 0.0, 1.0);
+        float localClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, localCloud);
+        float holeField = comp_hash13(float3(19.1 * rec.emit_r_norm + 11.0 * phase,
+                                             23.0 * rec.emit_phi - 7.0 * phase,
+                                             17.0 * rec.emit_z_norm + 13.0 * localCloud));
+        float holeThreshold = porosity * mix(0.94, 0.36, localClump);
+        float occupied = smoothstep(holeThreshold - 0.07, holeThreshold + 0.07, holeField);
+        float fill = clamp(localClump * occupied, 0.0, 1.0);
+        fill = mix(fill, localClump, 0.18);
+
+        float density = mix(0.10, 1.0, fill);
+        float dTau = min(alphaBase * density * ds, 3.5);
+        float stepTrans = exp(-dTau);
+        float absorbed = 1.0 - stepTrans;
+        float3 thermalSrc = rgb * (0.14 + 0.86 * fill);
+        float scatterAmp = (0.10 + 0.90 * phaseScatter) * (0.20 + 0.80 * fill);
+        float lumI = dot(I, float3(0.2126, 0.7152, 0.0722));
+        float3 scatterSrc = scatterTint * lumI * scatterAmp;
+        float3 source = mix(thermalSrc, scatterSrc, albedo);
+        I = I * stepTrans + source * absorbed;
+        trans *= stepTrans;
+    }
+
+    float attenuation = mix(1.0, trans, shadowStrength);
+    float porosityLift = mix(1.0, 1.0 + 0.35 * porosity * (1.0 - baseClump), 0.65);
+    float floor = 0.04 + 0.24 * porosity;
+    float3 out = I * attenuation * porosityLift;
+    return max(out, rgb * floor);
+}
+
 static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                               constant Params& P,
                                               constant ComposeParams& C)
 {
     float g_total = 1.0;
-    float r_emit = P.rs * 2.0;
     if (C.spectralEncoding == 1u) {
         g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
-        r_emit = max(rec.v_disk.y, P.rs * 1.0001);
     } else {
         float3 v = rec.v_disk.xyz;
         float3 d = rec.direct_world.xyz;
@@ -1429,14 +1974,19 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
         float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
         float delta = 1.0 / max(gamma * (1.0 + beta * cos_theta), 1e-9);
-        r_emit = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
-        r_emit = max(r_emit, P.rs * 1.0001);
-        float g_gr = sqrt(clamp(1.0 - P.rs / r_emit, 1e-8, 1.0));
+        float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
+        r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
+        float g_gr = sqrt(clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0));
         g_total = clamp(delta * g_gr, 1e-4, 1e4);
     }
 
     float T_emit = max(rec.T, 1.0);
     float T_obs = max(T_emit * g_total, 1.0);
+    float colorDilution = 1.0;
+    if (P.diskPhysicsMode == 2u) {
+        float fCol = max(P.diskColorFactor, 1.0);
+        colorDilution = 1.0 / pow(fCol, 4.0);
+    }
 
     float X = 0.0;
     float Y = 0.0;
@@ -1450,7 +2000,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         float lam_m = lam * 1e-9;
         float x_bar, y_bar, z_bar;
         comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
-        float b = comp_planck_lambda(lam_m, T_obs) * precise::pow(g_total, 3.0);
+        float b = comp_planck_lambda(lam_m, T_obs) * colorDilution;
         if (kahan) {
             float yx = b * x_bar - cX;
             float tx = X + yx;
@@ -1475,12 +2025,20 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
 
     float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
 
-    float r_in = max(C.innerEdgeMult, 1.0) * P.rs;
-    float boundary = clamp(1.0 - sqrt(r_in / max(r_emit, r_in)), 0.0, 1.0);
     float3 d_world = rec.direct_world.xyz;
     float mu = abs(d_world.z) / max(length(d_world), 1e-30);
-    float limb = 0.4 + 0.6 * clamp(mu, 0.0, 1.0);
-    rgb *= boundary * limb;
+    float limb = comp_limb_factor(mu, P);
+    rgb *= limb;
+    if (C.spectralEncoding == 1u && P.diskPhysicsMode == 1u) {
+        float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+        float rIn = disk_inner_radius_m(P);
+        float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
+        float x = clamp((rEmit - rH) / max(rIn - rH, 1e-6), 0.0, 1.0);
+        float xSoft = smoothstep(0.0, 1.0, x);
+        float floor = 0.35 * clamp(P.diskPlungeFloor, 0.0, 1.0);
+        float gate = floor + (1.0 - floor) * pow(max(xSoft, 1e-4), 2.2);
+        rgb *= clamp(gate, 0.0, 1.0);
+    }
     return rgb;
 }
 
@@ -1490,6 +2048,15 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
 {
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
     float cloudRaw = comp_cloud_raw(rec, P, C);
+    if (P.diskPhysicsMode == 2u) {
+        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+        rgb *= retFactor;
+    }
+    if (P.diskPhysicsMode == 2u) {
+        if (C.analysisMode == 1u) return rgb;
+        return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
+    }
+    if (C.analysisMode != 0u) return rgb;
     float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
     return comp_apply_cloud_to_rgb(rgb, cloud);
 }
@@ -1569,9 +2136,18 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
         outLinear[gid] = float4(0.0, 0.0, 0.0, -1.0);
         return;
     }
-    float3 rgb = comp_linear_rgb_precloud(rec, P, C);
     float cloudRaw = comp_cloud_raw(rec, P, C);
-    outLinear[gid] = float4(rgb, cloudRaw);
+    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (P.diskPhysicsMode == 2u) {
+        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+        rgbBase *= retFactor;
+    }
+    if (P.diskPhysicsMode == 2u && C.analysisMode == 2u) {
+        float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
+        outLinear[gid] = float4(rgb, cloudRaw);
+        return;
+    }
+    outLinear[gid] = float4(rgbBase, cloudRaw);
 }
 
 kernel void composeCloudHist(constant Params& P [[buffer(0)]],
@@ -1642,8 +2218,11 @@ kernel void composeLumHistLinearTileCloud(constant ComposeParams& C [[buffer(0)]
     if (gid >= count) return;
     float4 rgbw = inLinear[gid];
     if (rgbw.w < 0.0) return;
-    float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
-    float3 rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
+        rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+    }
     float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
     uint bins = max(C.lumBins, 1u);
     float t = (comp_log10(max(lum, 1e-30)) - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6);
@@ -1761,8 +2340,11 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
             uint lidx = ly * C.tileWidth + lx;
             float4 rgbw = inLinear[lidx];
             if (rgbw.w < 0.0) continue;
-            float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
-            float3 rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+            float3 rgb = rgbw.xyz;
+            if (C.analysisMode == 0u) {
+                float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
+                rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+            }
             acc += comp_shade_linear(rgb, C);
             cnt += 1u;
         }

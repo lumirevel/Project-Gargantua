@@ -77,29 +77,6 @@ def planck_lambda(lam_m: np.ndarray, temperature: np.ndarray) -> np.ndarray:
     return C1 / (np.power(lam_m, 5) * np.expm1(x))
 
 
-def compute_g_factor_schwarzschild(v: np.ndarray, d: np.ndarray):
-    v_norm = np.linalg.norm(v, axis=1)
-    d_norm = np.linalg.norm(d, axis=1)
-    dot = np.einsum("ij,ij->i", v, d)
-
-    beta = np.clip(v_norm / C, 0.0, 0.999999)
-    cos_theta = dot / np.maximum(v_norm * d_norm, 1e-30)
-    cos_theta = np.clip(cos_theta, -1.0, 1.0)
-    gamma = 1.0 / np.sqrt(1.0 - beta * beta)
-
-    # `direct_world` in legacy collisions is opposite to the emitter->observer
-    # convention used in the textbook Doppler form, so the sign is inverted here.
-    delta = 1.0 / np.maximum(gamma * (1.0 + beta * cos_theta), 1e-9)
-
-    r_emit = (G * M_BH) / np.maximum(v_norm * v_norm, 1e-30)
-    r_emit = np.maximum(r_emit, RS * 1.0001)
-
-    g_gr = np.sqrt(np.clip(1.0 - RS / r_emit, 1e-8, 1.0))
-
-    g_total = np.clip(delta * g_gr, 1e-4, 1e4)
-    return g_total, r_emit
-
-
 def render_linear_rgb(
     T_emit: np.ndarray,
     v: np.ndarray,
@@ -113,13 +90,16 @@ def render_linear_rgb(
     metric: str,
     spectral_encoding: str,
 ) -> np.ndarray:
-    if spectral_encoding == "gfactor_v1":
-        # Metal encodes exact GR shift in v_disk for both metrics:
-        # v[:, 0] = g_factor, v[:, 1] = emission radius (meters).
-        g_total = np.clip(v[:, 0], 1e-4, 1e4)
-        r_emit = np.maximum(v[:, 1], RS * 1.0001)
-    else:
-        g_total, r_emit = compute_g_factor_schwarzschild(v, d)
+    # Metal encodes exact GR shift in v_disk for both metrics:
+    # v[:, 0] = g_factor, v[:, 1] = emission radius (meters).
+    # Keep this path authoritative to avoid mixing incompatible legacy approximations.
+    if spectral_encoding != "gfactor_v1":
+        print(
+            f"warn: spectralEncoding={spectral_encoding!r} is legacy; using Metal-encoded g-factor path anyway.",
+            flush=True,
+        )
+    g_total = np.clip(v[:, 0], 1e-4, 1e4)
+    r_emit = np.maximum(v[:, 1], RS * 1.0001)
 
     T_obs = np.maximum(T_emit * g_total, 1.0)
     spectrum = planck_lambda(lam_m[None, :], T_obs[:, None])
@@ -128,7 +108,9 @@ def render_linear_rgb(
     r_in = max(inner_edge_mult, 1.0) * RS
     boundary = np.clip(1.0 - np.sqrt(r_in / np.maximum(r_emit, r_in)), 0.0, 1.0)
     mu = np.abs(d[:, 2]) / np.maximum(np.linalg.norm(d, axis=1), 1e-30)
-    limb = 0.4 + 0.6 * np.clip(mu, 0.0, 1.0)
+    # Scattering-dominated accretion-disk atmosphere approximation:
+    # I(mu) ~ (3/7) * (1 + 2 mu)
+    limb = (3.0 / 7.0) * (1.0 + 2.0 * np.clip(mu, 0.0, 1.0))
     spectrum *= (boundary * limb)[:, None]
 
     X = spectrum @ x_bar

@@ -47,6 +47,12 @@ struct Params {
     var diskOrbitalBoost: Float
     var diskRadialDrift: Float
     var diskTurbulence: Float
+    var diskOrbitalBoostInner: Float
+    var diskOrbitalBoostOuter: Float
+    var diskRadialDriftInner: Float
+    var diskRadialDriftOuter: Float
+    var diskTurbulenceInner: Float
+    var diskTurbulenceOuter: Float
     var diskFlowStep: Float
     var diskFlowSteps: Float
     var diskAtlasMode: UInt32
@@ -61,6 +67,22 @@ struct Params {
     var diskAtlasRNormMax: Float
     var diskAtlasRNormWarp: Float
     var diskNoiseModel: UInt32
+    var diskMdotEdd: Float
+    var diskRadiativeEfficiency: Float
+    var diskPhysicsMode: UInt32
+    var diskPlungeFloor: Float
+    var diskThickScale: Float
+    var diskColorFactor: Float
+    var diskReturningRad: Float
+    var diskPrecisionTexture: Float
+    var diskCloudCoverage: Float
+    var diskCloudOpticalDepth: Float
+    var diskCloudPorosity: Float
+    var diskCloudShadowStrength: Float
+    var diskReturnBounces: UInt32
+    var diskRTSteps: UInt32
+    var diskScatteringAlbedo: Float
+    var diskRTPad: Float
 }
 
 struct CollisionInfo {
@@ -104,6 +126,7 @@ struct ComposeParams {
     var look: UInt32
     var spectralEncoding: UInt32
     var precisionMode: UInt32
+    var analysisMode: UInt32
     var cloudBins: UInt32
     var lumBins: UInt32
     var lumLogMin: Float
@@ -140,8 +163,30 @@ struct RenderMeta: Codable {
     var diskOrbitalBoost: Double
     var diskRadialDrift: Double
     var diskTurbulence: Double
+    var diskOrbitalBoostInner: Double
+    var diskOrbitalBoostOuter: Double
+    var diskRadialDriftInner: Double
+    var diskRadialDriftOuter: Double
+    var diskTurbulenceInner: Double
+    var diskTurbulenceOuter: Double
     var diskFlowStep: Double
     var diskFlowSteps: Int
+    var diskMdotEdd: Double
+    var diskRadiativeEfficiency: Double
+    var diskPhysicsMode: String
+    var diskPlungeFloor: Double
+    var diskThickScale: Double
+    var diskColorFactor: Double
+    var diskReturningRad: Double
+    var diskPrecisionTexture: Double
+    var diskPrecisionClouds: Bool
+    var diskCloudCoverage: Double
+    var diskCloudOpticalDepth: Double
+    var diskCloudPorosity: Double
+    var diskCloudShadowStrength: Double
+    var diskReturnBounces: Int
+    var diskRTSteps: Int
+    var diskScatteringAlbedo: Double
     var diskAtlasEnabled: Bool
     var diskAtlasPath: String
     var diskAtlasWidth: Int
@@ -182,6 +227,36 @@ func cross(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> SIMD3<Float> {
     SIMD3<Float>(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
 }
 
+@inline(__always)
+func diskKerrISCOM(_ a: Double) -> Double {
+    let aSafe = min(max(a, -0.999), 0.999)
+    let a2 = aSafe * aSafe
+    let z1 = 1.0 + pow(max(1.0 - a2, 0.0), 1.0 / 3.0) * (pow(1.0 + aSafe, 1.0 / 3.0) + pow(1.0 - aSafe, 1.0 / 3.0))
+    let z2 = sqrt(max(3.0 * a2 + z1 * z1, 0.0))
+    let sgn = (aSafe >= 0.0) ? 1.0 : -1.0
+    return 3.0 + z2 - sgn * sqrt(max((3.0 - z1) * (3.0 + z1 + 2.0 * z2), 0.0))
+}
+
+@inline(__always)
+func diskInnerRadiusM(metric: Int32, spin: Double, rs: Double) -> Double {
+    if metric == 0 {
+        return 3.0 * rs
+    }
+    let massLen = 0.5 * rs
+    let rI = diskKerrISCOM(spin) * massLen
+    let rH = diskHorizonRadiusM(metric: metric, spin: spin, rs: rs)
+    return max(rI, rH * (1.0 + 16.0e-5))
+}
+
+@inline(__always)
+func diskHorizonRadiusM(metric: Int32, spin: Double, rs: Double) -> Double {
+    if metric == 0 { return rs }
+    let a = min(max(abs(spin), 0.0), 0.999)
+    let massLen = 0.5 * rs
+    let rPlusM = 1.0 + sqrt(max(1.0 - a * a, 0.0))
+    return max(rPlusM * massLen, 0.25 * rs)
+}
+
 func intArg(_ name: String, default defaultValue: Int) -> Int {
     guard let idx = CommandLine.arguments.firstIndex(of: name), idx + 1 < CommandLine.arguments.count else {
         return defaultValue
@@ -209,6 +284,19 @@ func stringArg(_ name: String, default defaultValue: String) -> String {
         return defaultValue
     }
     return CommandLine.arguments[idx + 1]
+}
+
+func parseDiskMode(_ raw: String) -> (id: UInt32, canonical: String)? {
+    switch raw.lowercased() {
+    case "thin", "nt", "strict":
+        return (0, "thin")
+    case "thick", "plasma", "riaf":
+        return (1, "thick")
+    case "precision", "analysis", "pt":
+        return (2, "precision")
+    default:
+        return nil
+    }
 }
 
 func writePPM(path: String, width: Int, height: Int, rgb: [UInt8]) throws {
@@ -509,32 +597,114 @@ if !(downsampleArg == 1 || downsampleArg == 2 || downsampleArg == 4) {
 }
 let metricName = stringArg("--metric", default: "schwarzschild").lowercased()
 let metricArg: Int32 = (metricName == "kerr") ? 1 : 0
-let spectralEncoding = (metricName == "kerr") ? "gfactor_v1" : "legacy_vectors"
+let spectralEncoding = "gfactor_v1"
 let defaultH = 0.01
 let hArg = max(1e-6, doubleArg("--h", default: defaultH))
-let spinArg = max(0.0, min(0.999, doubleArg("--spin", default: 0.0)))
+let spinArg = max(-0.999, min(0.999, doubleArg("--spin", default: 0.0)))
 let defaultKerrSubsteps = 4
-let defaultKerrRadialScale = 0.69
-let defaultKerrAzimuthScale = 0.91
-let defaultKerrImpactScale = 0.97
+let defaultKerrRadialScale = 1.0
+let defaultKerrAzimuthScale = 1.0
+let defaultKerrImpactScale = 1.0
 let kerrSubstepsArg = max(1, min(8, intArg("--kerr-substeps", default: defaultKerrSubsteps)))
 let kerrTolArg = max(1e-6, doubleArg("--kerr-tol", default: 1e-5))
 let kerrEscapeMultArg = max(1.0, doubleArg("--kerr-escape-mult", default: 3.0))
 let kerrRadialScaleArg = max(0.01, doubleArg("--kerr-radial-scale", default: defaultKerrRadialScale))
 let kerrAzimuthScaleArg = max(0.01, doubleArg("--kerr-azimuth-scale", default: defaultKerrAzimuthScale))
 let kerrImpactScaleArg = max(0.1, doubleArg("--kerr-impact-scale", default: defaultKerrImpactScale))
+if abs(kerrImpactScaleArg - 1.0) > 1e-6 {
+    FileHandle.standardError.write(Data("warn: --kerr-impact-scale is deprecated in physics mode and is ignored\n".utf8))
+}
 let diskFlowTimeArg = doubleArg("--disk-time", default: 0.0)
 let diskOrbitalBoostArg = max(0.05, doubleArg("--disk-orbital-boost", default: 1.0))
 let diskRadialDriftArg = max(0.0, doubleArg("--disk-radial-drift", default: 0.02))
 let diskTurbulenceArg = max(0.0, doubleArg("--disk-turbulence", default: 0.30))
+let diskOrbitalBoostInnerArg = max(0.05, doubleArg("--disk-orbital-boost-inner", default: diskOrbitalBoostArg))
+let diskOrbitalBoostOuterArg = max(0.05, doubleArg("--disk-orbital-boost-outer", default: diskOrbitalBoostArg))
+let diskRadialDriftInnerArg = max(0.0, doubleArg("--disk-radial-drift-inner", default: diskRadialDriftArg))
+let diskRadialDriftOuterArg = max(0.0, doubleArg("--disk-radial-drift-outer", default: diskRadialDriftArg))
+let diskTurbulenceInnerArg = max(0.0, doubleArg("--disk-turbulence-inner", default: diskTurbulenceArg))
+let diskTurbulenceOuterArg = max(0.0, doubleArg("--disk-turbulence-outer", default: diskTurbulenceArg))
 let diskFlowStepArg = max(0.03, doubleArg("--disk-flow-step", default: 0.22))
 let diskFlowStepsArg = max(2, min(24, intArg("--disk-flow-steps", default: 8)))
+let diskMdotEddArg = max(1e-5, doubleArg("--disk-mdot-edd", default: 0.1))
+let diskRadiativeEfficiencyArg = min(max(doubleArg("--disk-radiative-efficiency", default: 0.1), 0.01), 0.42)
+let diskModeRaw = stringArg("--disk-mode", default: "").lowercased()
+let diskPhysicsLegacyRaw = stringArg("--disk-physics-mode", default: "").lowercased()
+if !diskModeRaw.isEmpty && !diskPhysicsLegacyRaw.isEmpty {
+    guard let modeA = parseDiskMode(diskModeRaw) else {
+        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision")
+    }
+    guard let modeB = parseDiskMode(diskPhysicsLegacyRaw) else {
+        fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision")
+    }
+    if modeA.id != modeB.id {
+        fail("conflicting disk mode: --disk-mode \(diskModeRaw) vs --disk-physics-mode \(diskPhysicsLegacyRaw)")
+    }
+    FileHandle.standardError.write(Data("warn: --disk-physics-mode is deprecated; prefer --disk-mode\n".utf8))
+}
+let diskModeResolvedRaw: String = {
+    if !diskModeRaw.isEmpty { return diskModeRaw }
+    if !diskPhysicsLegacyRaw.isEmpty {
+        FileHandle.standardError.write(Data("warn: --disk-physics-mode is deprecated; prefer --disk-mode\n".utf8))
+    }
+    if !diskPhysicsLegacyRaw.isEmpty { return diskPhysicsLegacyRaw }
+    return "thin"
+}()
+guard let diskModeParsed = parseDiskMode(diskModeResolvedRaw) else {
+    if !diskModeRaw.isEmpty {
+        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision")
+    }
+    fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision")
+}
+let diskPhysicsModeID: UInt32 = diskModeParsed.id
+let diskPhysicsModeArg: String = diskModeParsed.canonical
+let diskPlungeFloorArg = max(0.0, doubleArg("--disk-plunge-floor", default: (diskPhysicsModeID == 1 ? 0.02 : 0.0)))
+let diskThickScaleArg = max(1.0, doubleArg("--disk-thick-scale", default: 1.3))
+let diskColorFactorArg = max(1.0, doubleArg("--disk-color-factor", default: (diskPhysicsModeID == 2 ? 1.7 : 1.0)))
+let diskReturningRadRawArg = max(0.0, min(1.0, doubleArg("--disk-returning-rad", default: (diskPhysicsModeID == 2 ? 0.35 : 0.0))))
+let diskPrecisionTextureRawArg = max(0.0, min(1.0, doubleArg("--disk-precision-texture", default: (diskPhysicsModeID == 2 ? 0.58 : 0.0))))
+let diskPrecisionCloudsName = stringArg("--disk-precision-clouds", default: (diskPhysicsModeID == 2 ? "on" : "off")).lowercased()
+let diskPrecisionCloudsEnabled: Bool
+switch diskPrecisionCloudsName {
+case "on", "true", "1", "yes":
+    diskPrecisionCloudsEnabled = true
+case "off", "false", "0", "no":
+    diskPrecisionCloudsEnabled = false
+default:
+    fail("invalid --disk-precision-clouds \(diskPrecisionCloudsName). use on|off")
+}
+let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (diskPhysicsModeID == 2 ? 0.88 : 0.0))))
+let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArg("--disk-cloud-optical-depth", default: (diskPhysicsModeID == 2 ? 2.0 : 0.0))))
+let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (diskPhysicsModeID == 2 ? 0.18 : 0.0))))
+let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (diskPhysicsModeID == 2 ? 0.90 : 0.0))))
+let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", default: (diskPhysicsModeID == 2 ? 2 : 1))))
+let diskRTStepsRawArg = max(0, min(32, intArg("--disk-rt-steps", default: 0)))
+let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? 0.62 : 0.0))))
+let diskReturningRadArg = (diskPhysicsModeID == 2) ? diskReturningRadRawArg : 0.0
+let diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
+let diskCloudCoverageArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudCoverageRawArg : 0.0
+let diskCloudOpticalDepthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudOpticalDepthRawArg : 0.0
+let diskCloudPorosityArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudPorosityRawArg : 0.0
+let diskCloudShadowStrengthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudShadowStrengthRawArg : 0.0
+let diskReturnBouncesArg = (diskPhysicsModeID == 2) ? diskReturnBouncesRawArg : 1
+let diskRTStepsArg = (diskPhysicsModeID == 2) ? diskRTStepsRawArg : 0
+let diskScatteringAlbedoArg = (diskPhysicsModeID == 2) ? diskScatteringAlbedoRawArg : 0.0
+if diskPhysicsModeID != 2 && (diskReturningRadRawArg > 1e-8 || diskPrecisionTextureRawArg > 1e-8) {
+    FileHandle.standardError.write(Data("warn: --disk-returning-rad and --disk-precision-texture are only active in precision mode\n".utf8))
+}
+if diskPhysicsModeID != 2 && (diskCloudCoverageRawArg > 1e-8 || diskCloudOpticalDepthRawArg > 1e-8 || diskCloudPorosityRawArg > 1e-8 || diskCloudShadowStrengthRawArg > 1e-8) {
+    FileHandle.standardError.write(Data("warn: precision cloud args are only active in precision mode\n".utf8))
+}
+if diskPhysicsModeID != 2 && (diskReturnBouncesRawArg != 1 || diskRTStepsRawArg > 0 || diskScatteringAlbedoRawArg > 1e-8) {
+    FileHandle.standardError.write(Data("warn: --disk-return-bounces, --disk-rt-steps and --disk-scattering-albedo are only active in precision mode\n".utf8))
+}
 let diskModelArg = stringArg("--disk-model", default: "auto").lowercased()
 let diskAtlasPathArg = stringArg("--disk-atlas", default: "")
 let diskAtlasWidthArg = max(0, intArg("--disk-atlas-width", default: 0))
 let diskAtlasHeightArg = max(0, intArg("--disk-atlas-height", default: 0))
 let diskAtlasTempScaleArg = max(0.0, doubleArg("--disk-atlas-temp-scale", default: 1.0))
-let diskAtlasDensityBlendArg = max(0.0, min(1.0, doubleArg("--disk-atlas-density-blend", default: 0.70)))
+let diskAtlasDensityBlendDefault = (diskPhysicsModeID == 1) ? 0.55 : 0.70
+let diskAtlasDensityBlendArg = max(0.0, min(1.0, doubleArg("--disk-atlas-density-blend", default: diskAtlasDensityBlendDefault)))
 let diskAtlasVrScaleArg = max(0.0, doubleArg("--disk-atlas-vr-scale", default: 0.35))
 let diskAtlasVphiScaleArg = max(0.0, doubleArg("--disk-atlas-vphi-scale", default: 1.0))
 let diskAtlasRMinArg = doubleArg("--disk-atlas-r-min", default: -1.0)
@@ -543,14 +713,17 @@ let diskAtlasRWarpArg = doubleArg("--disk-atlas-r-warp", default: -1.0)
 let tileSizeArg = max(0, intArg("--tile-size", default: 0))
 let autoTile = width * height > 8_000_000
 let tileSize = (tileSizeArg > 0) ? tileSizeArg : (autoTile ? 1024 : max(width, height))
-let composeLook = stringArg("--look", default: preset).lowercased()
+let hasLookArg = CommandLine.arguments.contains("--look")
+let defaultLookName = (diskPhysicsModeID == 2 && !hasLookArg) ? "balanced" : preset
+let composeLook = stringArg("--look", default: defaultLookName).lowercased()
 let composeLookID: UInt32
 switch composeLook {
 case "interstellar": composeLookID = 1
 case "eht": composeLookID = 2
 default: composeLookID = 0
 }
-let composeDitherArg = Float(doubleArg("--dither", default: 0.75))
+let composeDitherDefault = (diskPhysicsModeID == 2) ? 0.0 : 0.75
+let composeDitherArg = Float(doubleArg("--dither", default: composeDitherDefault))
 let composeInnerEdgeArg = Float(max(1.0, doubleArg("--inner-edge-mult", default: 1.4)))
 let composeSpectralStepArg = Float(max(0.25, doubleArg("--spectral-step", default: 5.0)))
 let composeChunkArg = max(1, intArg("--chunk", default: 160000))
@@ -558,6 +731,7 @@ let exposureSamplesArg = max(0, intArg("--exposure-samples", default: 200000))
 let exposureArg = Float(doubleArg("--exposure", default: -1.0))
 let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
 let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
+let composeAnalysisMode: UInt32 = (diskPhysicsModeID == 2) ? (diskPrecisionCloudsEnabled ? 2 : 1) : 0
 let composeExposureBase: Float = {
     if exposureArg > 0 { return exposureArg }
     switch composeLookID {
@@ -569,24 +743,28 @@ let composeExposureBase: Float = {
 let spectralEncodingID: UInt32 = (spectralEncoding == "gfactor_v1") ? 1 : 0
 var composeExposure = composeExposureBase
 let useLinear32Intermediate = composeGPU && !gpuFullCompose && linear32Intermediate
-let diskModelResolved: String
+var diskModelResolved: String
 switch diskModelArg {
-case "procedural", "legacy", "noise":
-    diskModelResolved = "procedural"
+case "flow", "procedural", "legacy", "noise":
+    diskModelResolved = "flow"
 case "perlin":
     diskModelResolved = "perlin"
 case "atlas":
     diskModelResolved = "atlas"
 case "auto":
-    diskModelResolved = diskAtlasPathArg.isEmpty ? "procedural" : "atlas"
+    diskModelResolved = diskAtlasPathArg.isEmpty ? "flow" : "atlas"
 default:
-    fail("invalid --disk-model \(diskModelArg). use one of: procedural, perlin, atlas, auto")
+    fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, atlas, auto (alias: procedural)")
+}
+if diskPhysicsModeID == 2 && diskModelResolved != "flow" {
+    FileHandle.standardError.write(Data("warn: precision mode renders with flow disk model; requested --disk-model \(diskModelResolved) is treated as flow\n".utf8))
+    diskModelResolved = "flow"
 }
 if diskModelResolved == "atlas" && diskAtlasPathArg.isEmpty {
     fail("--disk-model atlas requires --disk-atlas <path>")
 }
-if (diskModelResolved == "procedural" || diskModelResolved == "perlin") && !diskAtlasPathArg.isEmpty {
-    FileHandle.standardError.write(Data("warn: --disk-model \(diskModelResolved) ignores --disk-atlas and atlas tuning args\n".utf8))
+if diskModelResolved != "atlas" && !diskAtlasPathArg.isEmpty {
+    FileHandle.standardError.write(Data("warn: --disk-model \(diskModelResolved) ignores --disk-atlas and atlas tuning args at render time\n".utf8))
 }
 let diskAtlasEnabled = (diskModelResolved == "atlas")
 let diskNoiseModel: UInt32 = (diskModelResolved == "perlin") ? 1 : 0
@@ -635,7 +813,7 @@ if composeGPU {
     }
 }
 
-print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate)")
+print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)")
 
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
@@ -645,6 +823,8 @@ let M: Double = 1e35
 let rsD = 2.0 * G * M / (c * c)
 let reD = rsD * rcp
 let heD = rsD * diskHFactor
+let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
+let diskHorizonRadiusCompose = diskHorizonRadiusM(metric: metricArg, spin: spinArg, rs: rsD) * (1.0 + 2.0e-5)
 
 let camPos = SIMD3<Float>(Float(rsD * camXFactor), Float(rsD * camYFactor), Float(rsD * camZFactor))
 let z = normalize(camPos)
@@ -692,6 +872,12 @@ var params = Params(
     diskOrbitalBoost: Float(diskOrbitalBoostArg),
     diskRadialDrift: Float(diskRadialDriftArg),
     diskTurbulence: Float(diskTurbulenceArg),
+    diskOrbitalBoostInner: Float(diskOrbitalBoostInnerArg),
+    diskOrbitalBoostOuter: Float(diskOrbitalBoostOuterArg),
+    diskRadialDriftInner: Float(diskRadialDriftInnerArg),
+    diskRadialDriftOuter: Float(diskRadialDriftOuterArg),
+    diskTurbulenceInner: Float(diskTurbulenceInnerArg),
+    diskTurbulenceOuter: Float(diskTurbulenceOuterArg),
     diskFlowStep: Float(diskFlowStepArg),
     diskFlowSteps: Float(diskFlowStepsArg),
     diskAtlasMode: diskAtlasEnabled ? 1 : 0,
@@ -705,7 +891,23 @@ var params = Params(
     diskAtlasRNormMin: Float(diskAtlasRMin),
     diskAtlasRNormMax: Float(diskAtlasRMax),
     diskAtlasRNormWarp: Float(diskAtlasRWarp),
-    diskNoiseModel: diskNoiseModel
+    diskNoiseModel: diskNoiseModel,
+    diskMdotEdd: Float(diskMdotEddArg),
+    diskRadiativeEfficiency: Float(diskRadiativeEfficiencyArg),
+    diskPhysicsMode: diskPhysicsModeID,
+    diskPlungeFloor: Float(diskPlungeFloorArg),
+    diskThickScale: Float(diskThickScaleArg),
+    diskColorFactor: Float(diskColorFactorArg),
+    diskReturningRad: Float(diskReturningRadArg),
+    diskPrecisionTexture: Float(diskPrecisionTextureArg),
+    diskCloudCoverage: Float(diskCloudCoverageArg),
+    diskCloudOpticalDepth: Float(diskCloudOpticalDepthArg),
+    diskCloudPorosity: Float(diskCloudPorosityArg),
+    diskCloudShadowStrength: Float(diskCloudShadowStrengthArg),
+    diskReturnBounces: UInt32(diskReturnBouncesArg),
+    diskRTSteps: UInt32(diskRTStepsArg),
+    diskScatteringAlbedo: Float(diskScatteringAlbedoArg),
+    diskRTPad: 0
 )
 
 let count = width * height
@@ -875,6 +1077,7 @@ while ty < height {
                 look: composeLookID,
                 spectralEncoding: spectralEncodingID,
                 precisionMode: composePrecisionID,
+                analysisMode: composeAnalysisMode,
                 cloudBins: UInt32(linearCloudBins),
                 lumBins: UInt32(linearLumBins),
                 lumLogMin: linearLumLogMin,
@@ -1031,6 +1234,7 @@ if composeGPU {
                     look: composeLookID,
                     spectralEncoding: spectralEncodingID,
                     precisionMode: composePrecisionID,
+                    analysisMode: composeAnalysisMode,
                     cloudBins: UInt32(linearCloudBins),
                     lumBins: UInt32(linearLumBins),
                     lumLogMin: linearLumLogMin,
@@ -1134,6 +1338,7 @@ if composeGPU {
             look: composeLookID,
             spectralEncoding: spectralEncodingID,
             precisionMode: composePrecisionID,
+            analysisMode: composeAnalysisMode,
             cloudBins: UInt32(cloudBins),
             lumBins: UInt32(lumBins),
             lumLogMin: lumLogMin,
@@ -1538,6 +1743,7 @@ if composeGPU {
         look: composeLookID,
         spectralEncoding: spectralEncodingID,
         precisionMode: composePrecisionID,
+        analysisMode: composeAnalysisMode,
         cloudBins: 2048,
         lumBins: UInt32(linearLumBins),
         lumLogMin: linearLumLogMin,
@@ -1741,7 +1947,7 @@ if composeGPU {
 
             if !chunkT.isEmpty {
                 var procNoise = chunkN
-                if spectralEncodingID == 0 {
+                if composeAnalysisMode == 0 && spectralEncodingID == 0 {
                     var maxAbsN = 0.0
                     for n in procNoise { maxAbsN = max(maxAbsN, abs(n)) }
                     if maxAbsN < 1e-6 {
@@ -1760,10 +1966,14 @@ if composeGPU {
                 }
 
                 var cloudVals = [Float](repeating: 0, count: procNoise.count)
-                for i in 0..<procNoise.count {
-                    let n = min(max(procNoise[i], -1.0), 1.0)
-                    let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
-                    cloudVals[i] = Float(c)
+                if composeAnalysisMode == 0 {
+                    for i in 0..<procNoise.count {
+                        let n = min(max(procNoise[i], -1.0), 1.0)
+                        let c = (n < -1e-6) ? min(max(0.5 + 0.5 * n, 0.0), 1.0) : min(max(n, 0.0), 1.0)
+                        cloudVals[i] = Float(c)
+                    }
+                } else {
+                    for i in 0..<cloudVals.count { cloudVals[i] = 0.5 }
                 }
                 var sortedCloud = cloudVals
                 sortedCloud.sort()
@@ -1776,11 +1986,10 @@ if composeGPU {
                 for i in 0..<chunkT.count {
                     let v = chunkV[i]
                     let d = chunkD[i]
+                    let colorDilution: Double = (diskPhysicsModeID == 2) ? (1.0 / pow(max(diskColorFactorArg, 1.0), 4.0)) : 1.0
                     let gTotal: Double
-                    let rEmit: Double
                     if spectralEncodingID == 1 {
                         gTotal = min(max(v.x, 1e-4), 1e4)
-                        rEmit = max(v.y, rs * 1.0001)
                     } else {
                         let vNorm = max(sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 1e-30)
                         let dNorm = max(sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1e-30)
@@ -1789,9 +1998,8 @@ if composeGPU {
                         let vd = v.x * d.x + v.y * d.y + v.z * d.z
                         let cosTheta = min(max(vd / (vNorm * dNorm), -1.0), 1.0)
                         let delta = 1.0 / max(gamma * (1.0 + beta * cosTheta), 1e-9)
-                        let rOrbit = gg * ghM / max(vNorm * vNorm, 1e-30)
-                        rEmit = max(rOrbit, rs * 1.0001)
-                        let gGr = sqrt(min(max(1.0 - rs / rEmit, 1e-8), 1.0))
+                        let rEmitLegacy = max(gg * ghM / max(vNorm * vNorm, 1e-30), rs * 1.0001)
+                        let gGr = sqrt(min(max(1.0 - rs / rEmitLegacy, 1e-8), 1.0))
                         gTotal = min(max(delta * gGr, 1e-4), 1e4)
                     }
 
@@ -1803,7 +2011,7 @@ if composeGPU {
                     while lam <= 750.001 {
                         let (xb, yb, zb) = cieXYZBar(lam)
                         let lamM = lam * 1e-9
-                        let b = planckLambda(lamM, tObs) * pow(gTotal, 3.0)
+                        let b = planckLambda(lamM, tObs) * colorDilution
                         X += b * xb
                         Y += b * yb
                         Z += b * zb
@@ -1818,23 +2026,37 @@ if composeGPU {
                     rgb.y = max(rgb.y, 0.0)
                     rgb.z = max(rgb.z, 0.0)
 
-                    let rIn = max(Double(composeInnerEdgeArg), 1.0) * rs
-                    let boundary = min(max(1.0 - sqrt(rIn / max(rEmit, rIn)), 0.0), 1.0)
                     let mu = abs(d.z) / max(sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1e-30)
-                    let limb = 0.4 + 0.6 * min(max(mu, 0.0), 1.0)
-                    rgb *= (boundary * limb)
+                    let limb: Double
+                    if diskPhysicsModeID == 2 {
+                        limb = (3.0 / 7.0) * (1.0 + 2.0 * min(max(mu, 0.0), 1.0))
+                    } else {
+                        limb = 0.4 + 0.6 * min(max(mu, 0.0), 1.0)
+                    }
+                    rgb *= limb
+                    if spectralEncodingID == 1 && diskPhysicsModeID == 1 {
+                        let rEmit = max(v.y, rs * 1.0001)
+                        let xDen = max(diskInnerRadiusCompose - diskHorizonRadiusCompose, 1e-9)
+                        let x = min(max((rEmit - diskHorizonRadiusCompose) / xDen, 0.0), 1.0)
+                        let xSoft = x * x * (3.0 - 2.0 * x)
+                        let floor = 0.35 * min(max(diskPlungeFloorArg, 0.0), 1.0)
+                        let gate = floor + (1.0 - floor) * pow(max(xSoft, 1e-4), 2.2)
+                        rgb *= gate
+                    }
 
-                    var cloud = min(max((Double(cloudVals[i]) - Double(q10)) * Double(invSpan), 0.0), 1.0)
-                    cloud = 0.18 + 0.82 * cloud
-                    let core = pow(cloud, 1.15)
-                    let clump = pow(core, 2.2)
-                    let vvoid = pow(1.0 - cloud, 1.8)
-                    let density = 0.62 + 1.28 * core
-                    rgb *= density
-                    rgb *= (1.0 + 0.34 * clump)
-                    rgb *= (1.0 - 0.14 * vvoid)
-                    rgb.x *= (1.0 + 0.12 * clump)
-                    rgb.z *= (1.0 - 0.08 * clump)
+                    if composeAnalysisMode == 0 {
+                        var cloud = min(max((Double(cloudVals[i]) - Double(q10)) * Double(invSpan), 0.0), 1.0)
+                        cloud = 0.18 + 0.82 * cloud
+                        let core = pow(cloud, 1.15)
+                        let clump = pow(core, 2.2)
+                        let vvoid = pow(1.0 - cloud, 1.8)
+                        let density = 0.62 + 1.28 * core
+                        rgb *= density
+                        rgb *= (1.0 + 0.34 * clump)
+                        rgb *= (1.0 - 0.14 * vvoid)
+                        rgb.x *= (1.0 + 0.12 * clump)
+                        rgb.z *= (1.0 - 0.08 * clump)
+                    }
                     chunkLum.append(Float(rgb.x * luma.x + rgb.y * luma.y + rgb.z * luma.z))
                 }
 
@@ -1890,6 +2112,7 @@ if composeGPU {
         look: composeLookID,
         spectralEncoding: spectralEncodingID,
         precisionMode: composePrecisionID,
+        analysisMode: composeAnalysisMode,
         cloudBins: 2048,
         lumBins: 4096,
         lumLogMin: 8.0,
@@ -2085,7 +2308,7 @@ if useInMemoryCollisions && !discardCollisionOutput {
 }
 
 let meta = RenderMeta(
-    version: "dense_pruned_v6",
+    version: "dense_pruned_v10",
     spectralEncoding: spectralEncoding,
     diskModel: diskAtlasEnabled ? "stage3_atlas_v1" : (diskModelResolved == "perlin" ? "perlin_texture_v1" : "streamline_particles_v1"),
     bridgeCoordinateFrame: "camera_world_xy_disk, r_norm=r/rs, z_norm=z/rs, phi=atan2(y,x)",
@@ -2114,8 +2337,30 @@ let meta = RenderMeta(
     diskOrbitalBoost: diskOrbitalBoostArg,
     diskRadialDrift: diskRadialDriftArg,
     diskTurbulence: diskTurbulenceArg,
+    diskOrbitalBoostInner: diskOrbitalBoostInnerArg,
+    diskOrbitalBoostOuter: diskOrbitalBoostOuterArg,
+    diskRadialDriftInner: diskRadialDriftInnerArg,
+    diskRadialDriftOuter: diskRadialDriftOuterArg,
+    diskTurbulenceInner: diskTurbulenceInnerArg,
+    diskTurbulenceOuter: diskTurbulenceOuterArg,
     diskFlowStep: diskFlowStepArg,
     diskFlowSteps: diskFlowStepsArg,
+    diskMdotEdd: diskMdotEddArg,
+    diskRadiativeEfficiency: diskRadiativeEfficiencyArg,
+    diskPhysicsMode: diskPhysicsModeArg,
+    diskPlungeFloor: diskPlungeFloorArg,
+    diskThickScale: diskThickScaleArg,
+    diskColorFactor: diskColorFactorArg,
+    diskReturningRad: diskReturningRadArg,
+    diskPrecisionTexture: diskPrecisionTextureArg,
+    diskPrecisionClouds: diskPrecisionCloudsEnabled,
+    diskCloudCoverage: diskCloudCoverageArg,
+    diskCloudOpticalDepth: diskCloudOpticalDepthArg,
+    diskCloudPorosity: diskCloudPorosityArg,
+    diskCloudShadowStrength: diskCloudShadowStrengthArg,
+    diskReturnBounces: diskReturnBouncesArg,
+    diskRTSteps: diskRTStepsArg,
+    diskScatteringAlbedo: diskScatteringAlbedoArg,
     diskAtlasEnabled: diskAtlasEnabled,
     diskAtlasPath: diskAtlasEnabled ? diskAtlasPathArg : "",
     diskAtlasWidth: diskAtlasWidth,
