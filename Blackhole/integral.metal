@@ -68,10 +68,10 @@ struct Params {
     float  diskAtlasRNormMin;
     float  diskAtlasRNormMax;
     float  diskAtlasRNormWarp;
-    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin texture
+    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin soft, 2=perlin ec7 legacy, 3=perlin classic (f552 style)
     float  diskMdotEdd;    // mdot / mdot_edd
     float  diskRadiativeEfficiency; // thin-disk eta
-    uint   diskPhysicsMode; // 0=thin, 1=thick/plasma, 2=precision-nt
+    uint   diskPhysicsMode; // 0=thin, 1=thick/plasma, 2=precision-nt, 3=grmhd-scalar-rt
     float  diskPlungeFloor; // inner plunging emissivity floor (thick/precision)
     float  diskThickScale;  // thick-mode vertical half-thickness multiplier
     float  diskColorFactor; // hardening factor f_col (precision mode)
@@ -85,6 +85,42 @@ struct Params {
     uint   diskRTSteps; // volumetric RT march steps (0=adaptive)
     float  diskScatteringAlbedo; // scattering albedo for precision clouds
     float  _padPhysics;
+    uint   diskVolumeMode; // 0=off, 1=on
+    uint   diskVolumeR;
+    uint   diskVolumePhi;
+    uint   diskVolumeZ;
+    float  diskVolumeRNormMin;
+    float  diskVolumeRNormMax;
+    float  diskVolumeZNormMax;
+    float  diskVolumeTauScale;
+    uint   diskVolumeFormat; // 0=legacy float4, 1=grmhd dual volume
+    uint   diskVolumeR0;
+    uint   diskVolumePhi0;
+    uint   diskVolumeZ0;
+    uint   diskVolumeR1;
+    uint   diskVolumePhi1;
+    uint   diskVolumeZ1;
+    float  diskNuObsHz;
+    float  diskGrmhdDensityScale;
+    float  diskGrmhdBScale;
+    float  diskGrmhdEmissionScale;
+    float  diskGrmhdAbsorptionScale;
+    float  diskGrmhdVelScale;
+    uint   diskGrmhdDebugView; // 0=off, 1=max_rho, 2=max_b2, 3=max_jnu, 4=max_inu
+    uint   visibleMode; // 0=off, 1=visible-spectrum rendering
+    uint   visibleSamples; // wavelength sample count for CIE integration
+    uint   visibleTeffModel; // 0=parametric, 1=thin-disk simplified
+    uint   visiblePad0;
+    float  visibleTeffT0;
+    float  visibleTeffR0;
+    float  visibleTeffP;
+    float  visiblePhotosphereRhoThreshold;
+    float  visibleBhMass;
+    float  visibleMdot;
+    float  visibleRIn;
+    float  visibleKappa;
+    uint   visibleEmissionModel; // 0=blackbody, 1=synchrotron-like powerlaw
+    float  visibleEmissionAlpha; // spectral slope for powerlaw model
 };
 
 struct CollisionInfo {
@@ -631,13 +667,19 @@ static inline float disk_emit_min_radius_m(constant Params& P) {
 }
 
 static inline float disk_half_thickness_m(float rEmitM, constant Params& P) {
-    if (P.diskPhysicsMode != 1u) return P.he;
+    if (P.diskPhysicsMode != 1u && P.diskPhysicsMode != 2u) return P.he;
     float rr = rEmitM / max(P.rs, 1e-6);
     // Thicker around inner/mid disk, taper near horizon and far outer edge.
     float innerRamp = smoothstep(0.9, 1.6, rr);
     float outerRamp = 1.0 - smoothstep(4.0, 9.0, rr);
     float band = clamp(innerRamp * outerRamp, 0.0, 1.0);
     float thickMul = 1.0 + (max(P.diskThickScale, 1.0) - 1.0) * band;
+    if (P.diskPhysicsMode == 2u) {
+        // Precision mode uses a continuous thin->thick blend keyed by geometric H/rs.
+        float hOverRs = clamp(P.he / max(P.rs, 1e-6), 0.0, 0.5);
+        float geomBlend = smoothstep(0.015, 0.11, hOverRs);
+        thickMul = mix(1.0, thickMul, geomBlend);
+    }
     return max(P.he * thickMul, P.he);
 }
 
@@ -765,6 +807,43 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
     return isfinite(thickT) ? thickT : 0.0;
 }
 
+static inline float disk_visible_teff(float rEmitM, constant Params& P) {
+    const float sigmaSB = 5.670374419e-8;
+    float r = max(rEmitM, P.rs * 1.0001);
+    float rInAuto = max(disk_inner_radius_m(P), P.rs * 1.0001);
+    float rIn = (P.visibleRIn > 0.0) ? max(P.visibleRIn, P.rs * 1.0001) : rInAuto;
+
+    if (P.visibleTeffModel == 0u) {
+        float t0 = max(P.visibleTeffT0, 100.0);
+        float r0 = max(P.visibleTeffR0, P.rs * 1.0001);
+        float p = clamp(P.visibleTeffP, 0.05, 3.0);
+        float ratio = max(r / r0, 1e-6);
+        return max(t0 * pow(ratio, -p), 1.0);
+    }
+
+    // Simplified thin-disk Teff profile:
+    // Teff ~ [ 3 G M dotM / (8 pi sigma r^3) * (1 - sqrt(r_in / r)) ]^(1/4)
+    float m = max(P.visibleBhMass, 1e20);
+    float mdot = max(P.visibleMdot, 0.0);
+    if (!(r > rIn) || !(mdot > 0.0)) return 0.0;
+    float boundary = max(1.0 - sqrt(rIn / r), 0.0);
+    float flux = (3.0 * P.G * m * mdot) / max(8.0 * M_PI * sigmaSB * pow(r, 3.0), 1e-30);
+    flux *= boundary;
+
+    if (P.visibleTeffModel == 2u) {
+        float massLen = max(0.5 * P.rs, 1e-12);
+        float rM = r / massLen;
+        float rInM = rIn / massLen;
+        float a = (P.metric == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+        float rel = disk_nt_flux_correction(rM, rInM, a);
+        flux *= rel;
+    }
+
+    float teff4 = max(flux, 0.0);
+    if (!(teff4 > 0.0) || !isfinite(teff4)) return 0.0;
+    return max(pow(teff4, 0.25), 1.0);
+}
+
 static inline bool disk_schwarzschild_circular_constants(float rM,
                                                          thread float& E,
                                                          thread float& L)
@@ -853,11 +932,62 @@ static inline bool disk_kerr_plunge_kinematics(float rM,
     return true;
 }
 
+// Invariant g-factor evaluation for Schwarzschild using direct 4-vector contraction:
+// g = (u_obs · k) / (u_emit · k), with k_t conserved and static observer at camera radius.
+static inline float disk_schwarzschild_direct_gfactor(float rEmit,
+                                                      float rObs,
+                                                      float4 rayDeriv,
+                                                      float betaRCoord,
+                                                      float betaPhiCoord,
+                                                      constant Params& P)
+{
+    float rE = max(rEmit, 1.0001 * P.rs);
+    float rO = max(rObs, 1.0001 * P.rs);
+    float wE = clamp(1.0 - P.rs / rE, 1e-8, 1.0);
+    float wO = clamp(1.0 - P.rs / rO, 1e-8, 1.0);
+
+    float br = clamp(betaRCoord, -0.9999, 0.9999);
+    float bp = clamp(betaPhiCoord, -0.9999, 0.9999);
+    float b2 = br * br + bp * bp;
+    if (b2 > 0.999999) {
+        float scale = 0.999999 / sqrt(max(b2, 1e-12));
+        br *= scale;
+        bp *= scale;
+        b2 = br * br + bp * bp;
+    }
+    float gamma = 1.0 / sqrt(max(1.0 - b2, 1e-12));
+
+    float u_t = gamma / sqrt(wE);
+    float u_r = gamma * (br * P.c) * sqrt(wE);
+    float u_phi = gamma * (bp * P.c) / max(rE, 1e-9);
+
+    float k_t = -wE * P.c * P.c * rayDeriv.x;
+    float k_r = rayDeriv.y / wE;
+    float k_phi = rE * rE * rayDeriv.w;
+
+    float eObs = -k_t / sqrt(wO);
+    float eEmit = -(u_t * k_t + u_r * k_r + u_phi * k_phi);
+    if (!(eObs > 1e-20) || !(eEmit > 1e-20) || !isfinite(eObs) || !isfinite(eEmit)) {
+        return 1.0;
+    }
+    return clamp(eObs / eEmit, 1e-4, 1e4);
+}
+
 static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     float dxy = length(float2(pos.x, pos.y));
     float rMin = disk_emit_min_radius_m(P);
+    float rMax = P.re;
     float halfH = disk_half_thickness_m(dxy, P);
-    return (dxy > rMin && dxy < P.re && abs(pos.z) < halfH);
+    if (P.diskVolumeMode != 0u && (P.diskPhysicsMode == 2u || P.diskPhysicsMode == 3u)) {
+        float rs = max(P.rs, 1e-6);
+        float volHalfH = max(P.diskVolumeZNormMax * rs, 1e-6);
+        float volRMin = max(P.diskVolumeRNormMin * rs, rMin);
+        float volRMax = max(P.diskVolumeRNormMax * rs, volRMin + 1e-6);
+        rMin = max(rMin, volRMin);
+        rMax = min(P.re, volRMax);
+        halfH = max(halfH, volHalfH);
+    }
+    return (dxy > rMin && dxy < rMax && abs(pos.z) < halfH);
 }
 
 static inline bool segment_enter_disk(float3 p0,
@@ -1053,42 +1183,101 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
     float c = cos(spiral);
     float s = sin(spiral);
 
-    float bx = 12.0 * u + 2.6 * c;
-    float by = 2.6 * s;
+    if (P.diskNoiseModel == 2u) {
+        // ec7c7cd legacy perlin path (returns [0,1]) for crisp stripe-like texture.
+        float bx = 12.0 * u + 2.6 * c;
+        float by = 2.6 * s;
 
-    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
-    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+        float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
+        float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+
+        float fbmVal = 0.0;
+        float amp = 1.0;
+        float freq = 1.0;
+        float ampSum = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            float nx = (bx + 0.20 * w1) * freq;
+            float ny = (by + 0.18 * w2) * freq;
+            float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+            fbmVal += amp * n;
+            ampSum += amp;
+            amp *= 0.55;
+            freq *= 2.0;
+        }
+        fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
+
+        float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
+        float edgeIn = smoothstep(0.01, 0.08, u);
+        float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
+        float radialFade = edgeIn * edgeOut;
+        float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
+        return 0.5 + 0.5 * n;
+    }
+
+    float bx = 3.4 * u + 1.0 * c;
+    float by = 1.0 * s;
+
+    float w1 = perlin2_repeat(18.0 * bx, 18.0 * by, 4096, 4096, 23u);
+    float w2 = perlin2_repeat(27.0 * bx + 0.9 * w1, 27.0 * by - 0.6 * w1, 4096, 4096, 71u);
 
     float fbmVal = 0.0;
     float amp = 1.0;
     float freq = 1.0;
     float ampSum = 0.0;
-    for (int i = 0; i < 5; ++i) {
-        float nx = (bx + 0.20 * w1) * freq;
-        float ny = (by + 0.18 * w2) * freq;
-        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+    for (int i = 0; i < 4; ++i) {
+        float nx = (bx + 0.20 * w1 + 0.06 * w2) * freq;
+        float ny = (by + 0.19 * w2 - 0.04 * w1) * freq;
+        float n = perlin2_repeat(24.0 * nx, 24.0 * ny, 4096, 4096, 101u + uint(i * 53));
         fbmVal += amp * n;
         ampSum += amp;
-        amp *= 0.55;
-        freq *= 2.0;
+        amp *= 0.60;
+        freq *= 1.72;
     }
     fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
+
+    float laneCoord = 8.6 * u + 1.7 * spiral + 0.7 * w1 + 0.35 * w2;
+    float filaments = 0.5 + 0.5 * sin(laneCoord);
+    float coarse = 0.5 + 0.5 * fbmVal;
+    float field = mix(coarse, filaments, 0.16);
 
     float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
     float edgeIn = smoothstep(0.01, 0.08, u);
     float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
     float radialFade = edgeIn * edgeOut;
 
-    // Normalize to [0,1] so compose path remains consistent with cloud normalization.
-    float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
-    return 0.5 + 0.5 * n;
+    float centered = 2.0 * field - 1.0;
+    centered *= 0.70 * zFade * radialFade;
+    return clamp(centered, -1.0, 1.0);
+}
+
+// Classic stripe-style cloud texture from f552e72 era.
+static inline float disk_classic_stripe_noise(float r, float phi, float z, constant Params& P) {
+    float rNorm = (r - P.rs) / max(P.re - P.rs, 1e-6);
+    float hNorm = z / max(P.he, 1e-6);
+
+    float shearSpeed = 15.0 / (sqrt(max(rNorm, 0.0)) + 0.1);
+    float angle = phi + shearSpeed;
+
+    float3 pos = float3(rNorm * 4.0 * cos(angle),
+                        rNorm * 4.0 * sin(angle),
+                        hNorm * 1.5);
+
+    float3 warp;
+    warp.x = fbm(pos + float3(1.2, 3.4, 0.0));
+    warp.y = fbm(pos + float3(8.3, 0.7, 0.0));
+    warp.z = fbm(pos + float3(0.1, 5.2, 0.0));
+
+    float n = fbm(pos + warp * 1.8);
+    float radialEdge = smoothstep(0.0, 0.1, rNorm) * (1.0 - smoothstep(0.9, 1.0, rNorm));
+    float verticalEdge = 1.0 - smoothstep(0.8, 1.6, abs(hNorm));
+    n = (n - 0.4) * 2.5;
+    return clamp(n * radialEdge * verticalEdge, 0.0, 1.0);
 }
 
 static inline float disk_precision_texture_factor(float dxy, float phi, float z, constant Params& P) {
     float amp = clamp(P.diskPrecisionTexture, 0.0, 1.0);
     if (!(amp > 1e-6)) return 1.0;
-    float base = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
-    float centered = 2.0 * base - 1.0;
+    float centered = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
     float rsSafe = max(P.rs, 1e-6);
     float rr = dxy / rsSafe;
     float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(10.0, 18.0, rr));
@@ -1247,6 +1436,577 @@ static inline float4 disk_sample_atlas(float r, float phi, constant Params& P, d
     return mix(a0, a1, ty);
 }
 
+static inline uint disk_volume_index(uint rIdx, uint phiIdx, uint zIdx, uint nr, uint nphi) {
+    return (zIdx * nphi + phiIdx) * nr + rIdx;
+}
+
+static inline float4 disk_sample_volume_grid(float rNorm,
+                                             float phi,
+                                             float zNorm,
+                                             uint nr,
+                                             uint nphi,
+                                             uint nz,
+                                             constant Params& P,
+                                             device const float4* diskVolume)
+{
+    if (P.diskVolumeMode == 0u || nr == 0u || nphi == 0u || nz == 0u) {
+        return float4(0.0);
+    }
+    if (nr == 1u || nphi == 1u || nz == 1u) {
+        return diskVolume[0];
+    }
+
+    float rMin = max(P.diskVolumeRNormMin, 0.2);
+    float rMax = max(P.diskVolumeRNormMax, rMin + 1e-6);
+    float zMax = max(P.diskVolumeZNormMax, 1e-6);
+
+    float ur = (rNorm - rMin) / max(rMax - rMin, 1e-6);
+    float uz = (zNorm + zMax) / max(2.0 * zMax, 1e-6);
+    if (!(ur >= 0.0 && ur <= 1.0 && uz >= 0.0 && uz <= 1.0)) {
+        return float4(0.0);
+    }
+    float up = fract(phi * (0.5 / M_PI));
+
+    float xr = ur * float(nr - 1u);
+    float yp = up * float(nphi);
+    float zz = uz * float(nz - 1u);
+
+    uint r0 = min(uint(floor(xr)), nr - 1u);
+    uint z0 = min(uint(floor(zz)), nz - 1u);
+    uint r1 = min(r0 + 1u, nr - 1u);
+    uint z1 = min(z0 + 1u, nz - 1u);
+
+    uint p0 = uint(floor(yp)) % nphi;
+    uint p1 = (p0 + 1u) % nphi;
+
+    float fr = xr - float(r0);
+    float fp = yp - floor(yp);
+    float fz = zz - float(z0);
+
+    float4 c000 = diskVolume[disk_volume_index(r0, p0, z0, nr, nphi)];
+    float4 c100 = diskVolume[disk_volume_index(r1, p0, z0, nr, nphi)];
+    float4 c010 = diskVolume[disk_volume_index(r0, p1, z0, nr, nphi)];
+    float4 c110 = diskVolume[disk_volume_index(r1, p1, z0, nr, nphi)];
+    float4 c001 = diskVolume[disk_volume_index(r0, p0, z1, nr, nphi)];
+    float4 c101 = diskVolume[disk_volume_index(r1, p0, z1, nr, nphi)];
+    float4 c011 = diskVolume[disk_volume_index(r0, p1, z1, nr, nphi)];
+    float4 c111 = diskVolume[disk_volume_index(r1, p1, z1, nr, nphi)];
+
+    float4 c00 = mix(c000, c100, fr);
+    float4 c10 = mix(c010, c110, fr);
+    float4 c01 = mix(c001, c101, fr);
+    float4 c11 = mix(c011, c111, fr);
+    float4 c0 = mix(c00, c10, fp);
+    float4 c1 = mix(c01, c11, fp);
+    return mix(c0, c1, fz);
+}
+
+static inline float4 disk_sample_volume_legacy(float rNorm,
+                                               float phi,
+                                               float zNorm,
+                                               constant Params& P,
+                                               device const float4* diskVolume)
+{
+    return disk_sample_volume_grid(rNorm, phi, zNorm, P.diskVolumeR, P.diskVolumePhi, P.diskVolumeZ, P, diskVolume);
+}
+
+static inline float4 disk_sample_vol0(float rNorm,
+                                      float phi,
+                                      float zNorm,
+                                      constant Params& P,
+                                      device const float4* diskVol0)
+{
+    return disk_sample_volume_grid(rNorm, phi, zNorm, P.diskVolumeR0, P.diskVolumePhi0, P.diskVolumeZ0, P, diskVol0);
+}
+
+static inline float4 disk_sample_vol1(float rNorm,
+                                      float phi,
+                                      float zNorm,
+                                      constant Params& P,
+                                      device const float4* diskVol1)
+{
+    return disk_sample_volume_grid(rNorm, phi, zNorm, P.diskVolumeR1, P.diskVolumePhi1, P.diskVolumeZ1, P, diskVol1);
+}
+
+struct VolumeAccum {
+    float I;
+    float w;
+    float temp4;
+    float g;
+    float r;
+    float vr;
+    float noise;
+    float x;
+    float y;
+    float z;
+    float ox;
+    float oy;
+    float oz;
+    float tau;
+    float maxRho;
+    float maxB2;
+    float maxJ;
+    float maxI;
+    uint  samples;
+    uint  surfaceHit;
+};
+
+static inline void volume_accum_init(thread VolumeAccum& A) {
+    A.I = 0.0;
+    A.w = 0.0;
+    A.temp4 = 0.0;
+    A.g = 0.0;
+    A.r = 0.0;
+    A.vr = 0.0;
+    A.noise = 0.0;
+    A.x = 0.0;
+    A.y = 0.0;
+    A.z = 0.0;
+    A.ox = 0.0;
+    A.oy = 0.0;
+    A.oz = 0.0;
+    A.tau = 0.0;
+    A.maxRho = 0.0;
+    A.maxB2 = 0.0;
+    A.maxJ = 0.0;
+    A.maxI = 0.0;
+    A.samples = 0u;
+    A.surfaceHit = 0u;
+}
+
+static inline float disk_grmhd_approx_gfactor(float r,
+                                              float phi,
+                                              float3 obsDir,
+                                              float vR,
+                                              float vPhi,
+                                              float vZ,
+                                              constant Params& P)
+{
+    float rObs = max(length(P.camPos), 1.0001 * P.rs);
+    float gravNum = max(1.0 - P.rs / max(r, 1.0001 * P.rs), 1e-8);
+    float gravDen = max(1.0 - P.rs / max(rObs, 1.0001 * P.rs), 1e-8);
+    float gGrav = sqrt(clamp(gravNum / gravDen, 1e-8, 4.0));
+
+    float3 obs = (dot(obsDir, obsDir) > 1e-20) ? normalize(obsDir) : float3(0.0, 0.0, 1.0);
+    float3 eR = float3(cos(phi), sin(phi), 0.0);
+    float3 ePhi = float3(-sin(phi), cos(phi), 0.0);
+    float3 eZ = float3(0.0, 0.0, 1.0);
+
+    float3 beta = P.diskGrmhdVelScale * float3(vR, vPhi, vZ);
+    float betaMax = max(max(abs(beta.x), abs(beta.y)), abs(beta.z));
+    if (betaMax > 1.5) {
+        beta /= max(P.c, 1e-6);
+    }
+    float betaMag = length(beta);
+    if (betaMag > 0.999) {
+        beta *= (0.999 / max(betaMag, 1e-12));
+        betaMag = 0.999;
+    }
+    float betaLos = dot(beta, float3(dot(obs, eR), dot(obs, ePhi), dot(obs, eZ)));
+    betaLos = clamp(betaLos, -0.999, 0.999);
+    float gamma = 1.0 / sqrt(max(1.0 - betaMag * betaMag, 1e-12));
+    float doppler = 1.0 / max(gamma * (1.0 - betaLos), 1e-8);
+    return clamp(gGrav * doppler, 1e-4, 1e4);
+}
+
+static inline float disk_visible_kerr_ku_gfactor(float rEmit,
+                                                 float segT,
+                                                 float LzConst,
+                                                 float pr0,
+                                                 float pr1,
+                                                 constant Params& P)
+{
+    float massLen = max(0.5 * P.rs, 1e-12);
+    float rM = max(rEmit / massLen, 1.0001);
+    float a = (P.metric == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+    float omega = 1.0 / max(pow(rM, 1.5) + a, 1e-8);
+    float drdt = 0.0;
+
+    KerrCovMetric cov = kerr_cov_metric(rM, 0.5 * M_PI, a);
+    float uDen = -(cov.gtt
+                 + 2.0 * omega * cov.gtphi
+                 + omega * omega * cov.gphiphi
+                 + cov.grr * drdt * drdt);
+    if (!(uDen > 1e-12) || !isfinite(uDen)) return 1.0;
+
+    float u_t = 1.0 / sqrt(uDen);
+    float prRay = mix(pr0, pr1, clamp(segT, 0.0, 1.0));
+    float E_emit = u_t * (1.0 - omega * LzConst - drdt * prRay);
+    if (!(E_emit > 1e-12) || !isfinite(E_emit)) return 1.0;
+    return clamp(1.0 / E_emit, 1e-4, 1e4);
+}
+
+static inline void disk_grmhd_synch_coeffs(float rho,
+                                           float thetae,
+                                           float3 bVec,
+                                           float nuComov,
+                                           constant Params& P,
+                                           thread float& jNu,
+                                           thread float& aNu)
+{
+    float ne = max(rho * max(P.diskGrmhdDensityScale, 0.0), 0.0);
+    float bRaw = length(bVec) * max(P.diskGrmhdBScale, 0.0);
+    float th = clamp(thetae, 1e-4, 1e3);
+    float nu = max(nuComov, 1e3);
+    float bFloor = 0.02 * sqrt(max(ne * th, 1e-20));
+    float bMag = max(max(bRaw, bFloor), 1e-8);
+
+    // Coarse thermal synchrotron shape for scalar I_nu (extensible to full polarized GRRT later).
+    float nuCrit = max(2.8e11 * bMag * th * th, 1e6);
+    float x = nu / nuCrit;
+    float x13 = pow(max(x, 1e-8), 1.0 / 3.0);
+    float kernVal = exp(-min(x13, 40.0)) / max(1.0 + x + x13, 1e-8);
+    float jCom = max(P.diskGrmhdEmissionScale, 0.0) * ne * bMag * kernVal;
+
+    // Kirchhoff closure with Rayleigh-Jeans source function.
+    float teK = max(5.930e9 * th, 1.0);
+    float bNuRJ = (2.0 * P.k * teK * nu * nu) / max(P.c * P.c, 1e-20);
+    float aCom = 0.0;
+    if (bNuRJ > 1e-30) {
+        aCom = jCom / bNuRJ;
+    }
+    aCom *= max(P.diskGrmhdAbsorptionScale, 0.0);
+
+    jNu = max(jCom, 0.0);
+    aNu = max(aCom, 0.0);
+}
+
+static inline void volume_integrate_segment(float3 p0,
+                                            float3 p1,
+                                            float3 obsDir,
+                                            float diskInner,
+                                            constant Params& P,
+                                            device const float4* diskVol0,
+                                            device const float4* diskVol1,
+                                            thread VolumeAccum& A,
+                                            float4 rayV0,
+                                            float4 rayV1,
+                                            float LzConst,
+                                            float pr0,
+                                            float pr1)
+{
+    if (P.diskVolumeMode == 0u) return;
+    // Optional photosphere shortcut for visible mode.
+    // Keep it disabled by default so GRMHD uses volumetric RT integration.
+    bool visibleSurfaceMode = (P.diskPhysicsMode == 3u &&
+                               P.visibleMode != 0u &&
+                               P.visiblePhotosphereRhoThreshold > 0.0);
+    if (visibleSurfaceMode && A.surfaceHit != 0u) return;
+    float3 seg = p1 - p0;
+    float segLen = length(seg);
+    if (!(segLen > 1e-9)) return;
+    if (!(A.tau < 48.0)) return;
+
+    float targetStep = max(0.18 * P.rs, 1e-6);
+    int nMax = 6;
+    if (P.diskPhysicsMode == 3u) {
+        // Thin GRMHD volumes are easy to miss with coarse segment sampling.
+        // Tie step size to vertical extent so visible-surface / scalar-RT both remain stable.
+        float zScale = max(P.diskVolumeZNormMax * P.rs, 0.01 * P.rs);
+        float thinStep = max(0.12 * zScale, 0.005 * P.rs);
+        targetStep = min(targetStep, thinStep);
+        nMax = 24;
+    }
+    int n = clamp((int)ceil(segLen / targetStep), 1, nMax);
+    float ds = segLen / float(max(n, 1));
+    float3 obs = (dot(obsDir, obsDir) > 1e-20) ? normalize(obsDir) : float3(0.0, 0.0, 1.0);
+    float tauScaleLegacy = max(P.diskVolumeTauScale, 0.0)
+                         * (0.22 + 0.28 * max(P.diskCloudOpticalDepth, 0.25))
+                         / max(P.rs, 1e-6);
+    if (!(tauScaleLegacy > 0.0)) tauScaleLegacy = 0.6 / max(P.rs, 1e-6);
+    float rhoThreshold = max(P.visiblePhotosphereRhoThreshold, 0.0);
+    bool havePrevVisibleSample = false;
+    float prevRho = 0.0;
+    float prevT = 0.0;
+    float3 prevPos = float3(0.0);
+
+    for (int i = 0; i < 6; ++i) {
+        if (i >= n) break;
+        float t = (float(i) + 0.5) / float(max(n, 1));
+        float3 pos = p0 + seg * t;
+        float r = length(pos.xy);
+        if (!(r > P.rs * 1.0001 && r < P.re * 1.25)) continue;
+
+        float phi = atan2(pos.y, pos.x);
+        float rNorm = r / max(P.rs, 1e-6);
+        float zNorm = pos.z / max(P.rs, 1e-6);
+        float rNormMin = max(P.diskVolumeRNormMin, 0.2);
+        float rNormMax = max(P.diskVolumeRNormMax, rNormMin + 1e-6);
+        float zNormMax = max(P.diskVolumeZNormMax, 1e-6);
+        if (!(rNorm >= rNormMin && rNorm <= rNormMax && abs(zNorm) <= zNormMax)) {
+            continue;
+        }
+
+        if (P.diskVolumeFormat == 1u) {
+            float4 vol0 = disk_sample_vol0(rNorm, phi, zNorm, P, diskVol0);
+            float4 vol1 = disk_sample_vol1(rNorm, phi, zNorm, P, diskVol1);
+
+            float rho = exp(clamp(vol0.x, -40.0, 40.0));
+            float thetae = exp(clamp(vol0.y, -30.0, 20.0));
+            float vR = vol0.z;
+            float vPhi = vol0.w;
+            float vZ = vol1.x;
+            float3 bVec = float3(vol1.y, vol1.z, vol1.w);
+
+            float rhoEff = rho * max(P.diskGrmhdDensityScale, 0.0);
+            float bEff = length(bVec) * max(P.diskGrmhdBScale, 0.0);
+            A.maxRho = max(A.maxRho, rhoEff);
+            A.maxB2 = max(A.maxB2, bEff * bEff);
+
+            if (visibleSurfaceMode) {
+                bool crossing = false;
+                float tHit = t;
+                float3 hitPos = pos;
+                float rhoHit = rho;
+                float vRHit = vR;
+
+                if (havePrevVisibleSample) {
+                    if (prevRho < rhoThreshold && rho >= rhoThreshold) {
+                        float den = rho - prevRho;
+                        float tCross = (abs(den) > 1e-30) ? clamp((rhoThreshold - prevRho) / den, 0.0, 1.0) : 1.0;
+                        tHit = mix(prevT, t, tCross);
+                        hitPos = mix(prevPos, pos, tCross);
+                        crossing = true;
+                    }
+                } else if (rho >= rhoThreshold) {
+                    crossing = true;
+                }
+
+                if (crossing) {
+                    float rHit = length(hitPos.xy);
+                    float phiHit = atan2(hitPos.y, hitPos.x);
+                    float rNormHit = rHit / max(P.rs, 1e-6);
+                    float zNormHit = hitPos.z / max(P.rs, 1e-6);
+                    float4 vol0Hit = disk_sample_vol0(rNormHit, phiHit, zNormHit, P, diskVol0);
+                    float4 vol1Hit = disk_sample_vol1(rNormHit, phiHit, zNormHit, P, diskVol1);
+                    rhoHit = exp(clamp(vol0Hit.x, -40.0, 40.0));
+                    vRHit = vol0Hit.z;
+
+                    float g = disk_grmhd_approx_gfactor(rHit, phiHit, obs, vol0Hit.z, vol0Hit.w, vol1Hit.x, P);
+                    if (P.metric != 0) {
+                        g = disk_visible_kerr_ku_gfactor(rHit, tHit, LzConst, pr0, pr1, P);
+                    }
+                    if (!isfinite(g)) g = 1.0;
+
+                    float teff = disk_visible_teff(rHit, P);
+                    if (!(teff > 1.0) || !isfinite(teff)) {
+                        // Visible-surface safety fallback:
+                        // if NT/thin-disk branch collapses to near-zero in display units,
+                        // use the configured parametric Teff profile to avoid fully black output.
+                        float t0Fallback = max(P.visibleTeffT0, 100.0);
+                        float r0Fallback = max(P.visibleTeffR0, P.rs * 1.0001);
+                        float pFallback = clamp(P.visibleTeffP, 0.05, 3.0);
+                        float ratioFallback = max(rHit / r0Fallback, 1e-6);
+                        teff = max(t0Fallback * pow(ratioFallback, -pFallback), 1.0);
+                    }
+                    if (teff > 1.0 && isfinite(teff)) {
+                        A.surfaceHit = 1u;
+                        A.w = 1.0;
+                        A.I = 1e-20;
+                        A.temp4 = pow(max(teff, 1.0), 4.0);
+                        A.g = clamp(g, 1e-4, 1e4);
+                        A.r = rHit;
+                        A.vr = vRHit;
+                        A.noise = clamp(rhoThreshold > 0.0 ? (rhoHit / max(rhoHit + rhoThreshold, 1e-30)) : (rhoHit / max(rhoHit + 1.0, 1e-30)), 0.0, 1.0);
+                        A.x = hitPos.x;
+                        A.y = hitPos.y;
+                        A.z = hitPos.z;
+                        A.ox = obs.x;
+                        A.oy = obs.y;
+                        A.oz = obs.z;
+                        A.maxJ = max(A.maxJ, 0.0);
+                        A.maxI = max(A.maxI, A.I);
+                        A.samples = 1u;
+                        return;
+                    }
+                    // If Teff is non-visible (or invalid) at this crossing, do not terminate.
+                    // Continue marching so volumetric RT can still contribute instead of hard black.
+                }
+
+                havePrevVisibleSample = true;
+                prevRho = rho;
+                prevPos = pos;
+                prevT = t;
+                // No threshold crossing yet: fall back to volumetric RT integration below.
+            }
+
+            if (!(rho > 1e-24) || !(thetae > 1e-5)) continue;
+            float g = disk_grmhd_approx_gfactor(r, phi, obs, vR, vPhi, vZ, P);
+            if (!isfinite(g)) g = 1.0;
+
+            float nuComov = max(P.diskNuObsHz / max(g, 1e-8), 1e3);
+
+            float jCom = 0.0;
+            float aCom = 0.0;
+            disk_grmhd_synch_coeffs(rho, thetae, bVec, nuComov, P, jCom, aCom);
+
+            float jObs = jCom * g * g;
+            float aObs = aCom / max(g, 1e-8);
+            A.maxJ = max(A.maxJ, jObs);
+            float IPrev = A.I;
+            if (aObs > 1e-12) {
+                float dTau = min(aObs * ds, 40.0);
+                float trans = exp(-dTau);
+                float src = jObs / max(aObs, 1e-30);
+                A.I = IPrev * trans + src * (1.0 - trans);
+                A.tau += dTau;
+            } else {
+                A.I = IPrev + jObs * ds;
+            }
+            A.maxI = max(A.maxI, A.I);
+
+            float dI = max(A.I - IPrev, 0.0);
+            if (dI > 0.0) {
+                float teK = max(5.930e9 * thetae, 1.0);
+                A.w += dI;
+                A.temp4 += dI * pow(teK, 4.0);
+                A.g += dI * g;
+                A.r += dI * r;
+                A.vr += dI * vR;
+                A.noise += dI * clamp(rho / (rho + 1.0), 0.0, 1.0);
+                A.x += dI * pos.x;
+                A.y += dI * pos.y;
+                A.z += dI * pos.z;
+                A.ox += dI * obs.x;
+                A.oy += dI * obs.y;
+                A.oz += dI * obs.z;
+                A.samples += 1u;
+            }
+            if (!(A.tau < 48.0)) break;
+            continue;
+        }
+
+        float4 vol = disk_sample_volume_legacy(rNorm, phi, zNorm, P, diskVol0);
+        float tempScale = clamp(vol.x, 0.02, 40.0);
+        float density = pow(clamp(vol.y, 0.0, 1.0), 0.65);
+        float vrRatio = clamp(vol.z, -1.0, 1.0);
+        float vphiScale = clamp(vol.w, 0.0, 4.0);
+        if (!(density > 1e-5)) continue;
+
+        float cloudFlow = disk_cloud_noise(r, phi, pos.z, P.c * P.diskFlowTime + 0.12 * r, P);
+        float cloudPerlin = 0.5 + 0.5 * disk_perlin_texture_noise(r, phi + 0.19 * P.diskFlowTime, pos.z, P);
+        float cloudLocal = clamp(0.58 * cloudFlow + 0.42 * cloudPerlin, 0.0, 1.0);
+        float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+        float porosity = clamp(P.diskCloudPorosity, 0.0, 1.0);
+        float cloudSharp = pow(cloudLocal, mix(2.0, 1.15, coverage));
+        float clumpGate = smoothstep(max(0.0, 1.0 - coverage), 1.0, cloudSharp);
+        float sparseGate = smoothstep(0.68 - 0.30 * coverage,
+                                      0.96 - 0.18 * coverage,
+                                      cloudSharp);
+        float voidGate = porosity * (1.0 - clumpGate);
+        float densityEff = density
+                         * mix(0.30, 1.08, clumpGate * clumpGate)
+                         * mix(0.22, 1.0, sparseGate * sparseGate * sparseGate)
+                         * (1.0 - 0.40 * voidGate);
+        float innerX = clamp((r - diskInner) / max(0.45 * diskInner, 1e-6), 0.0, 1.0);
+        float innerGate = smoothstep(0.0, 1.0, innerX);
+        densityEff *= (0.25 + 0.75 * innerGate);
+        float voidNoise = fbm(float3(rNorm * 4.6, phi * 10.8, zNorm * 6.2 + 0.45 * P.diskFlowTime));
+        float coherentVoid = smoothstep(0.46, 0.83, voidNoise);
+        densityEff *= mix(1.0, coherentVoid, 0.30 * porosity);
+        float spiral = 0.5 + 0.5 * sin(12.0 * phi + 5.0 * log(max(rNorm, 1.0)));
+        float filament = smoothstep(0.56, 0.92, spiral);
+        densityEff *= mix(1.0, 0.52 + 0.48 * filament, 0.18);
+        densityEff = max(densityEff, 0.06 * density);
+        if (!(densityEff > 1e-5)) continue;
+
+        float g = 1.0;
+        if (P.metric == 0) {
+            float massLen = 0.5 * P.rs;
+            float rM = r / max(massLen, 1e-12);
+            float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+            float betaRCoord = vrRatio * betaRef;
+            float betaPhiCoord = -vphiScale * betaRef;
+            if (P.diskPhysicsMode != 0u && r < diskInner * (1.0 - 1e-4)) {
+                float rMsM = diskInner / max(massLen, 1e-12);
+                float betaR = 0.0;
+                float betaPhi = 0.0;
+                if (disk_schwarzschild_plunge_local_beta(rM, rMsM, betaR, betaPhi)) {
+                    betaRCoord = betaR;
+                    betaPhiCoord = betaPhi;
+                }
+            }
+            float4 rayDeriv = mix(rayV0, rayV1, t);
+            float rObs = max(length(P.camPos), 1.0001 * P.rs);
+            g = disk_schwarzschild_direct_gfactor(r,
+                                                  rObs,
+                                                  rayDeriv,
+                                                  betaRCoord,
+                                                  betaPhiCoord,
+                                                  P);
+        } else {
+            float massLen = 0.5 * P.rs;
+            float rM = r / max(massLen, 1e-12);
+            float a = clamp(P.spin, -0.999, 0.999);
+            float diskInnerM = diskInner / max(massLen, 1e-12);
+
+            float omegaK = 1.0 / max(pow(rM, 1.5) + a, 1e-8);
+            float omega = omegaK * vphiScale;
+            float drdt = vrRatio * sqrt(1.0 / max(rM, 1.0));
+            if (P.diskPhysicsMode != 0u && rM < diskInnerM * (1.0 - 1e-4)) {
+                float plungeOmega = omega;
+                float plungeDrdt = drdt;
+                float plungeVrRatio = vrRatio;
+                if (disk_kerr_plunge_kinematics(rM, diskInnerM, a, plungeOmega, plungeDrdt, plungeVrRatio)) {
+                    omega = plungeOmega;
+                    drdt = plungeDrdt;
+                }
+            }
+
+            float prRay = mix(pr0, pr1, t);
+            KerrCovMetric diskCov = kerr_cov_metric(rM, 0.5 * M_PI, a);
+            float uDen = -(diskCov.gtt
+                         + 2.0 * omega * diskCov.gtphi
+                         + omega * omega * diskCov.gphiphi
+                         + diskCov.grr * drdt * drdt);
+            if (!(uDen > 1e-12)) {
+                drdt = 0.0;
+                uDen = -(diskCov.gtt
+                       + 2.0 * omega * diskCov.gtphi
+                       + omega * omega * diskCov.gphiphi);
+            }
+            float u_t = 1.0 / sqrt(max(uDen, 1e-12));
+            float E_emit = u_t * (1.0 - omega * LzConst - drdt * prRay);
+            if (!(E_emit > 1e-8)) {
+                E_emit = u_t * max(1.0 - omega * LzConst, 1e-8);
+            }
+            g = clamp(1.0 / max(E_emit, 1e-8), 1e-4, 1e4);
+        }
+        if (!isfinite(g)) g = 1.0;
+
+        float T = disk_effective_temperature(r, diskInner, P) * tempScale;
+        if (P.diskPhysicsMode == 2u) {
+            T *= disk_precision_texture_factor(r, phi, pos.z, P);
+        }
+
+        float emiss = densityEff
+                    * mix(0.95, 2.10, clumpGate)
+                    * pow(max(T / 6000.0, 1e-4), 2.4)
+                    * 1.35;
+        float dTau = min(tauScaleLegacy * densityEff * ds, 2.4);
+        float trans = exp(-A.tau);
+        float contrib = trans * emiss * ds;
+        if (contrib > 0.0) {
+            A.w += contrib;
+            A.temp4 += contrib * pow(max(T, 1.0), 4.0);
+            A.g += contrib * g;
+            A.r += contrib * r;
+            A.vr += contrib * vrRatio;
+            A.noise += contrib * cloudSharp;
+            A.x += contrib * pos.x;
+            A.y += contrib * pos.y;
+            A.z += contrib * pos.z;
+            A.ox += contrib * obs.x;
+            A.oy += contrib * obs.y;
+            A.oz += contrib * obs.z;
+            A.samples += 1u;
+            A.I += contrib;
+        }
+        A.tau += dTau;
+        if (!(A.tau < 24.0)) break;
+    }
+}
+
 static inline void init_collision_info(thread CollisionInfo& info) {
     info.hit = 0;
     info.ct  = 0.0;
@@ -1264,6 +2024,10 @@ static inline float3 disk_sample_probe_pos(float3 hitPos,
                                            float3 worldPos,
                                            constant Params& P)
 {
+    if (P.diskNoiseModel == 1u || P.diskNoiseModel == 2u) {
+        // Perlin modes sample exactly at hit position for stable streak texture.
+        return hitPos;
+    }
     float3 segProbe = worldPos - world0;
     float segProbeLen2 = dot(segProbe, segProbe);
     float3 samplePos = hitPos;
@@ -1282,9 +2046,30 @@ static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
 {
     float sampleR = length(float2(samplePos.x, samplePos.y));
     float phiPos = atan2(samplePos.y, samplePos.x);
-    float baseNoise = (P.diskNoiseModel == 1u)
-        ? disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P)
-        : disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
+    float baseNoise = 0.0;
+    if (P.diskNoiseModel == 1u) {
+        // Perlin mode: wide local smoothing and gentle contrast to keep a soft,
+        // cloud-like streak texture rather than hard ring banding.
+        float n0 = disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P);
+        float dPhi = 0.030;
+        float dR = max(0.020 * P.rs, 1e-6);
+        float nPhiF = disk_perlin_texture_noise(sampleR, phiPos + dPhi, samplePos.z, P);
+        float nPhiB = disk_perlin_texture_noise(sampleR, phiPos - dPhi, samplePos.z, P);
+        float nRF = disk_perlin_texture_noise(sampleR + dR, phiPos, samplePos.z, P);
+        float nRB = disk_perlin_texture_noise(max(sampleR - dR, 1.0001 * P.rs), phiPos, samplePos.z, P);
+        float smooth = 0.36 * n0 + 0.22 * nPhiF + 0.22 * nPhiB + 0.10 * nRF + 0.10 * nRB;
+        float flowSoft = 2.0 * disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P) - 1.0;
+        smooth = mix(smooth, flowSoft, 0.22);
+        float centered = smooth / (1.0 + 0.75 * abs(smooth));
+        float soft = 0.5 + 0.5 * centered;
+        baseNoise = clamp(0.5 + (soft - 0.5) * 0.64, 0.0, 1.0);
+    } else if (P.diskNoiseModel == 2u) {
+        baseNoise = clamp(disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P), 0.0, 1.0);
+    } else if (P.diskNoiseModel == 3u) {
+        baseNoise = disk_classic_stripe_noise(sampleR, phiPos, samplePos.z, P);
+    } else {
+        baseNoise = disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
+    }
     float atlasDensity = clamp(disk_sample_atlas(sampleR, phiPos, P, diskAtlas).y, 0.0, 1.0);
     float densityBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
     if (P.diskPhysicsMode == 1u) {
@@ -1306,6 +2091,8 @@ static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
 kernel void renderBH(constant Params& P [[buffer(0)]],
                      device CollisionInfo* outInfo [[buffer(1)]],
                      device const float4* diskAtlas [[buffer(2)]],
+                     device const float4* diskVol0 [[buffer(3)]],
+                     device const float4* diskVol1 [[buffer(4)]],
                      uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= P.width || gid.y >= P.height) return;
@@ -1335,6 +2122,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
     CollisionInfo info;
     init_collision_info(info);
+    info.direct_world = float4(-normalize(dir), 0.0);
 
     float4 p = float4(0.0, r0, M_PI * 0.5, 0.0);
     float dt   = 0.1;
@@ -1346,6 +2134,11 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         float horizonRadius = P.rs * (1.0 + P.eps);
         float diskInner = disk_inner_radius_m(P);
         float diskEmitMin = disk_emit_min_radius_m(P);
+        float rObs = max(length(P.camPos), 1.0001 * P.rs);
+        bool volumeMode = (P.diskVolumeMode != 0u && (P.diskPhysicsMode == 2u || P.diskPhysicsMode == 3u));
+        VolumeAccum volumeA;
+        volume_accum_init(volumeA);
+        float3 volumeObsDir = -normalize(dir);
 
         for (int i=0; i<P.maxSteps; ++i) {
             float4 pPrev = p;
@@ -1356,94 +2149,125 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
             float3 worldPos = localPos.x * newX + localPos.y * newY + localPos.z * newZ;
 
             if (hasPrev) {
-                float tEnter = 0.0;
-                bool entered = false;
-                float3 hitPos = float3(0.0);
-
-                // Curved-path guard: split one Schwarzschild RK step into two half steps.
-                float4 pMid = pPrev;
-                float4 vMid = vPrev;
-                rk4_step_h(pMid, vMid, P, 0.5 * P.h);
-                float3 localMid = conv(pMid.y, pMid.z, pMid.w);
-                float3 worldMid = localMid.x * newX + localMid.y * newY + localMid.z * newZ;
-                if (segment_enter_disk(world0, worldMid, P, tEnter)) {
-                    hitPos = mix(world0, worldMid, tEnter);
-                    entered = true;
-                } else if (segment_enter_disk(worldMid, worldPos, P, tEnter)) {
-                    hitPos = mix(worldMid, worldPos, tEnter);
-                    entered = true;
-                }
-                if (!entered && segment_enter_disk(world0, worldPos, P, tEnter)) {
-                    hitPos = mix(world0, worldPos, tEnter);
-                    entered = true;
+                float3 segDir = worldPos - world0;
+                float segLen2 = dot(segDir, segDir);
+                if (segLen2 > 1e-20) {
+                    volumeObsDir = -normalize(segDir);
+                    info.direct_world = float4(volumeObsDir, 0.0);
                 }
 
-                if (entered) {
-                    float dxy = length(float2(hitPos.x, hitPos.y));
-                    if (dxy > diskEmitMin && dxy < P.re) {
-                        float phiHit = atan2(hitPos.y, hitPos.x);
-                        float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
-                        float absV = sqrt(P.G * P.M / dxy);
-                        float invDxy = 1.0 / max(dxy, 1e-6);
-                        float3 er = float3(hitPos.x * invDxy, hitPos.y * invDxy, 0.0);
-                        float3 ephi = float3(hitPos.y * invDxy, -hitPos.x * invDxy, 0.0);
-                        float vrRatio = 0.0;
-                        float vphiScale = 1.0;
-                        float tempScale = 1.0;
-                        if (P.diskPhysicsMode != 2u) {
-                            vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
-                            vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
-                            tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
-                        }
-                        float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
-                        if (P.diskPhysicsMode != 0u && dxy < diskInner * (1.0 - 1e-4)) {
+                if (volumeMode) {
+                    volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0, diskVol1, volumeA,
+                                             vPrev, v, 0.0, 0.0, 0.0);
+                } else {
+                    float tEnter = 0.0;
+                    float hitSegT = 0.0;
+                    int hitSegment = -1; // 0=world0->mid, 1=mid->worldPos, 2=world0->worldPos(fallback)
+                    bool entered = false;
+                    float3 hitPos = float3(0.0);
+
+                    // Curved-path guard: split one Schwarzschild RK step into two half steps.
+                    float4 pMid = pPrev;
+                    float4 vMid = vPrev;
+                    rk4_step_h(pMid, vMid, P, 0.5 * P.h);
+                    float3 localMid = conv(pMid.y, pMid.z, pMid.w);
+                    float3 worldMid = localMid.x * newX + localMid.y * newY + localMid.z * newZ;
+                    if (segment_enter_disk(world0, worldMid, P, tEnter)) {
+                        hitPos = mix(world0, worldMid, tEnter);
+                        hitSegT = tEnter;
+                        hitSegment = 0;
+                        entered = true;
+                    } else if (segment_enter_disk(worldMid, worldPos, P, tEnter)) {
+                        hitPos = mix(worldMid, worldPos, tEnter);
+                        hitSegT = tEnter;
+                        hitSegment = 1;
+                        entered = true;
+                    }
+                    if (!entered && segment_enter_disk(world0, worldPos, P, tEnter)) {
+                        hitPos = mix(world0, worldPos, tEnter);
+                        hitSegT = tEnter;
+                        hitSegment = 2;
+                        entered = true;
+                    }
+
+                    if (entered) {
+                        float dxy = length(float2(hitPos.x, hitPos.y));
+                        if (dxy > diskEmitMin && dxy < P.re) {
+                            float phiHit = atan2(hitPos.y, hitPos.x);
+                            float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
+                            float absV = sqrt(P.G * P.M / dxy);
+                            float invDxy = 1.0 / max(dxy, 1e-6);
+                            float3 er = float3(hitPos.x * invDxy, hitPos.y * invDxy, 0.0);
+                            float3 ephi = float3(hitPos.y * invDxy, -hitPos.x * invDxy, 0.0);
+                            float vrRatio = 0.0;
+                            float vphiScale = 1.0;
+                            float tempScale = 1.0;
+                            if (P.diskPhysicsMode != 2u) {
+                                vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
+                                vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
+                                tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
+                            }
                             float massLen = 0.5 * P.rs;
                             float rM = dxy / max(massLen, 1e-12);
-                            float rMsM = diskInner / max(massLen, 1e-12);
-                            float betaR = 0.0;
-                            float betaPhi = 0.0;
-                            if (disk_schwarzschild_plunge_local_beta(rM, rMsM, betaR, betaPhi)) {
-                                v_disk = P.c * (betaR * er + betaPhi * ephi);
-                                float vrRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
-                                vrRatio = clamp(betaR / max(vrRef, 1e-6), -1.0, 1.0);
+                            float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+                            // Coordinate-basis local betas (phi basis follows +phi direction).
+                            float betaRCoord = vrRatio * betaRef;
+                            float betaPhiCoord = -vphiScale * betaRef;
+                            float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
+                            if (P.diskPhysicsMode != 0u && dxy < diskInner * (1.0 - 1e-4)) {
+                                float rMsM = diskInner / max(massLen, 1e-12);
+                                float betaR = 0.0;
+                                float betaPhi = 0.0;
+                                if (disk_schwarzschild_plunge_local_beta(rM, rMsM, betaR, betaPhi)) {
+                                    v_disk = P.c * (betaR * er + betaPhi * ephi);
+                                    betaRCoord = betaR;
+                                    betaPhiCoord = betaPhi;
+                                    float vrRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+                                    vrRatio = clamp(betaR / max(vrRef, 1e-6), -1.0, 1.0);
+                                }
                             }
+                            float vMag = length(v_disk);
+                            float vCap = 0.999 * P.c;
+                            if (vMag > vCap && vMag > 1e-9) v_disk *= (vCap / vMag);
+
+                            float3 segDir2 = worldPos - world0;
+                            float segLen22 = dot(segDir2, segDir2);
+                            float3 direct = (segLen22 > 1e-20) ? normalize(segDir2) : normalize(dir);
+                            float3 obsDir = -direct;
+
+                            float4 rayDerivHit = v;
+                            if (hitSegment == 0) {
+                                rayDerivHit = mix(vPrev, vMid, clamp(hitSegT, 0.0, 1.0));
+                            } else if (hitSegment == 1) {
+                                rayDerivHit = mix(vMid, v, clamp(hitSegT, 0.0, 1.0));
+                            } else if (hitSegment == 2) {
+                                rayDerivHit = mix(vPrev, v, clamp(hitSegT, 0.0, 1.0));
+                            }
+                            float g_factor = disk_schwarzschild_direct_gfactor(dxy,
+                                                                               rObs,
+                                                                               rayDerivHit,
+                                                                               betaRCoord,
+                                                                               betaPhiCoord,
+                                                                               P);
+
+                            float T = disk_effective_temperature(dxy, diskInner, P);
+                            T *= tempScale;
+                            if (P.diskPhysicsMode == 2u) {
+                                T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
+                            }
+
+                            float ctLen = P.c * p.x;
+                            info.hit = 1;
+                            info.ct  = ctLen;
+                            info.T   = T;
+                            info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
+                            info.direct_world = float4(obsDir, 0.0);
+                            float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
+                            disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
+
+                            outInfo[idx] = info;
+                            return;
                         }
-                        float vMag = length(v_disk);
-                        float vCap = 0.999 * P.c;
-                        if (vMag > vCap && vMag > 1e-9) v_disk *= (vCap / vMag);
-
-                        float rState = p.y;
-                        float phi = p.w;
-                        float dx = cos(phi) * v.y - rState * sin(phi) * v.w;
-                        float dy = sin(phi) * v.y + rState * cos(phi) * v.w;
-                        float3 worldVel = dx * newX + dy * newY;
-                        float3 direct = normalize(worldVel);
-                        float3 obsDir = -direct;
-
-                        float beta = clamp(length(v_disk) / max(P.c, 1e-9), 0.0, 0.999999);
-                        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
-                        float cosTheta = clamp(dot(v_disk, obsDir) / max(length(v_disk) * length(obsDir), 1e-30), -1.0, 1.0);
-                        float doppler = 1.0 / max(gamma * (1.0 + beta * cosTheta), 1e-9);
-                        float g_gr = sqrt(clamp(1.0 - P.rs / max(dxy, 1.0001 * P.rs), 1e-8, 1.0));
-                        float g_factor = clamp(doppler * g_gr, 1e-4, 1e4);
-
-                        float T = disk_effective_temperature(dxy, diskInner, P);
-                        T *= tempScale;
-                        if (P.diskPhysicsMode == 2u) {
-                            T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
-                        }
-
-                        float ctLen = P.c * p.x;
-                        info.hit = 1;
-                        info.ct  = ctLen;
-                        info.T   = T;
-                        info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
-                        info.direct_world = float4(obsDir, 0.0);
-                        float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
-                        disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
-
-                        outInfo[idx] = info;
-                        return;
                     }
                 }
             }
@@ -1456,6 +2280,58 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
             if (p.y < horizonRadius) break;
             if (!(isfinite(p.x) && isfinite(p.y) && isfinite(p.w))) break;
         }
+        bool grmhdVisibleSurfaceHit = (P.diskPhysicsMode == 3u && P.visibleMode != 0u && volumeA.surfaceHit != 0u);
+        if (volumeMode && (grmhdVisibleSurfaceHit || ((P.diskPhysicsMode == 3u) && volumeA.I > 0.0) || ((P.diskPhysicsMode != 3u) && volumeA.w > 0.0))) {
+            float weight = max(volumeA.w, 1e-20);
+            float invW = 1.0 / weight;
+            bool haveWeightedMoments = (volumeA.w > 1e-18);
+            float3 pos = float3(volumeA.x, volumeA.y, volumeA.z) * invW;
+            float rEmit = haveWeightedMoments ? max(volumeA.r * invW, P.rs * 1.0001) : max(diskInner, P.rs * 1.0001);
+            float volAmp = 1.0 - exp(-0.9 * volumeA.w);
+            float3 dirAvg = float3(volumeA.ox, volumeA.oy, volumeA.oz) * invW;
+            float3 toCam = P.camPos - pos;
+            float toCamLen2 = dot(toCam, toCam);
+            float3 obsDir = (dot(dirAvg, dirAvg) > 1e-20)
+                ? normalize(dirAvg)
+                : ((toCamLen2 > 1e-20) ? normalize(toCam) : volumeObsDir);
+            if (toCamLen2 > 1e-20 && dot(obsDir, toCam) < 0.0) {
+                obsDir = -obsDir;
+            }
+            float scalarI = (P.diskPhysicsMode == 3u) ? max(volumeA.I, 0.0) : clamp(volAmp, 0.0, 1.0);
+            float brightnessT = pow(max(volumeA.temp4 * invW, 1e-20), 0.25);
+            if (grmhdVisibleSurfaceHit) {
+                brightnessT = max(pow(max(volumeA.temp4, 1e-20), 0.25), 1.0);
+            } else if (P.diskPhysicsMode == 3u && (!haveWeightedMoments || !(volumeA.temp4 > 0.0))) {
+                float nu = max(P.diskNuObsHz, 1e6);
+                brightnessT = max((scalarI * P.c * P.c) / max(2.0 * P.k * nu * nu, 1e-30), 1.0);
+            }
+            float gMean = haveWeightedMoments ? (volumeA.g * invW) : 1.0;
+            float vrMean = haveWeightedMoments ? (volumeA.vr * invW) : 0.0;
+            float noiseMean = haveWeightedMoments ? (volumeA.noise * invW) : 0.0;
+            info.hit = 1;
+            info.ct  = P.c * p.x;
+            info.T   = brightnessT;
+            info.v_disk = float4(clamp(gMean, 1e-4, 1e4),
+                                 rEmit,
+                                 clamp(vrMean, -1.0, 1.0),
+                                 scalarI);
+            info.direct_world = float4(obsDir, 0.0);
+            if (P.diskPhysicsMode == 3u && P.diskGrmhdDebugView != 0u) {
+                // Debug payload for GPU heatmaps (raw maxima along ray):
+                // emit_r_norm=max_rho, emit_phi=max_b2, emit_z_norm=max_jnu, noise=max_inu.
+                info.noise = max(volumeA.maxI, 0.0);
+                info.emit_r_norm = max(volumeA.maxRho, 0.0);
+                info.emit_phi = max(volumeA.maxB2, 0.0);
+                info.emit_z_norm = max(volumeA.maxJ, 0.0);
+            } else {
+                info.noise = clamp(noiseMean, 0.0, 1.0);
+                info.emit_r_norm = rEmit / max(P.rs, 1e-6);
+                info.emit_phi = atan2(pos.y, pos.x);
+                info.emit_z_norm = pos.z / max(P.rs, 1e-6);
+            }
+            outInfo[idx] = info;
+            return;
+        }
     } else {
         float massLen = 0.5 * P.rs;
         float a = clamp(P.spin, -0.999, 0.999);
@@ -1463,6 +2339,10 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         float diskInner = disk_inner_radius_m(P);
         float diskInnerM = diskInner / max(massLen, 1e-12);
         float diskEmitMin = disk_emit_min_radius_m(P);
+        bool volumeMode = (P.diskVolumeMode != 0u && (P.diskPhysicsMode == 2u || P.diskPhysicsMode == 3u));
+        VolumeAccum volumeA;
+        volume_accum_init(volumeA);
+        float3 volumeObsDir = -normalize(dir);
         KerrState state;
         float Lz = 0.0;
         float horizonGeom = 0.0;
@@ -1472,7 +2352,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
         }
 
         float hStep = max(P.h, 1e-6);
-        float hMin = max(P.h * 0.02, 1e-6);
+        float hMin = max(P.h * 0.005, 1e-7);
         float hMax = max(P.h * 2.0, hMin);
         float tol = max(P.kerrTol, 1e-6);
         int stepMul = max(P.kerrSubsteps, 1);
@@ -1482,6 +2362,12 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
         while (accepted < targetSteps && guard < targetSteps * 12) {
             guard += 1;
+            // Near the horizon, cap the local step size to preserve higher-order photon ring detail.
+            float distH = max(state.r - horizonGeom, 0.0);
+            float nearH = clamp(distH / 0.8, 0.0, 1.0);
+            float hMaxLocal = max(hMin, hMax * mix(0.08, 1.0, nearH * nearH));
+            hStep = clamp(hStep, hMin, hMaxLocal);
+
             KerrState trial;
             float errNorm = 0.0;
             float nullResidual = 0.0;
@@ -1520,7 +2406,7 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
 
                 float ratio = max(errNorm / tol, 1e-8);
                 float grow = clamp(0.9 * pow(ratio, -0.2), 0.25, 2.5);
-                hStep = clamp(hStep * grow, hMin, hMax);
+                hStep = clamp(hStep * grow, hMin, hMaxLocal);
                 if (abs(nullResidual) > 1e-6) {
                     hStep = max(hMin, hStep * 0.5);
                 }
@@ -1529,105 +2415,117 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                 float3 worldPos = conv(radiusMeters, state.theta, state.phi);
 
                 if (hasPrev) {
-                    float tEnter = 0.0;
-                    bool entered = false;
-                    float3 hitPos = float3(0.0);
+                    float3 segDir = worldPos - world0;
+                    float segLen2 = dot(segDir, segDir);
+                    if (segLen2 > 1e-20) {
+                        volumeObsDir = -normalize(segDir);
+                        info.direct_world = float4(volumeObsDir, 0.0);
+                    }
 
-                    // Curved-path guard: split one accepted Kerr segment into two half segments.
-                    KerrState midState;
-                    float midErr = 0.0;
-                    float midNull = 0.0;
-                    kerr_dp45_trial(prevState, 0.5 * hUsed, a, Lz, midState, midErr, midNull);
-                    if (isfinite(midState.r) && isfinite(midState.theta) && isfinite(midState.phi)) {
-                        midState.theta = clamp(midState.theta, 1e-4, M_PI - 1e-4);
-                        midState.phi = fmod(midState.phi, 2.0 * M_PI);
-                        if (midState.phi < 0.0) midState.phi += 2.0 * M_PI;
-                        float3 midWorld = conv(max(midState.r, 0.0) * massLen, midState.theta, midState.phi);
-                        if (segment_enter_disk(world0, midWorld, P, tEnter)) {
-                            hitPos = mix(world0, midWorld, tEnter);
-                            entered = true;
-                        } else if (segment_enter_disk(midWorld, worldPos, P, tEnter)) {
-                            hitPos = mix(midWorld, worldPos, tEnter);
+                    if (volumeMode) {
+                        volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0, diskVol1, volumeA,
+                                                 float4(0.0), float4(0.0), Lz, prevState.pr, state.pr);
+                    } else {
+                        float tEnter = 0.0;
+                        bool entered = false;
+                        float3 hitPos = float3(0.0);
+
+                        // Curved-path guard: split one accepted Kerr segment into two half segments.
+                        KerrState midState;
+                        float midErr = 0.0;
+                        float midNull = 0.0;
+                        kerr_dp45_trial(prevState, 0.5 * hUsed, a, Lz, midState, midErr, midNull);
+                        if (isfinite(midState.r) && isfinite(midState.theta) && isfinite(midState.phi)) {
+                            midState.theta = clamp(midState.theta, 1e-4, M_PI - 1e-4);
+                            midState.phi = fmod(midState.phi, 2.0 * M_PI);
+                            if (midState.phi < 0.0) midState.phi += 2.0 * M_PI;
+                            float3 midWorld = conv(max(midState.r, 0.0) * massLen, midState.theta, midState.phi);
+                            if (segment_enter_disk(world0, midWorld, P, tEnter)) {
+                                hitPos = mix(world0, midWorld, tEnter);
+                                entered = true;
+                            } else if (segment_enter_disk(midWorld, worldPos, P, tEnter)) {
+                                hitPos = mix(midWorld, worldPos, tEnter);
+                                entered = true;
+                            }
+                        }
+                        if (!entered && segment_enter_disk(world0, worldPos, P, tEnter)) {
+                            hitPos = mix(world0, worldPos, tEnter);
                             entered = true;
                         }
-                    }
-                    if (!entered && segment_enter_disk(world0, worldPos, P, tEnter)) {
-                        hitPos = mix(world0, worldPos, tEnter);
-                        entered = true;
-                    }
 
-                    if (entered) {
-                        float dxy = length(float2(hitPos.x, hitPos.y));
-                        float r_M = dxy / max(massLen, 1e-12);
-                        float rEmitMinM = diskEmitMin / max(massLen, 1e-12);
+                        if (entered) {
+                            float dxy = length(float2(hitPos.x, hitPos.y));
+                            float r_M = dxy / max(massLen, 1e-12);
+                            float rEmitMinM = diskEmitMin / max(massLen, 1e-12);
 
-                        if (r_M > rEmitMinM && dxy < P.re) {
-                            float phiHit = atan2(hitPos.y, hitPos.x);
-                            float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
-                            float vrRatio = 0.0;
-                            float vphiScale = 1.0;
-                            float tempScale = 1.0;
-                            if (P.diskPhysicsMode != 2u) {
-                                vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
-                                vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
-                                tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
-                            }
-                            float omegaK = 1.0 / max(pow(r_M, 1.5) + a, 1e-8);
-                            float omega = omegaK * vphiScale;
-                            float drdt = vrRatio * sqrt(1.0 / max(r_M, 1.0));
-                            if (P.diskPhysicsMode != 0u && r_M < diskInnerM * (1.0 - 1e-4)) {
-                                float plungeOmega = omega;
-                                float plungeDrdt = drdt;
-                                float plungeVrRatio = vrRatio;
-                                if (disk_kerr_plunge_kinematics(r_M, diskInnerM, a, plungeOmega, plungeDrdt, plungeVrRatio)) {
-                                    omega = plungeOmega;
-                                    drdt = plungeDrdt;
-                                    vrRatio = plungeVrRatio;
+                            if (r_M > rEmitMinM && dxy < P.re) {
+                                float phiHit = atan2(hitPos.y, hitPos.x);
+                                float4 atlas = disk_sample_atlas(dxy, phiHit, P, diskAtlas);
+                                float vrRatio = 0.0;
+                                float vphiScale = 1.0;
+                                float tempScale = 1.0;
+                                if (P.diskPhysicsMode != 2u) {
+                                    vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
+                                    vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
+                                    tempScale = clamp(atlas.x * P.diskAtlasTempScale, 0.05, 20.0);
                                 }
-                            }
-                            KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
-                            float uDen = -(diskCov.gtt
-                                         + 2.0 * omega * diskCov.gtphi
-                                         + omega * omega * diskCov.gphiphi
-                                         + diskCov.grr * drdt * drdt);
-                            if (!(uDen > 1e-12)) {
-                                omega = omegaK;
-                                drdt = 0.0;
-                                uDen = -(diskCov.gtt
-                                       + 2.0 * omega * diskCov.gtphi
-                                       + omega * omega * diskCov.gphiphi);
-                            }
-                            float u_t = 1.0 / sqrt(max(uDen, 1e-12));
-                            float E_emit = u_t * (1.0 - omega * Lz - drdt * state.pr);
-                            if (!(E_emit > 1e-8)) {
-                                E_emit = u_t * max(1.0 - omega * Lz, 1e-8);
-                            }
-                            float g_factor = 1.0 / max(E_emit, 1e-8);
-                            if (!isfinite(g_factor)) g_factor = 1.0;
-                            g_factor = clamp(g_factor, 1e-4, 1e4);
+                                float omegaK = 1.0 / max(pow(r_M, 1.5) + a, 1e-8);
+                                float omega = omegaK * vphiScale;
+                                float drdt = vrRatio * sqrt(1.0 / max(r_M, 1.0));
+                                if (P.diskPhysicsMode != 0u && r_M < diskInnerM * (1.0 - 1e-4)) {
+                                    float plungeOmega = omega;
+                                    float plungeDrdt = drdt;
+                                    float plungeVrRatio = vrRatio;
+                                    if (disk_kerr_plunge_kinematics(r_M, diskInnerM, a, plungeOmega, plungeDrdt, plungeVrRatio)) {
+                                        omega = plungeOmega;
+                                        drdt = plungeDrdt;
+                                        vrRatio = plungeVrRatio;
+                                    }
+                                }
+                                KerrCovMetric diskCov = kerr_cov_metric(r_M, 0.5 * M_PI, a);
+                                float uDen = -(diskCov.gtt
+                                             + 2.0 * omega * diskCov.gtphi
+                                             + omega * omega * diskCov.gphiphi
+                                             + diskCov.grr * drdt * drdt);
+                                if (!(uDen > 1e-12)) {
+                                    omega = omegaK;
+                                    drdt = 0.0;
+                                    uDen = -(diskCov.gtt
+                                           + 2.0 * omega * diskCov.gtphi
+                                           + omega * omega * diskCov.gphiphi);
+                                }
+                                float u_t = 1.0 / sqrt(max(uDen, 1e-12));
+                                float E_emit = u_t * (1.0 - omega * Lz - drdt * state.pr);
+                                if (!(E_emit > 1e-8)) {
+                                    E_emit = u_t * max(1.0 - omega * Lz, 1e-8);
+                                }
+                                float g_factor = 1.0 / max(E_emit, 1e-8);
+                                if (!isfinite(g_factor)) g_factor = 1.0;
+                                g_factor = clamp(g_factor, 1e-4, 1e4);
 
-                            float3 segDir = worldPos - world0;
-                            float segLen2 = dot(segDir, segDir);
-                            float3 direct = (segLen2 > 1e-20) ? normalize(segDir) : normalize(dir);
-                            float3 obsDir = -direct;
+                                float3 segDir2 = worldPos - world0;
+                                float segLen22 = dot(segDir2, segDir2);
+                                float3 direct = (segLen22 > 1e-20) ? normalize(segDir2) : normalize(dir);
+                                float3 obsDir = -direct;
 
-                            float T = disk_effective_temperature(dxy, diskInner, P);
-                            T *= tempScale;
-                            if (P.diskPhysicsMode == 2u) {
-                                T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
+                                float T = disk_effective_temperature(dxy, diskInner, P);
+                                T *= tempScale;
+                                if (P.diskPhysicsMode == 2u) {
+                                    T *= disk_precision_texture_factor(dxy, phiHit, hitPos.z, P);
+                                }
+
+                                float ctLen = state.t * massLen;
+                                info.hit = 1;
+                                info.ct  = ctLen;
+                                info.T   = T;
+                                info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
+                                info.direct_world = float4(obsDir, 0.0);
+                                float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
+                                disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
+
+                                outInfo[idx] = info;
+                                return;
                             }
-
-                            float ctLen = state.t * massLen;
-                            info.hit = 1;
-                            info.ct  = ctLen;
-                            info.T   = T;
-                            info.v_disk = float4(g_factor, dxy, vrRatio, 0.0);
-                            info.direct_world = float4(obsDir, 0.0);
-                            float3 samplePos = disk_sample_probe_pos(hitPos, world0, worldPos, P);
-                            disk_set_noise_and_bridge(info, samplePos, ctLen, P, diskAtlas);
-
-                            outInfo[idx] = info;
-                            return;
                         }
                     }
                 }
@@ -1644,6 +2542,49 @@ kernel void renderBH(constant Params& P [[buffer(0)]],
                 float shrink = clamp(0.9 * pow(ratio, -0.25), 0.1, 0.5);
                 hStep = max(hMin, hStep * shrink);
             }
+        }
+        bool grmhdVisibleSurfaceHit = (P.diskPhysicsMode == 3u && P.visibleMode != 0u && volumeA.surfaceHit != 0u);
+        if (volumeMode && (grmhdVisibleSurfaceHit || ((P.diskPhysicsMode == 3u) && volumeA.I > 0.0) || ((P.diskPhysicsMode != 3u) && volumeA.w > 0.0))) {
+            float weight = max(volumeA.w, 1e-20);
+            float invW = 1.0 / weight;
+            bool haveWeightedMoments = (volumeA.w > 1e-18);
+            float3 pos = float3(volumeA.x, volumeA.y, volumeA.z) * invW;
+            float rEmit = haveWeightedMoments ? max(volumeA.r * invW, P.rs * 1.0001) : max(diskInner, P.rs * 1.0001);
+            float volAmp = 1.0 - exp(-0.9 * volumeA.w);
+            float3 dirAvg = float3(volumeA.ox, volumeA.oy, volumeA.oz) * invW;
+            float3 toCam = P.camPos - pos;
+            float toCamLen2 = dot(toCam, toCam);
+            float3 obsDir = (dot(dirAvg, dirAvg) > 1e-20)
+                ? normalize(dirAvg)
+                : ((toCamLen2 > 1e-20) ? normalize(toCam) : volumeObsDir);
+            if (toCamLen2 > 1e-20 && dot(obsDir, toCam) < 0.0) {
+                obsDir = -obsDir;
+            }
+            float scalarI = (P.diskPhysicsMode == 3u) ? max(volumeA.I, 0.0) : clamp(volAmp, 0.0, 1.0);
+            float brightnessT = pow(max(volumeA.temp4 * invW, 1e-20), 0.25);
+            if (grmhdVisibleSurfaceHit) {
+                brightnessT = max(pow(max(volumeA.temp4, 1e-20), 0.25), 1.0);
+            } else if (P.diskPhysicsMode == 3u && (!haveWeightedMoments || !(volumeA.temp4 > 0.0))) {
+                float nu = max(P.diskNuObsHz, 1e6);
+                brightnessT = max((scalarI * P.c * P.c) / max(2.0 * P.k * nu * nu, 1e-30), 1.0);
+            }
+            float gMean = haveWeightedMoments ? (volumeA.g * invW) : 1.0;
+            float vrMean = haveWeightedMoments ? (volumeA.vr * invW) : 0.0;
+            float noiseMean = haveWeightedMoments ? (volumeA.noise * invW) : 0.0;
+            info.hit = 1;
+            info.ct  = state.t * massLen;
+            info.T   = brightnessT;
+            info.v_disk = float4(clamp(gMean, 1e-4, 1e4),
+                                 rEmit,
+                                 clamp(vrMean, -1.0, 1.0),
+                                 scalarI);
+            info.direct_world = float4(obsDir, 0.0);
+            info.noise = clamp(noiseMean, 0.0, 1.0);
+            info.emit_r_norm = rEmit / max(P.rs, 1e-6);
+            info.emit_phi = atan2(pos.y, pos.x);
+            info.emit_z_norm = pos.z / max(P.rs, 1e-6);
+            outInfo[idx] = info;
+            return;
         }
     }
 
@@ -1676,6 +2617,15 @@ struct ComposeParams {
     uint  lumBins;
     float lumLogMin;
     float lumLogMax;
+    uint  cameraModel; // 0=legacy, 1=scientific, 2=cinematic
+    float cameraPsfSigmaPx;
+    float cameraReadNoise;
+    float cameraShotNoise;
+    float cameraFlareStrength;
+    uint  backgroundMode; // 0=off, 1=stars
+    float backgroundStarDensity;
+    float backgroundStarStrength;
+    float backgroundNebulaStrength;
 };
 
 constant ushort BAYER8_LUT[64] = {
@@ -1705,6 +2655,21 @@ static inline float comp_aces(float x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+static inline float comp_agx_like(float x) {
+    float xb = min(max(x, 0.0), 1e12);
+    float logv = log2(1.0 + xb);
+    if (!isfinite(logv)) return 1.0;
+    float t = logv / max(1.0 + logv, 1e-6);
+    // smooth shoulder in display domain
+    return clamp(t * t * (3.0 - 2.0 * t), 0.0, 1.0);
+}
+
+static inline float comp_tonemap_luma(float x, uint look) {
+    if (look == 3u) return comp_agx_like(x); // --look agx
+    if (look == 4u) return clamp(x, 0.0, 1.0); // --look none
+    return comp_aces(x); // default
 }
 
 static inline float3 comp_apply_look(float3 rgb, uint look) {
@@ -1764,6 +2729,81 @@ static inline float comp_planck_lambda(float lam_m, float T) {
     return C1 / (pow(lam_m, 5.0) * denom);
 }
 
+static inline float comp_planck_nu(float nu_hz, float T, constant Params& P) {
+    const float H = 6.62607015e-34;
+    float x = (H * nu_hz) / max(P.k * T, 1e-30);
+    x = clamp(x, 1e-8, 700.0);
+    if (x > 80.0) {
+        return 0.0;
+    }
+    float denom = max(precise::exp(x) - 1.0, 1e-20);
+    float num = 2.0 * H * nu_hz * nu_hz * nu_hz / max(P.c * P.c, 1e-30);
+    return num / denom;
+}
+
+static inline float comp_visible_iNu_emit(float nuEm, float te, constant Params& P) {
+    if (P.visibleEmissionModel == 1u) {
+        // Synchrotron-inspired power-law spectrum:
+        // I_nu ~ nu^{-alpha}, anchored to thermal scale at a visible pivot.
+        float alpha = clamp(P.visibleEmissionAlpha, 0.0, 4.0);
+        float nuPivot = 5.0e14;
+        float pivot = comp_planck_nu(nuPivot, te, P);
+        float ratio = max(nuEm / nuPivot, 1e-8);
+        return pivot * pow(ratio, -alpha);
+    }
+    return comp_planck_nu(nuEm, te, P);
+}
+
+// Visible-spectrum integration using invariant I_nu / nu^3 transport:
+// nu_em = nu_obs / g, I_nu_obs = g^3 I_nu_em(nu_em).
+static inline void comp_visible_xyz_from_spectrum(float T_emit,
+                                                  float g_total,
+                                                  constant Params& P,
+                                                  thread float& X,
+                                                  thread float& Y,
+                                                  thread float& Z,
+                                                  thread float& yLum,
+                                                  thread float& peakLamNm)
+{
+    X = 0.0;
+    Y = 0.0;
+    Z = 0.0;
+    yLum = 0.0;
+    peakLamNm = 380.0;
+
+    float g = clamp(g_total, 1e-4, 1e4);
+    float te = max(T_emit, 1.0);
+    uint n = clamp(P.visibleSamples, 8u, 128u);
+    float lamMin = 380.0;
+    float lamMax = 780.0;
+    float dLamNm = (n > 1u) ? ((lamMax - lamMin) / float(n - 1u)) : 0.0;
+    float dLamM = dLamNm * 1e-9;
+    float g3 = g * g * g;
+    float peakIlam = 0.0;
+
+    for (uint i = 0u; i < 128u; ++i) {
+        if (i >= n) break;
+        float lamNm = lamMin + dLamNm * float(i);
+        float lamM = lamNm * 1e-9;
+        float nuObs = P.c / max(lamM, 1e-30);
+        float nuEm = nuObs / max(g, 1e-8);
+        float iNuEm = comp_visible_iNu_emit(nuEm, te, P);
+        float iNuObs = g3 * iNuEm;
+        float iLamObs = iNuObs * P.c / max(lamM * lamM, 1e-30);
+
+        float xBar, yBar, zBar;
+        comp_cie_xyz_bar(lamNm, xBar, yBar, zBar);
+        X += iLamObs * xBar * dLamM;
+        Y += iLamObs * yBar * dLamM;
+        Z += iLamObs * zBar * dLamM;
+        yLum += iLamObs * dLamM;
+        if (iLamObs > peakIlam) {
+            peakIlam = iLamObs;
+            peakLamNm = lamNm;
+        }
+    }
+}
+
 
 static inline float comp_synthetic_noise(float3 v_disk, constant Params& P) {
     float2 vxy = v_disk.xy;
@@ -1782,7 +2822,14 @@ static inline float comp_cloud_raw(const CollisionInfo rec, constant Params& P, 
         n = comp_synthetic_noise(rec.v_disk.xyz, P);
     }
     n = clamp(n, -1.0, 1.0);
-    return (n < -1e-6) ? clamp(0.5 + 0.5 * n, 0.0, 1.0) : clamp(n, 0.0, 1.0);
+    float raw = (n < -1e-6) ? clamp(0.5 + 0.5 * n, 0.0, 1.0) : clamp(n, 0.0, 1.0);
+    if (P.diskNoiseModel == 1u) {
+        // Keep perlin disk soft by compressing cloud contrast before histogram normalization.
+        raw = 0.5 + (raw - 0.5) * 0.46;
+        raw = smoothstep(0.10, 0.90, raw);
+        raw = 0.5 + (raw - 0.5) * 0.55;
+    }
+    return raw;
 }
 
 static inline float comp_cloud_norm_from_raw(float cloudRaw, constant ComposeParams& C) {
@@ -1952,17 +2999,18 @@ static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
                                           9.0 * samplePhi - 7.0 * phase,
                                           15.0 * sampleZ / max(P.rs, 1e-6) + 3.0 * localCloud));
         localCloud = clamp(0.84 * localCloud + 0.16 * jitter, 0.0, 1.0);
+        localCloud = pow(localCloud, 1.22);
 
         float localClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, localCloud);
         float holeField = comp_hash13(float3(19.1 * sampleR / max(P.rs, 1e-6) + 11.0 * phase,
                                              23.0 * samplePhi - 7.0 * phase,
                                              17.0 * sampleZ / max(P.rs, 1e-6) + 13.0 * localCloud));
-        float holeThreshold = porosity * mix(0.94, 0.36, localClump);
+        float holeThreshold = porosity * mix(0.76, 0.48, localClump);
         float occupied = smoothstep(holeThreshold - 0.07, holeThreshold + 0.07, holeField);
         float fill = clamp(localClump * occupied, 0.0, 1.0);
-        fill = mix(fill, localClump, 0.18);
+        fill = mix(fill, localClump, 0.48);
 
-        float density = mix(0.06, 1.0, fill);
+        float density = mix(0.28, 1.02, fill);
         float dTau = min(alphaBase * density * ds, 3.5);
         float stepTrans = exp(-dTau);
         float absorbed = 1.0 - stepTrans;
@@ -1992,6 +3040,105 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                               constant Params& P,
                                               constant ComposeParams& C)
 {
+    if (P.diskPhysicsMode == 3u) {
+        if (C.analysisMode >= 11u && C.analysisMode <= 14u) {
+            float raw = 0.0;
+            float lo = -30.0;
+            float hi = 2.0;
+            if (C.analysisMode == 11u) {
+                raw = max(rec.emit_r_norm, 0.0); // max_rho
+                lo = -16.0;
+                hi = 2.0;
+            } else if (C.analysisMode == 12u) {
+                raw = max(rec.emit_phi, 0.0); // max_b2
+                lo = -20.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 13u) {
+                raw = max(rec.emit_z_norm, 0.0); // max_jnu
+                lo = -40.0;
+                hi = -20.0;
+            } else if (C.analysisMode == 14u) {
+                raw = max(rec.noise, 0.0); // max_inu
+                lo = -40.0;
+                hi = -20.0;
+            }
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        if (C.analysisMode == 15u) { // Teff map
+            float raw = max(rec.T, 1.0);
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - 2.0) / max(7.0 - 2.0, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        if (C.analysisMode == 16u) { // g-factor map
+            float raw = clamp(rec.v_disk.x, 1e-6, 1e6);
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv + 2.0) / max(4.0, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+
+        if (P.visibleMode != 0u) {
+            float g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
+            float tEmit = max(rec.T, 1.0);
+            float colorDilution = 1.0;
+            if (P.visibleTeffModel == 2u) {
+                float fCol = max(P.diskColorFactor, 1.0);
+                tEmit *= fCol;
+                colorDilution = 1.0 / pow(fCol, 4.0);
+            }
+            float X = 0.0;
+            float Y = 0.0;
+            float Z = 0.0;
+            float yLum = 0.0;
+            float peakLam = 380.0;
+            comp_visible_xyz_from_spectrum(tEmit, g_total, P, X, Y, Z, yLum, peakLam);
+            X *= colorDilution;
+            Y *= colorDilution;
+            Z *= colorDilution;
+
+            // In volumetric GRMHD mode, keep the existing scalar RT integral (I_nu)
+            // as the amplitude anchor, and use blackbody+CIE only for spectral shape.
+            float scalarI = max(rec.v_disk.w, 0.0);
+            bool useInuAnchor = (P.visiblePhotosphereRhoThreshold <= 0.0);
+            if (useInuAnchor && scalarI > 1e-18) {
+                float nuObsRef = max(P.diskNuObsHz, 1e6);
+                float nuEmRef = nuObsRef / max(g_total, 1e-8);
+                float iNuPred = pow(g_total, 3.0) * comp_visible_iNu_emit(nuEmRef, tEmit, P) * colorDilution;
+                float amp = scalarI / max(iNuPred, 1e-38);
+                amp = clamp(amp, 0.0, 1e12);
+                X *= amp;
+                Y *= amp;
+                Z *= amp;
+            }
+
+            if (C.analysisMode == 17u) { // Y luminance map
+                float lv = log(max(Y, 1e-38)) * 0.4342944819032518;
+                float t = clamp((lv + 30.0) / max(34.0, 1e-6), 0.0, 1.0);
+                return float3(t);
+            }
+            if (C.analysisMode == 18u) { // spectrum peak wavelength map
+                float w = clamp((peakLam - 380.0) / 400.0, 0.0, 1.0);
+                float3 ramp = float3(
+                    clamp(1.5 - abs(4.0 * w - 3.0), 0.0, 1.0),
+                    clamp(1.5 - abs(4.0 * w - 2.0), 0.0, 1.0),
+                    clamp(1.5 - abs(4.0 * w - 1.0), 0.0, 1.0)
+                );
+                return ramp;
+            }
+
+            float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+            float3 d_world = rec.direct_world.xyz;
+            float mu = abs(d_world.z) / max(length(d_world), 1e-30);
+            float limb = comp_limb_factor(mu, P);
+            return rgb * limb;
+        }
+
+        float iNu = max(rec.v_disk.w, 0.0);
+        return float3(iNu);
+    }
+
     float g_total = 1.0;
     if (C.spectralEncoding == 1u) {
         g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
@@ -2004,10 +3151,13 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
         float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
         float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
-        float delta = 1.0 / max(gamma * (1.0 + beta * cos_theta), 1e-9);
+        float delta = 1.0 / max(gamma * (1.0 - beta * cos_theta), 1e-9);
         float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
         r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
-        float g_gr = sqrt(clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0));
+        float r_obs = max(length(P.camPos), 1.0001 * P.rs);
+        float grav_num = clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0);
+        float grav_den = clamp(1.0 - P.rs / r_obs, 1e-8, 1.0);
+        float g_gr = sqrt(clamp(grav_num / grav_den, 1e-8, 4.0));
         g_total = clamp(delta * g_gr, 1e-4, 1e4);
     }
 
@@ -2055,6 +3205,10 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
     }
 
     float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    if (P.diskVolumeMode != 0u && P.diskPhysicsMode == 2u) {
+        float volAmp = clamp(rec.v_disk.w, 0.0, 1.0);
+        rgb *= (0.65 + 2.80 * volAmp);
+    }
 
     float3 d_world = rec.direct_world.xyz;
     float mu = abs(d_world.z) / max(length(d_world), 1e-30);
@@ -2078,6 +3232,9 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
                                      constant ComposeParams& C)
 {
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
+    if (P.diskPhysicsMode == 3u) {
+        return rgb;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     if (P.diskPhysicsMode == 2u) {
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
@@ -2088,6 +3245,20 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
         return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
     }
     if (C.analysisMode != 0u) return rgb;
+    if (P.diskNoiseModel == 1u) {
+        // Perlin mode targets a softer cloud look: avoid strong stripe amplification.
+        float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
+        float core = precise::pow(cloud, 1.06);
+        float clump = precise::pow(core, 1.55);
+        float vvoid = precise::pow(1.0 - cloud, 1.45);
+        float density = 0.82 + 0.58 * core;
+        rgb *= density;
+        rgb *= (1.0 + 0.12 * clump);
+        rgb *= (1.0 - 0.07 * vvoid);
+        rgb.x *= (1.0 + 0.045 * clump);
+        rgb.z *= (1.0 - 0.035 * clump);
+        return rgb;
+    }
     float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
     return comp_apply_cloud_to_rgb(rgb, cloud);
 }
@@ -2101,6 +3272,473 @@ static inline float comp_bayer8(uint x, uint y) {
     return ((float(BAYER8_LUT[idx]) + 0.5) / 64.0) - 0.5;
 }
 
+static inline float comp_hash01_u32(uint x, uint y, uint salt) {
+    uint h = x * 1664525u + y * 1013904223u + salt * 374761393u + 0x9E3779B9u;
+    h ^= (h >> 13u);
+    h *= 1274126177u;
+    h ^= (h >> 16u);
+    return float(h & 0x00FFFFFFu) * (1.0 / 16777216.0);
+}
+
+static inline float comp_hash_signed_u32(uint x, uint y, uint salt) {
+    return 2.0 * comp_hash01_u32(x, y, salt) - 1.0;
+}
+
+static inline float3 comp_background_starfield_display(float3 dir, constant ComposeParams& C) {
+    if (C.backgroundMode == 0u) return float3(0.0);
+
+    float density = clamp(C.backgroundStarDensity, 0.0, 4.0);
+    float strength = max(C.backgroundStarStrength, 0.0);
+    float nebula = clamp(C.backgroundNebulaStrength, 0.0, 2.0);
+    if (!(strength > 1e-6) && !(nebula > 1e-6)) return float3(0.0);
+
+    float d2 = dot(dir, dir);
+    float3 n = (d2 > 1e-20) ? normalize(dir) : float3(0.0, 0.0, 1.0);
+    float phi = atan2(n.y, n.x);
+    float u = fract(phi * (0.5 / M_PI));
+    float v = acos(clamp(n.z, -1.0, 1.0)) * (1.0 / M_PI);
+
+    float3 sky = float3(0.0);
+
+    // Milky-way-like diffuse band to make gravitational lens distortion visible.
+    float bandWidth = mix(0.22, 0.08, clamp(0.55 * nebula, 0.0, 1.0));
+    float band = exp(-pow(abs(n.z) / max(bandWidth, 1e-4), 1.45));
+    float dustA = fbm(n * 14.0 + float3(1.7, -2.4, 0.8));
+    float dustB = fbm(n * 31.0 + float3(-4.2, 3.5, -1.9));
+    float lane = smoothstep(0.40, 0.82, 0.62 * dustA + 0.38 * dustB);
+    float neb = nebula * (0.02 + 0.30 * band * lane);
+    sky += neb * float3(1.0, 0.93, 0.84);
+
+    // Star layer A: dense faint stars.
+    float cellA = mix(540.0, 2200.0, clamp(density * 0.25, 0.0, 1.0));
+    float2 pA = float2(u * cellA, v * cellA * 0.62);
+    float2 idA = floor(pA);
+    float2 fA = fract(pA);
+    float hA0 = comp_hash13(float3(idA, 17.13));
+    float hA1 = comp_hash13(float3(idA, 89.31));
+    float hA2 = comp_hash13(float3(idA, 137.47));
+    float hA3 = comp_hash13(float3(idA, 221.77));
+    float hA4 = comp_hash13(float3(idA, 311.23));
+    float pStarA = clamp(0.0010 + 0.0038 * density, 0.0, 0.03);
+    float onA = (hA0 < pStarA) ? 1.0 : 0.0;
+    float2 cA = float2(hA1, hA2);
+    float2 dA = fA - cA;
+    float r2A = dot(dA, dA);
+    float coreA = onA * exp(-r2A * (9000.0 + 12000.0 * hA1));
+    float haloA = onA * exp(-r2A * (650.0 + 900.0 * hA2));
+    float brightA = onA * (0.08 + 2.7 * pow(hA3, 9.0));
+    float3 colA = mix(float3(1.08, 0.86, 0.68), float3(0.70, 0.82, 1.10), hA4);
+    sky += strength * (1.8 * coreA + 0.12 * haloA) * brightA * colA;
+
+    // Star layer B: sparse bright stars with weak diffraction-like spikes.
+    float cellB = mix(150.0, 540.0, clamp(density * 0.25, 0.0, 1.0));
+    float2 pB = float2(u * cellB, v * cellB * 0.85);
+    float2 idB = floor(pB);
+    float2 fB = fract(pB);
+    float hB0 = comp_hash13(float3(idB, 12.71));
+    float hB1 = comp_hash13(float3(idB, 44.93));
+    float hB2 = comp_hash13(float3(idB, 98.51));
+    float hB3 = comp_hash13(float3(idB, 166.2));
+    float hB4 = comp_hash13(float3(idB, 255.8));
+    float pStarB = clamp(0.00020 + 0.00090 * density, 0.0, 0.01);
+    float onB = (hB0 < pStarB) ? 1.0 : 0.0;
+    float2 cB = float2(hB1, hB2);
+    float2 dB = fB - cB;
+    float r2B = dot(dB, dB);
+    float coreB = onB * exp(-r2B * (22000.0 + 24000.0 * hB1));
+    float haloB = onB * exp(-r2B * (430.0 + 520.0 * hB2));
+    float spikeB = onB * (exp(-abs(dB.x) * 90.0) * exp(-abs(dB.y) * 3.5)
+                        + exp(-abs(dB.y) * 90.0) * exp(-abs(dB.x) * 3.5));
+    float brightB = onB * (0.4 + 5.5 * pow(hB3, 12.0));
+    float3 colB = mix(float3(1.10, 0.90, 0.74), float3(0.68, 0.80, 1.12), hB4);
+    sky += strength * ((2.8 * coreB + 0.09 * haloB + 0.018 * spikeB) * brightB) * colB;
+
+    return clamp(sky, 0.0, 4.0);
+}
+
+static inline float3 comp_background_linear(float3 dir, constant ComposeParams& C) {
+    if (C.backgroundMode == 0u) return float3(0.0);
+    float3 displayLike = comp_background_starfield_display(dir, C);
+    // Background is authored in post-exposure-like domain for stable tuning.
+    float invExposure = min(1.0 / max(C.exposure, 1e-30), 5.0e18);
+    return displayLike * invExposure;
+}
+
+static inline float3 comp_apply_camera_sensor(float3 color,
+                                              uint globalOutX,
+                                              uint globalOutY,
+                                              constant ComposeParams& C)
+{
+    float3 out = clamp(color, 0.0, 1.0);
+    if (C.cameraModel == 0u) return out;
+
+    float lum = dot(out, float3(0.2126, 0.7152, 0.0722));
+    float shot = max(C.cameraShotNoise, 0.0) * sqrt(max(lum, 1e-6));
+    float read = max(C.cameraReadNoise, 0.0);
+    float sigma = shot + read;
+    if (sigma > 1e-8) {
+        float3 n = float3(
+            comp_hash_signed_u32(globalOutX, globalOutY, 17u),
+            comp_hash_signed_u32(globalOutX, globalOutY, 59u),
+            comp_hash_signed_u32(globalOutX, globalOutY, 101u)
+        );
+        out = clamp(out + sigma * n, 0.0, 1.0);
+        lum = dot(out, float3(0.2126, 0.7152, 0.0722));
+    }
+
+    return out;
+}
+
+static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant ComposeParams& C) {
+    float exposure = max(C.exposure, 1e-8);
+    float3 expColor = sceneLin * exposure;
+    float lum = dot(expColor, float3(0.2126, 0.7152, 0.0722));
+    const float threshold = 0.90;
+    const float knee = 0.22;
+    float x = max(lum - threshold, 0.0);
+    float soft = (x * x) / max(x + knee, 1e-6);
+    float gain = clamp((x + soft) / max(lum, 1e-6), 0.0, 5.0);
+    return sceneLin * gain;
+}
+
+static inline float3 comp_sample_linear_full_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.fullInputWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.fullInputHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.fullInputWidth - 1u);
+    uint y1 = min(y0 + 1u, C.fullInputHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = inLinear[y0 * C.fullInputWidth + x0].xyz;
+    float3 c10 = inLinear[y0 * C.fullInputWidth + x1].xyz;
+    float3 c01 = inLinear[y1 * C.fullInputWidth + x0].xyz;
+    float3 c11 = inLinear[y1 * C.fullInputWidth + x1].xyz;
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_full(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 srcPos,
+                                                   constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    const float2 dirD1 = normalize(float2(1.0, 1.0));
+    const float2 dirD2 = normalize(float2(1.0, -1.0));
+    float rNear = 1.7 + 0.6 * s;
+    float rFar = 3.8 + 1.1 * s;
+
+    float3 nCard = float3(0.0);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirX * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirX * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirY * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirY * rNear, C), C);
+    nCard *= 0.25;
+
+    float3 nDiag = float3(0.0);
+    float dNear = 0.92 * rNear;
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirD1 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirD1 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirD2 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirD2 * dNear, C), C);
+    nDiag *= 0.25;
+
+    float3 fCard = float3(0.0);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirX * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirX * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirY * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirY * rFar, C), C);
+    fCard *= 0.25;
+
+    float3 center = comp_flare_bright_pass_scene(base, C);
+    float3 flare = 0.46 * nCard + 0.30 * nDiag + 0.14 * fCard + 0.10 * center;
+    flare *= float3(1.0, 0.98, 0.95);
+    return base + (0.11 * s) * flare;
+}
+
+static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
+                                                 uint srcX,
+                                                 uint srcY,
+                                                 constant ComposeParams& C)
+{
+    uint centerIdx = srcY * C.fullInputWidth + srcX;
+    float3 center = inLinear[centerIdx].xyz;
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (srcX > 0u) ? (srcX - 1u) : 0u;
+    uint xR = min(srcX + 1u, C.fullInputWidth - 1u);
+    uint yD = (srcY > 0u) ? (srcY - 1u) : 0u;
+    uint yU = min(srcY + 1u, C.fullInputHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    uint idxL = srcY * C.fullInputWidth + xL;
+    uint idxR = srcY * C.fullInputWidth + xR;
+    uint idxD = yD * C.fullInputWidth + srcX;
+    uint idxU = yU * C.fullInputWidth + srcX;
+    sum += (inLinear[idxL].xyz + inLinear[idxR].xyz + inLinear[idxD].xyz + inLinear[idxU].xyz) * w1;
+    wSum += 4.0 * w1;
+
+    uint idxLD = yD * C.fullInputWidth + xL;
+    uint idxLU = yU * C.fullInputWidth + xL;
+    uint idxRD = yD * C.fullInputWidth + xR;
+    uint idxRU = yU * C.fullInputWidth + xR;
+    sum += (inLinear[idxLD].xyz + inLinear[idxLU].xyz + inLinear[idxRD].xyz + inLinear[idxRU].xyz) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
+}
+
+static inline float3 comp_linear_tile_rgb(device const float4* inLinear,
+                                          uint lx,
+                                          uint ly,
+                                          constant ComposeParams& C)
+{
+    uint lidx = ly * C.tileWidth + lx;
+    float4 rgbw = inLinear[lidx];
+    if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
+    if (rgbw.w < 0.0) return float3(0.0);
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
+        rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+    }
+    return rgb;
+}
+
+static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.tileWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.tileHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.tileWidth - 1u);
+    uint y1 = min(y0 + 1u, C.tileHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = comp_linear_tile_rgb(inLinear, x0, y0, C);
+    float3 c10 = comp_linear_tile_rgb(inLinear, x1, y0, C);
+    float3 c01 = comp_linear_tile_rgb(inLinear, x0, y1, C);
+    float3 c11 = comp_linear_tile_rgb(inLinear, x1, y1, C);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_tile(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 localPos,
+                                                   constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    const float2 dirD1 = normalize(float2(1.0, 1.0));
+    const float2 dirD2 = normalize(float2(1.0, -1.0));
+    float rNear = 1.7 + 0.6 * s;
+    float rFar = 3.8 + 1.1 * s;
+
+    float3 nCard = float3(0.0);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirX * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirX * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirY * rNear, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirY * rNear, C), C);
+    nCard *= 0.25;
+
+    float3 nDiag = float3(0.0);
+    float dNear = 0.92 * rNear;
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirD1 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirD1 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirD2 * dNear, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirD2 * dNear, C), C);
+    nDiag *= 0.25;
+
+    float3 fCard = float3(0.0);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirX * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirX * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirY * rFar, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirY * rFar, C), C);
+    fCard *= 0.25;
+
+    float3 center = comp_flare_bright_pass_scene(base, C);
+    float3 flare = 0.46 * nCard + 0.30 * nDiag + 0.14 * fCard + 0.10 * center;
+    flare *= float3(1.0, 0.98, 0.95);
+    return base + (0.11 * s) * flare;
+}
+
+static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
+                                                 uint lx,
+                                                 uint ly,
+                                                 constant ComposeParams& C)
+{
+    float3 center = comp_linear_tile_rgb(inLinear, lx, ly, C);
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (lx > 0u) ? (lx - 1u) : 0u;
+    uint xR = min(lx + 1u, C.tileWidth - 1u);
+    uint yD = (ly > 0u) ? (ly - 1u) : 0u;
+    uint yU = min(ly + 1u, C.tileHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    sum += (comp_linear_tile_rgb(inLinear, xL, ly, C)
+          + comp_linear_tile_rgb(inLinear, xR, ly, C)
+          + comp_linear_tile_rgb(inLinear, lx, yD, C)
+          + comp_linear_tile_rgb(inLinear, lx, yU, C)) * w1;
+    wSum += 4.0 * w1;
+
+    sum += (comp_linear_tile_rgb(inLinear, xL, yD, C)
+          + comp_linear_tile_rgb(inLinear, xL, yU, C)
+          + comp_linear_tile_rgb(inLinear, xR, yD, C)
+          + comp_linear_tile_rgb(inLinear, xR, yU, C)) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
+}
+
+static inline float3 comp_collision_tile_rgb(device const CollisionInfo* inInfo,
+                                             uint lx,
+                                             uint ly,
+                                             constant Params& P,
+                                             constant ComposeParams& C)
+{
+    uint lidx = ly * C.tileWidth + lx;
+    CollisionInfo rec = inInfo[lidx];
+    if (rec.hit == 0u) return comp_background_linear(rec.direct_world.xyz, C);
+    return comp_linear_rgb(rec, P, C);
+}
+
+static inline float3 comp_sample_collision_tile_bilinear(device const CollisionInfo* inInfo,
+                                                         float2 pos,
+                                                         constant Params& P,
+                                                         constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.tileWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.tileHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.tileWidth - 1u);
+    uint y1 = min(y0 + 1u, C.tileHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = comp_collision_tile_rgb(inInfo, x0, y0, P, C);
+    float3 c10 = comp_collision_tile_rgb(inInfo, x1, y0, P, C);
+    float3 c01 = comp_collision_tile_rgb(inInfo, x0, y1, P, C);
+    float3 c11 = comp_collision_tile_rgb(inInfo, x1, y1, P, C);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_collision(float3 base,
+                                                        device const CollisionInfo* inInfo,
+                                                        float2 localPos,
+                                                        constant Params& P,
+                                                        constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    const float2 dirD1 = normalize(float2(1.0, 1.0));
+    const float2 dirD2 = normalize(float2(1.0, -1.0));
+    float rNear = 1.7 + 0.6 * s;
+    float rFar = 3.8 + 1.1 * s;
+
+    float3 nCard = float3(0.0);
+    nCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirX * rNear, P, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirX * rNear, P, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirY * rNear, P, C), C);
+    nCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirY * rNear, P, C), C);
+    nCard *= 0.25;
+
+    float3 nDiag = float3(0.0);
+    float dNear = 0.92 * rNear;
+    nDiag += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirD1 * dNear, P, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirD1 * dNear, P, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirD2 * dNear, P, C), C);
+    nDiag += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirD2 * dNear, P, C), C);
+    nDiag *= 0.25;
+
+    float3 fCard = float3(0.0);
+    fCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirX * rFar, P, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirX * rFar, P, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirY * rFar, P, C), C);
+    fCard += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirY * rFar, P, C), C);
+    fCard *= 0.25;
+
+    float3 center = comp_flare_bright_pass_scene(base, C);
+    float3 flare = 0.46 * nCard + 0.30 * nDiag + 0.14 * fCard + 0.10 * center;
+    flare *= float3(1.0, 0.98, 0.95);
+    return base + (0.11 * s) * flare;
+}
+
+static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* inInfo,
+                                                    uint lx,
+                                                    uint ly,
+                                                    constant Params& P,
+                                                    constant ComposeParams& C)
+{
+    float3 center = comp_collision_tile_rgb(inInfo, lx, ly, P, C);
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (lx > 0u) ? (lx - 1u) : 0u;
+    uint xR = min(lx + 1u, C.tileWidth - 1u);
+    uint yD = (ly > 0u) ? (ly - 1u) : 0u;
+    uint yU = min(ly + 1u, C.tileHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    sum += (comp_collision_tile_rgb(inInfo, xL, ly, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, ly, P, C)
+          + comp_collision_tile_rgb(inInfo, lx, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, lx, yU, P, C)) * w1;
+    wSum += 4.0 * w1;
+
+    sum += (comp_collision_tile_rgb(inInfo, xL, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, xL, yU, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, yU, P, C)) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
+}
+
 static inline float3 comp_shade(const CollisionInfo rec,
                                 constant Params& P,
                                 constant ComposeParams& C)
@@ -2109,9 +3747,14 @@ static inline float3 comp_shade(const CollisionInfo rec,
     float3 rgb = comp_linear_rgb(rec, P, C);
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
-    float lumTm = comp_aces(lum);
+    float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
     float3 rgbTm = rgbExp * scale;
+    if (C.look != 4u) {
+        float shoulder = smoothstep(0.55, 1.0, lumTm);
+        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
+        rgbTm = mix(rgbTm, float3(gray), 0.24 * shoulder);
+    }
     rgbTm = comp_apply_look(rgbTm, C.look);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     return srgb;
@@ -2121,9 +3764,14 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
 {
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
-    float lumTm = comp_aces(lum);
+    float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
     float3 rgbTm = rgbExp * scale;
+    if (C.look != 4u) {
+        float shoulder = smoothstep(0.55, 1.0, lumTm);
+        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
+        rgbTm = mix(rgbTm, float3(gray), 0.24 * shoulder);
+    }
     rgbTm = comp_apply_look(rgbTm, C.look);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     return srgb;
@@ -2147,7 +3795,8 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
 
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
-        outLinear[gidx] = float4(0.0);
+        float3 bg = comp_background_linear(rec.direct_world.xyz, C);
+        outLinear[gidx] = float4(bg, -2.0);
         return;
     }
     float3 rgb = comp_linear_rgb(rec, P, C);
@@ -2164,7 +3813,8 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
     if (gid >= count) return;
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
-        outLinear[gid] = float4(0.0, 0.0, 0.0, -1.0);
+        float3 bg = comp_background_linear(rec.direct_world.xyz, C);
+        outLinear[gid] = float4(bg, -2.0);
         return;
     }
     float cloudRaw = comp_cloud_raw(rec, P, C);
@@ -2285,8 +3935,8 @@ kernel void composeBH(constant Params& P [[buffer(0)]],
 
             uint lx = srcX - C.srcOffsetX;
             uint ly = srcY - C.srcOffsetY;
-            uint lidx = ly * C.tileWidth + lx;
-            acc += comp_shade(inInfo[lidx], P, C);
+            float3 rgbLin = comp_sample_collision_psf_tile(inInfo, lx, ly, P, C);
+            acc += comp_shade_linear(rgbLin, C);
             cnt += 1u;
         }
     }
@@ -2296,6 +3946,7 @@ kernel void composeBH(constant Params& P [[buffer(0)]],
         float d = comp_bayer8(globalOutX, globalOutY) * (C.dither / 255.0);
         color = clamp(color + float3(d), 0.0, 1.0);
     }
+    color = comp_apply_camera_sensor(color, globalOutX, globalOutY, C);
 
     uchar4 pix;
     pix.x = uchar(clamp(color.x * 255.0 + 0.5, 0.0, 255.0));
@@ -2325,8 +3976,7 @@ kernel void composeBHLinear(constant ComposeParams& C [[buffer(0)]],
             if (srcX < C.srcOffsetX || srcX >= C.srcOffsetX + C.tileWidth) continue;
             if (srcY < C.srcOffsetY || srcY >= C.srcOffsetY + C.tileHeight) continue;
 
-            uint srcIdx = srcY * C.fullInputWidth + srcX;
-            float3 rgb = inLinear[srcIdx].xyz;
+            float3 rgb = comp_sample_linear_psf_full(inLinear, srcX, srcY, C);
             acc += comp_shade_linear(rgb, C);
             cnt += 1u;
         }
@@ -2337,6 +3987,7 @@ kernel void composeBHLinear(constant ComposeParams& C [[buffer(0)]],
         float d = comp_bayer8(globalOutX, globalOutY) * (C.dither / 255.0);
         color = clamp(color + float3(d), 0.0, 1.0);
     }
+    color = comp_apply_camera_sensor(color, globalOutX, globalOutY, C);
 
     uchar4 pix;
     pix.x = uchar(clamp(color.x * 255.0 + 0.5, 0.0, 255.0));
@@ -2368,14 +4019,7 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
 
             uint lx = srcX - C.srcOffsetX;
             uint ly = srcY - C.srcOffsetY;
-            uint lidx = ly * C.tileWidth + lx;
-            float4 rgbw = inLinear[lidx];
-            if (rgbw.w < 0.0) continue;
-            float3 rgb = rgbw.xyz;
-            if (C.analysisMode == 0u) {
-                float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
-                rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
-            }
+            float3 rgb = comp_sample_linear_psf_tile(inLinear, lx, ly, C);
             acc += comp_shade_linear(rgb, C);
             cnt += 1u;
         }
@@ -2386,6 +4030,7 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
         float d = comp_bayer8(globalOutX, globalOutY) * (C.dither / 255.0);
         color = clamp(color + float3(d), 0.0, 1.0);
     }
+    color = comp_apply_camera_sensor(color, globalOutX, globalOutY, C);
 
     uchar4 pix;
     pix.x = uchar(clamp(color.x * 255.0 + 0.5, 0.0, 255.0));

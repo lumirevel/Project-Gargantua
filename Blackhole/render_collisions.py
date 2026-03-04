@@ -99,19 +99,14 @@ def render_linear_rgb(
             flush=True,
         )
     g_total = np.clip(v[:, 0], 1e-4, 1e4)
-    r_emit = np.maximum(v[:, 1], RS * 1.0001)
 
     T_obs = np.maximum(T_emit * g_total, 1.0)
     spectrum = planck_lambda(lam_m[None, :], T_obs[:, None])
-    spectrum *= np.power(g_total[:, None], 3.0)
-
-    r_in = max(inner_edge_mult, 1.0) * RS
-    boundary = np.clip(1.0 - np.sqrt(r_in / np.maximum(r_emit, r_in)), 0.0, 1.0)
     mu = np.abs(d[:, 2]) / np.maximum(np.linalg.norm(d, axis=1), 1e-30)
     # Scattering-dominated accretion-disk atmosphere approximation:
     # I(mu) ~ (3/7) * (1 + 2 mu)
     limb = (3.0 / 7.0) * (1.0 + 2.0 * np.clip(mu, 0.0, 1.0))
-    spectrum *= (boundary * limb)[:, None]
+    spectrum *= limb[:, None]
 
     X = spectrum @ x_bar
     Y = spectrum @ y_bar

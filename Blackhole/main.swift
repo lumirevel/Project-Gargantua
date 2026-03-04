@@ -83,6 +83,42 @@ struct Params {
     var diskRTSteps: UInt32
     var diskScatteringAlbedo: Float
     var diskRTPad: Float
+    var diskVolumeMode: UInt32
+    var diskVolumeR: UInt32
+    var diskVolumePhi: UInt32
+    var diskVolumeZ: UInt32
+    var diskVolumeRNormMin: Float
+    var diskVolumeRNormMax: Float
+    var diskVolumeZNormMax: Float
+    var diskVolumeTauScale: Float
+    var diskVolumeFormat: UInt32
+    var diskVolumeR0: UInt32
+    var diskVolumePhi0: UInt32
+    var diskVolumeZ0: UInt32
+    var diskVolumeR1: UInt32
+    var diskVolumePhi1: UInt32
+    var diskVolumeZ1: UInt32
+    var diskNuObsHz: Float
+    var diskGrmhdDensityScale: Float
+    var diskGrmhdBScale: Float
+    var diskGrmhdEmissionScale: Float
+    var diskGrmhdAbsorptionScale: Float
+    var diskGrmhdVelScale: Float
+    var diskGrmhdDebugView: UInt32
+    var visibleMode: UInt32
+    var visibleSamples: UInt32
+    var visibleTeffModel: UInt32
+    var visiblePad0: UInt32
+    var visibleTeffT0: Float
+    var visibleTeffR0: Float
+    var visibleTeffP: Float
+    var visiblePhotosphereRhoThreshold: Float
+    var visibleBhMass: Float
+    var visibleMdot: Float
+    var visibleRIn: Float
+    var visibleKappa: Float
+    var visibleEmissionModel: UInt32
+    var visibleEmissionAlpha: Float
 }
 
 struct CollisionInfo {
@@ -131,6 +167,15 @@ struct ComposeParams {
     var lumBins: UInt32
     var lumLogMin: Float
     var lumLogMax: Float
+    var cameraModel: UInt32
+    var cameraPsfSigmaPx: Float
+    var cameraReadNoise: Float
+    var cameraShotNoise: Float
+    var cameraFlareStrength: Float
+    var backgroundMode: UInt32
+    var backgroundStarDensity: Float
+    var backgroundStarStrength: Float
+    var backgroundNebulaStrength: Float
 }
 
 struct RenderMeta: Codable {
@@ -187,6 +232,39 @@ struct RenderMeta: Codable {
     var diskReturnBounces: Int
     var diskRTSteps: Int
     var diskScatteringAlbedo: Double
+    var diskVolumeEnabled: Bool
+    var diskVolumeFormat: String
+    var diskVolumePath: String
+    var diskVol0Path: String
+    var diskVol1Path: String
+    var diskVolumeR: Int
+    var diskVolumePhi: Int
+    var diskVolumeZ: Int
+    var diskVolumeRNormMin: Double
+    var diskVolumeRNormMax: Double
+    var diskVolumeZNormMax: Double
+    var diskVolumeTauScale: Double
+    var diskNuObsHz: Double
+    var diskGrmhdDensityScale: Double
+    var diskGrmhdBScale: Double
+    var diskGrmhdEmissionScale: Double
+    var diskGrmhdAbsorptionScale: Double
+    var diskGrmhdVelScale: Double
+    var diskGrmhdDebug: String
+    var visibleMode: Bool
+    var visibleSamples: Int
+    var visibleTeffModel: String
+    var visibleTeffT0: Double
+    var visibleTeffR0Rs: Double
+    var visibleTeffP: Double
+    var visibleBhMass: Double
+    var visibleMdot: Double
+    var visibleRInRs: Double
+    var visiblePhotosphereRhoThreshold: Double
+    var visibleEmissionModel: String
+    var visibleSynchAlpha: Double
+    var exposureMode: String
+    var exposureEV: Double
     var diskAtlasEnabled: Bool
     var diskAtlasPath: String
     var diskAtlasWidth: Int
@@ -205,6 +283,15 @@ struct RenderMeta: Codable {
     var outputHeight: Int
     var exposure: Double
     var look: String
+    var cameraModel: String
+    var cameraPsfSigmaPx: Double
+    var cameraReadNoise: Double
+    var cameraShotNoise: Double
+    var cameraFlareStrength: Double
+    var backgroundMode: String
+    var backgroundStarDensity: Double
+    var backgroundStarStrength: Double
+    var backgroundNebulaStrength: Double
     var collisionStride: Int
 }
 
@@ -216,6 +303,23 @@ struct DiskAtlasMeta: Codable {
     var rNormMin: Double?
     var rNormMax: Double?
     var rNormWarp: Double?
+}
+
+struct DiskVolumeMeta: Codable {
+    var r: Int?
+    var phi: Int?
+    var z: Int?
+    var nr: Int?
+    var nphi: Int?
+    var nz: Int?
+    var width: Int?
+    var height: Int?
+    var depth: Int?
+    var format: String?
+    var channels: [String]?
+    var rNormMin: Double?
+    var rNormMax: Double?
+    var zNormMax: Double?
 }
 
 func normalize(_ v: SIMD3<Float>) -> SIMD3<Float> {
@@ -292,11 +396,35 @@ func parseDiskMode(_ raw: String) -> (id: UInt32, canonical: String)? {
         return (0, "thin")
     case "thick", "plasma", "riaf":
         return (1, "thick")
-    case "precision", "analysis", "pt":
+    case "precision", "analysis", "pt", "auto", "unified", "adaptive", "smart":
         return (2, "precision")
+    case "grmhd", "rt", "volume-rt":
+        return (3, "grmhd")
     default:
         return nil
     }
+}
+
+@inline(__always)
+func smoothstepDouble(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+    let den = max(edge1 - edge0, 1e-9)
+    let t = min(max((x - edge0) / den, 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+}
+
+@inline(__always)
+func precisionThicknessBlend(diskH: Double) -> Double {
+    // Blend thin -> thick behavior from geometric half-thickness ratio H/rs.
+    // ~0 for very thin disks, ~1 for clearly puffed/plasma-like disks.
+    return smoothstepDouble(0.015, 0.11, diskH)
+}
+
+@inline(__always)
+func precisionAdaptiveDefaults(diskH: Double) -> (plungeFloor: Double, thickScale: Double) {
+    let blend = precisionThicknessBlend(diskH: diskH)
+    let plungeFloor = 0.12 * blend
+    let thickScale = 1.0 + 0.8 * blend
+    return (plungeFloor, thickScale)
 }
 
 func writePPM(path: String, width: Int, height: Int, rgb: [UInt8]) throws {
@@ -401,6 +529,13 @@ func quantileFromUniformHistogram(_ hist: UnsafeBufferPointer<UInt32>, _ q: Floa
     return minVal + (maxVal - minVal) * t
 }
 
+func composeTargetWhite(_ lookID: UInt32) -> Float {
+    if lookID == 1 { return 0.9 }   // interstellar
+    if lookID == 2 { return 0.6 }   // eht
+    if lookID == 3 { return 1.25 }  // agx/filmic: avoid chronic underexposure vs ACES-tuned default
+    return 0.8
+}
+
 func cieXYZBar(_ wavelengthNm: Double) -> (Double, Double, Double) {
     let lam = wavelengthNm
     let t1x = (lam - 442.0) * (lam < 442.0 ? 0.0624 : 0.0374)
@@ -423,6 +558,45 @@ func planckLambda(_ lambdaMeters: Double, _ temp: Double) -> Double {
     let c2 = 6.62607015e-34 * 299_792_458.0 / 1.380649e-23
     let x = min(max(c2 / max(lambdaMeters * temp, 1e-30), 1e-8), 700.0)
     return c1 / (pow(lambdaMeters, 5.0) * expm1(x))
+}
+
+func planckNu(_ nuHz: Double, _ temp: Double) -> Double {
+    let h = 6.62607015e-34
+    let c = 299_792_458.0
+    let k = 1.380649e-23
+    let x = min(max((h * nuHz) / max(k * temp, 1e-30), 1e-8), 700.0)
+    let num = 2.0 * h * nuHz * nuHz * nuHz / (c * c)
+    return num / max(expm1(x), 1e-30)
+}
+
+func visibleINuEmit(_ nuHz: Double, _ temp: Double, _ emissionModel: UInt32, _ alpha: Double) -> Double {
+    if emissionModel == 1 {
+        // Synchrotron-like power-law shape anchored to thermal scale at a pivot frequency.
+        let nuPivot = 5.0e14
+        let ratio = max(nuHz / nuPivot, 1e-8)
+        let slope = min(max(alpha, 0.0), 4.0)
+        let pivot = planckNu(nuPivot, temp)
+        return pivot * pow(ratio, -slope)
+    }
+    return planckNu(nuHz, temp)
+}
+
+func estimateGRMHDRhoMax(vol0Data: Data) -> Double {
+    let floatCount = vol0Data.count / MemoryLayout<Float>.stride
+    if floatCount < 4 { return 0.0 }
+    let sampleCount = floatCount / 4
+    var rhoMax = 0.0
+    vol0Data.withUnsafeBytes { raw in
+        guard let base = raw.bindMemory(to: Float.self).baseAddress else { return }
+        var idx = 0
+        for _ in 0..<sampleCount {
+            let logRho = Double(base[idx])
+            let rho = exp(min(max(logRho, -40.0), 40.0))
+            if rho > rhoMax { rhoMax = rho }
+            idx += 4
+        }
+    }
+    return rhoMax
 }
 
 func fail(_ message: String, code: Int32 = 3) -> Never {
@@ -471,6 +645,55 @@ func loadDiskAtlas(path: String, widthOverride: Int, heightOverride: Int) throws
     }
 
     return (atlasData, width, height, rNormMin, rNormMax, rNormWarp)
+}
+
+func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride: Int, zOverride: Int) throws -> (data: Data, r: Int, phi: Int, z: Int, rNormMin: Double?, rNormMax: Double?, zNormMax: Double?) {
+    let volumeURL = URL(fileURLWithPath: path)
+    let volumeData = try Data(contentsOf: volumeURL, options: [.mappedIfSafe])
+
+    var r = rOverride
+    var phi = phiOverride
+    var z = zOverride
+    var rNormMin: Double? = nil
+    var rNormMax: Double? = nil
+    var zNormMax: Double? = nil
+
+    let metaURL = URL(fileURLWithPath: metaPath.isEmpty ? (path + ".json") : metaPath)
+    if FileManager.default.fileExists(atPath: metaURL.path) {
+        let metaData = try Data(contentsOf: metaURL)
+        let meta = try JSONDecoder().decode(DiskVolumeMeta.self, from: metaData)
+        if r <= 0 {
+            r = meta.r ?? meta.nr ?? meta.width ?? 0
+        }
+        if phi <= 0 {
+            phi = meta.phi ?? meta.nphi ?? meta.height ?? 0
+        }
+        if z <= 0 {
+            z = meta.z ?? meta.nz ?? meta.depth ?? 0
+        }
+        rNormMin = meta.rNormMin
+        rNormMax = meta.rNormMax
+        zNormMax = meta.zNormMax
+    }
+
+    if r <= 0 || phi <= 0 || z <= 0 {
+        throw NSError(
+            domain: "Blackhole",
+            code: 12,
+            userInfo: [NSLocalizedDescriptionKey: "disk volume needs dimensions (pass --disk-volume-r/--disk-volume-phi/--disk-volume-z or provide <volume>.json)"]
+        )
+    }
+
+    let expectedBytes = r * phi * z * MemoryLayout<SIMD4<Float>>.stride
+    if volumeData.count != expectedBytes {
+        throw NSError(
+            domain: "Blackhole",
+            code: 13,
+            userInfo: [NSLocalizedDescriptionKey: "disk volume size mismatch: got \(volumeData.count), expected \(expectedBytes) for \(r)x\(phi)x\(z) float4"]
+        )
+    }
+
+    return (volumeData, r, phi, z, rNormMin, rNormMax, zNormMax)
 }
 
 if CommandLine.arguments.contains("--kerr-use-u") {
@@ -629,13 +852,25 @@ let diskFlowStepsArg = max(2, min(24, intArg("--disk-flow-steps", default: 8)))
 let diskMdotEddArg = max(1e-5, doubleArg("--disk-mdot-edd", default: 0.1))
 let diskRadiativeEfficiencyArg = min(max(doubleArg("--disk-radiative-efficiency", default: 0.1), 0.01), 0.42)
 let diskModeRaw = stringArg("--disk-mode", default: "").lowercased()
+let diskPhysicsRaw = stringArg("--disk-physics", default: "").lowercased()
 let diskPhysicsLegacyRaw = stringArg("--disk-physics-mode", default: "").lowercased()
+if !diskModeRaw.isEmpty && !diskPhysicsRaw.isEmpty {
+    guard let modeA = parseDiskMode(diskModeRaw) else {
+        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
+    }
+    guard let modeB = parseDiskMode(diskPhysicsRaw) else {
+        fail("invalid --disk-physics \(diskPhysicsRaw). use one of: thin, thick, precision, grmhd")
+    }
+    if modeA.id != modeB.id {
+        fail("conflicting disk mode: --disk-mode \(diskModeRaw) vs --disk-physics \(diskPhysicsRaw)")
+    }
+}
 if !diskModeRaw.isEmpty && !diskPhysicsLegacyRaw.isEmpty {
     guard let modeA = parseDiskMode(diskModeRaw) else {
-        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision")
+        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
     }
     guard let modeB = parseDiskMode(diskPhysicsLegacyRaw) else {
-        fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision")
+        fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision, grmhd, auto")
     }
     if modeA.id != modeB.id {
         fail("conflicting disk mode: --disk-mode \(diskModeRaw) vs --disk-physics-mode \(diskPhysicsLegacyRaw)")
@@ -644,6 +879,10 @@ if !diskModeRaw.isEmpty && !diskPhysicsLegacyRaw.isEmpty {
 }
 let diskModeResolvedRaw: String = {
     if !diskModeRaw.isEmpty { return diskModeRaw }
+    if !diskPhysicsRaw.isEmpty {
+        FileHandle.standardError.write(Data("warn: --disk-physics is deprecated; prefer --disk-mode\n".utf8))
+        return diskPhysicsRaw
+    }
     if !diskPhysicsLegacyRaw.isEmpty {
         FileHandle.standardError.write(Data("warn: --disk-physics-mode is deprecated; prefer --disk-mode\n".utf8))
     }
@@ -652,14 +891,37 @@ let diskModeResolvedRaw: String = {
 }()
 guard let diskModeParsed = parseDiskMode(diskModeResolvedRaw) else {
     if !diskModeRaw.isEmpty {
-        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision")
+        fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
     }
-    fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision")
+    if !diskPhysicsRaw.isEmpty {
+        fail("invalid --disk-physics \(diskPhysicsRaw). use one of: thin, thick, precision, grmhd")
+    }
+    fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision, grmhd, auto")
 }
 let diskPhysicsModeID: UInt32 = diskModeParsed.id
 let diskPhysicsModeArg: String = diskModeParsed.canonical
-let diskPlungeFloorArg = max(0.0, doubleArg("--disk-plunge-floor", default: (diskPhysicsModeID == 1 ? 0.02 : 0.0)))
-let diskThickScaleArg = max(1.0, doubleArg("--disk-thick-scale", default: 1.3))
+let hasDiskVolumeArg = CommandLine.arguments.contains("--disk-volume")
+    || CommandLine.arguments.contains("--disk-vol0")
+    || CommandLine.arguments.contains("--disk-vol1")
+let diskModeUsesAutoAlias = ["auto", "unified", "adaptive", "smart"].contains(diskModeResolvedRaw)
+let precisionAdaptive = precisionAdaptiveDefaults(diskH: diskHFactor)
+let diskPlungeFloorDefault: Double = {
+    if diskPhysicsModeID == 1 { return 0.02 }
+    if diskPhysicsModeID == 2 { return precisionAdaptive.plungeFloor }
+    return 0.0
+}()
+let diskThickScaleDefault: Double = {
+    if diskPhysicsModeID == 1 { return 1.3 }
+    if diskPhysicsModeID == 2 { return precisionAdaptive.thickScale }
+    return 1.0
+}()
+if diskModeUsesAutoAlias {
+    FileHandle.standardError.write(
+        Data("info: --disk-mode auto resolves to precision with diskH-adaptive thin/thick defaults\n".utf8)
+    )
+}
+let diskPlungeFloorArg = min(1.0, max(0.0, doubleArg("--disk-plunge-floor", default: diskPlungeFloorDefault)))
+let diskThickScaleArg = max(1.0, doubleArg("--disk-thick-scale", default: diskThickScaleDefault))
 let diskColorFactorArg = max(1.0, doubleArg("--disk-color-factor", default: (diskPhysicsModeID == 2 ? 1.7 : 1.0)))
 let diskReturningRadRawArg = max(0.0, min(1.0, doubleArg("--disk-returning-rad", default: (diskPhysicsModeID == 2 ? 0.35 : 0.0))))
 let diskPrecisionTextureRawArg = max(0.0, min(1.0, doubleArg("--disk-precision-texture", default: (diskPhysicsModeID == 2 ? 0.58 : 0.0))))
@@ -673,13 +935,13 @@ case "off", "false", "0", "no":
 default:
     fail("invalid --disk-precision-clouds \(diskPrecisionCloudsName). use on|off")
 }
-let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (diskPhysicsModeID == 2 ? 0.88 : 0.0))))
-let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArg("--disk-cloud-optical-depth", default: (diskPhysicsModeID == 2 ? 2.0 : 0.0))))
-let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (diskPhysicsModeID == 2 ? 0.18 : 0.0))))
-let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (diskPhysicsModeID == 2 ? 0.90 : 0.0))))
+let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.58 : 0.88) : 0.0))))
+let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArg("--disk-cloud-optical-depth", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 1.10 : 2.0) : 0.0))))
+let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.42 : 0.18) : 0.0))))
+let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.62 : 0.90) : 0.0))))
 let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", default: (diskPhysicsModeID == 2 ? 2 : 1))))
 let diskRTStepsRawArg = max(0, min(32, intArg("--disk-rt-steps", default: 0)))
-let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? 0.62 : 0.0))))
+let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.52 : 0.62) : 0.0))))
 let diskReturningRadArg = (diskPhysicsModeID == 2) ? diskReturningRadRawArg : 0.0
 let diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
 let diskCloudCoverageArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudCoverageRawArg : 0.0
@@ -710,30 +972,222 @@ let diskAtlasVphiScaleArg = max(0.0, doubleArg("--disk-atlas-vphi-scale", defaul
 let diskAtlasRMinArg = doubleArg("--disk-atlas-r-min", default: -1.0)
 let diskAtlasRMaxArg = doubleArg("--disk-atlas-r-max", default: -1.0)
 let diskAtlasRWarpArg = doubleArg("--disk-atlas-r-warp", default: -1.0)
+let diskVolumePathArg = stringArg("--disk-volume", default: "")
+let diskVol0PathArg = stringArg("--disk-vol0", default: "")
+let diskVol1PathArg = stringArg("--disk-vol1", default: "")
+let diskMetaPathArg = stringArg("--disk-meta", default: "")
+let diskVolumeROverrideArg = max(0, intArg("--disk-volume-r", default: 0))
+let diskVolumePhiOverrideArg = max(0, intArg("--disk-volume-phi", default: 0))
+let diskVolumeZOverrideArg = max(0, intArg("--disk-volume-z", default: 0))
+let diskVolumeTauScaleRawArg = max(0.0, doubleArg("--disk-volume-tau-scale", default: hasDiskVolumeArg ? 0.85 : 1.0))
+let diskNuObsHzArg = max(1e6, doubleArg("--disk-nu-obs-hz", default: 230.0e9))
+let diskGrmhdDensityScaleArg = max(0.0, doubleArg("--disk-grmhd-density-scale", default: 1.0))
+let diskGrmhdBScaleArg = max(0.0, doubleArg("--disk-grmhd-b-scale", default: 1.0))
+let diskGrmhdEmissionScaleArg = max(0.0, doubleArg("--disk-grmhd-emission-scale", default: 1.0))
+let diskGrmhdAbsorptionScaleArg = max(0.0, doubleArg("--disk-grmhd-absorption-scale", default: 1.0))
+let diskGrmhdVelScaleArg = max(0.0, doubleArg("--disk-grmhd-vel-scale", default: 1.0))
+let diskGrmhdDebugName = stringArg("--disk-grmhd-debug", default: "off").lowercased()
+let diskGrmhdDebugID: UInt32
+switch diskGrmhdDebugName {
+case "off", "none":
+    diskGrmhdDebugID = 0
+case "rho", "max-rho":
+    diskGrmhdDebugID = 1
+case "b2", "bsq", "max-b2":
+    diskGrmhdDebugID = 2
+case "j", "jnu", "max-jnu":
+    diskGrmhdDebugID = 3
+case "i", "inu", "intensity", "max-inu":
+    diskGrmhdDebugID = 4
+case "teff", "temperature":
+    diskGrmhdDebugID = 5
+case "g", "gfactor", "redshift":
+    diskGrmhdDebugID = 6
+case "y", "luma", "luminance":
+    diskGrmhdDebugID = 7
+case "peak", "peak-lambda", "lambda-peak":
+    diskGrmhdDebugID = 8
+default:
+    fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak")
+}
+if diskPhysicsModeID != 3 && diskGrmhdDebugID != 0 {
+    FileHandle.standardError.write(Data("warn: --disk-grmhd-debug is only active in grmhd mode\n".utf8))
+}
+let visibleModeName = stringArg("--visible-mode", default: "off").lowercased()
+let visibleModeEnabled: Bool
+switch visibleModeName {
+case "on", "true", "1", "yes":
+    visibleModeEnabled = true
+case "off", "false", "0", "no":
+    visibleModeEnabled = false
+default:
+    fail("invalid --visible-mode \(visibleModeName). use on|off")
+}
+if diskPhysicsModeID != 3 && visibleModeEnabled {
+    FileHandle.standardError.write(Data("warn: --visible-mode currently applies to grmhd mode; requested mode \(diskPhysicsModeArg) will ignore it\n".utf8))
+}
+let visibleSamplesArg = max(8, min(128, intArg("--visible-samples", default: 48)))
+let visibleTeffModelName = stringArg("--teff-model", default: "parametric").lowercased()
+let visibleTeffModelID: UInt32
+switch visibleTeffModelName {
+case "parametric", "a1":
+    visibleTeffModelID = 0
+case "thin-disk", "thin", "a2":
+    visibleTeffModelID = 1
+case "nt", "novikov-thorne", "novikov_thorne", "a3":
+    visibleTeffModelID = 2
+default:
+    fail("invalid --teff-model \(visibleTeffModelName). use one of: parametric, thin-disk, nt")
+}
+let visibleTeffT0Arg = max(100.0, doubleArg("--teff-T0", default: 12000.0))
+let visibleTeffR0RsArg = max(1e-3, doubleArg("--teff-r0", default: 5.0))
+let visibleTeffPArg = min(max(doubleArg("--teff-p", default: 0.75), 0.05), 3.0)
+let visibleBhMassArg = max(1e20, doubleArg("--bh-mass", default: 1.0e35))
+let visibleMdotArg = max(0.0, doubleArg("--mdot", default: 1.0e15))
+let visibleRInRsArg = max(0.0, doubleArg("--r-in", default: 0.0))
+let photosphereRhoThresholdArg = max(0.0, doubleArg("--photosphere-rho-threshold", default: 0.0))
+let visibleEmissionModelName = stringArg("--visible-emission-model", default: "blackbody").lowercased()
+let visibleEmissionModelID: UInt32
+switch visibleEmissionModelName {
+case "blackbody", "thermal":
+    visibleEmissionModelID = 0
+case "synchrotron", "powerlaw", "power-law":
+    visibleEmissionModelID = 1
+default:
+    fail("invalid --visible-emission-model \(visibleEmissionModelName). use one of: blackbody, synchrotron")
+}
+let visibleSynchAlphaArg = min(max(doubleArg("--visible-synch-alpha", default: 0.85), 0.0), 4.0)
 let tileSizeArg = max(0, intArg("--tile-size", default: 0))
-let autoTile = width * height > 8_000_000
+let pixelCount = width * height
+// Kerr high-resolution full-frame dispatch (e.g. 2000x2000 in SSAA path)
+// can intermittently miss disk hits; force tiled tracing earlier for stability.
+let autoTile = pixelCount > 8_000_000 || (metricArg == 1 && pixelCount >= 4_000_000)
 let tileSize = (tileSizeArg > 0) ? tileSizeArg : (autoTile ? 1024 : max(width, height))
 let hasLookArg = CommandLine.arguments.contains("--look")
-let defaultLookName = (diskPhysicsModeID == 2 && !hasLookArg) ? "balanced" : preset
+let defaultLookName = ((diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && !hasLookArg) ? "balanced" : preset
 let composeLook = stringArg("--look", default: defaultLookName).lowercased()
 let composeLookID: UInt32
 switch composeLook {
 case "interstellar": composeLookID = 1
 case "eht": composeLookID = 2
+case "agx", "filmic": composeLookID = 3
+case "none", "linear": composeLookID = 4
 default: composeLookID = 0
 }
-let composeDitherDefault = (diskPhysicsModeID == 2) ? 0.0 : 0.75
+let composeDitherDefault: Double = {
+    switch diskModelArg {
+    case "perlin", "perlin-ec7", "perlin-legacy", "perlin-classic", "perlin-f552":
+        return 0.0
+    default:
+        break
+    }
+    return (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? 0.0 : 0.75
+}()
 let composeDitherArg = Float(doubleArg("--dither", default: composeDitherDefault))
+let cameraModelName = stringArg("--camera-model", default: ((diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? "scientific" : "legacy")).lowercased()
+let cameraModelID: UInt32
+switch cameraModelName {
+case "legacy", "none":
+    cameraModelID = 0
+case "scientific", "science":
+    cameraModelID = 1
+case "cinematic", "cinema":
+    cameraModelID = 2
+default:
+    fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic")
+}
+let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
+    switch cameraModelID {
+    case 1: return 0.55
+    case 2: return 0.35
+    default: return 0.0
+    }
+}())))
+let cameraReadNoiseArg = Float(max(0.0, doubleArg("--camera-read-noise", default: {
+    switch cameraModelID {
+    case 1: return 0.0025
+    case 2: return 0.0012
+    default: return 0.0
+    }
+}())))
+let cameraShotNoiseArg = Float(max(0.0, doubleArg("--camera-shot-noise", default: {
+    switch cameraModelID {
+    case 1: return 0.010
+    case 2: return 0.006
+    default: return 0.0
+    }
+}())))
+let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg("--camera-flare", default: (cameraModelID == 2 ? 0.20 : 0.0)))))
+if cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
+    FileHandle.standardError.write(Data("warn: --camera-flare is only active in --camera-model cinematic\n".utf8))
+}
+let backgroundRawArg = stringArg("--background", default: "").lowercased()
+let backgroundStarsRawArg = stringArg("--bg-stars", default: "").lowercased()
+let backgroundModeName: String = {
+    if !backgroundRawArg.isEmpty { return backgroundRawArg }
+    if !backgroundStarsRawArg.isEmpty {
+        switch backgroundStarsRawArg {
+        case "on", "true", "1", "yes":
+            return "stars"
+        case "off", "false", "0", "no":
+            return "off"
+        default:
+            fail("invalid --bg-stars \(backgroundStarsRawArg). use on|off")
+        }
+    }
+    return (cameraModelID == 2) ? "stars" : "off"
+}()
+let backgroundModeID: UInt32
+switch backgroundModeName {
+case "off", "none", "black":
+    backgroundModeID = 0
+case "stars", "starfield", "sky":
+    backgroundModeID = 1
+default:
+    fail("invalid --background \(backgroundModeName). use one of: off, stars")
+}
+let backgroundStarDensityArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-density", default: (backgroundModeID == 1 ? 1.0 : 0.0)))))
+let backgroundStarStrengthArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-strength", default: (backgroundModeID == 1 ? 1.0 : 0.0)))))
+let backgroundNebulaStrengthArg = Float(max(0.0, min(2.0, doubleArg("--bg-nebula-strength", default: (backgroundModeID == 1 ? 0.45 : 0.0)))))
+if backgroundModeID == 0 && (backgroundStarDensityArg > 1e-6 || backgroundStarStrengthArg > 1e-6 || backgroundNebulaStrengthArg > 1e-6) {
+    FileHandle.standardError.write(Data("warn: background intensity args are ignored when --background off\n".utf8))
+}
 let composeInnerEdgeArg = Float(max(1.0, doubleArg("--inner-edge-mult", default: 1.4)))
 let composeSpectralStepArg = Float(max(0.25, doubleArg("--spectral-step", default: 5.0)))
 let composeChunkArg = max(1, intArg("--chunk", default: 160000))
 let exposureSamplesArg = max(0, intArg("--exposure-samples", default: 200000))
 let exposureArg = Float(doubleArg("--exposure", default: -1.0))
+let exposureModeName = stringArg("--exposure-mode", default: "auto").lowercased()
+let exposureModeID: UInt32
+switch exposureModeName {
+case "auto":
+    exposureModeID = 0
+case "fixed":
+    exposureModeID = 1
+default:
+    fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed")
+}
+let exposureEVArg = doubleArg("--exposure-ev", default: 0.0)
 let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
 let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
-let composeAnalysisMode: UInt32 = (diskPhysicsModeID == 2) ? (diskPrecisionCloudsEnabled ? 2 : 1) : 0
+let composeAnalysisMode: UInt32 = {
+    if diskPhysicsModeID == 2 { return diskPrecisionCloudsEnabled ? 2 : 1 }
+    if diskPhysicsModeID == 3 && diskGrmhdDebugID != 0 { return 10 + diskGrmhdDebugID }
+    return 0
+}()
+let composeCameraModelID: UInt32 = (composeAnalysisMode == 0) ? cameraModelID : 0
+let composeCameraPsfSigmaArg: Float = (composeAnalysisMode == 0) ? cameraPsfSigmaArg : 0.0
+let composeCameraReadNoiseArg: Float = (composeAnalysisMode == 0) ? cameraReadNoiseArg : 0.0
+let composeCameraShotNoiseArg: Float = (composeAnalysisMode == 0) ? cameraShotNoiseArg : 0.0
+let composeCameraFlareStrengthArg: Float = (composeAnalysisMode == 0) ? cameraFlareStrengthArg : 0.0
+let autoExposureEnabled: Bool = {
+    if exposureArg > 0 { return false }
+    if exposureModeID == 1 { return false }
+    return true
+}()
 let composeExposureBase: Float = {
     if exposureArg > 0 { return exposureArg }
+    if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
     switch composeLookID {
     case 1: return 7.0e-18   // interstellar default
     case 2: return 5.2e-18   // eht default
@@ -749,15 +1203,20 @@ case "flow", "procedural", "legacy", "noise":
     diskModelResolved = "flow"
 case "perlin":
     diskModelResolved = "perlin"
+case "perlin-ec7", "perlin-legacy":
+    diskModelResolved = "perlin-ec7"
+case "perlin-classic", "perlin-f552":
+    diskModelResolved = "perlin-classic"
 case "atlas":
     diskModelResolved = "atlas"
 case "auto":
     diskModelResolved = diskAtlasPathArg.isEmpty ? "flow" : "atlas"
 default:
-    fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, atlas, auto (alias: procedural)")
+    fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-classic, perlin-ec7, atlas, auto (alias: procedural)")
 }
-if diskPhysicsModeID == 2 && diskModelResolved != "flow" {
-    FileHandle.standardError.write(Data("warn: precision mode renders with flow disk model; requested --disk-model \(diskModelResolved) is treated as flow\n".utf8))
+if (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && diskModelResolved != "flow" {
+    let modeLabel = (diskPhysicsModeID == 3) ? "grmhd" : "precision"
+    FileHandle.standardError.write(Data("warn: \(modeLabel) mode renders with flow disk model; requested --disk-model \(diskModelResolved) is treated as flow\n".utf8))
     diskModelResolved = "flow"
 }
 if diskModelResolved == "atlas" && diskAtlasPathArg.isEmpty {
@@ -767,7 +1226,14 @@ if diskModelResolved != "atlas" && !diskAtlasPathArg.isEmpty {
     FileHandle.standardError.write(Data("warn: --disk-model \(diskModelResolved) ignores --disk-atlas and atlas tuning args at render time\n".utf8))
 }
 let diskAtlasEnabled = (diskModelResolved == "atlas")
-let diskNoiseModel: UInt32 = (diskModelResolved == "perlin") ? 1 : 0
+let diskNoiseModel: UInt32 = {
+    switch diskModelResolved {
+    case "perlin": return 1
+    case "perlin-ec7": return 2
+    case "perlin-classic": return 3
+    default: return 0
+    }
+}()
 let diskAtlasWrapPhi: UInt32 = 1
 
 let diskAtlasData: Data
@@ -801,6 +1267,118 @@ let diskAtlasRMaxCandidate = (diskAtlasRMaxArg >= 0.0) ? diskAtlasRMaxArg : (dis
 let diskAtlasRMax = max(diskAtlasRMin + 1e-6, diskAtlasRMaxCandidate)
 let diskAtlasRWarpCandidate = (diskAtlasRWarpArg >= 0.0) ? diskAtlasRWarpArg : (diskAtlasMetaRWarp ?? 1.0)
 let diskAtlasRWarp = max(1e-3, diskAtlasRWarpCandidate)
+if diskPhysicsModeID != 2 && !diskVolumePathArg.isEmpty {
+    FileHandle.standardError.write(Data("warn: --disk-volume is only active in precision mode\n".utf8))
+}
+if diskPhysicsModeID != 3 && (!diskVol0PathArg.isEmpty || !diskVol1PathArg.isEmpty) {
+    FileHandle.standardError.write(Data("warn: --disk-vol0/--disk-vol1 are only active in grmhd mode\n".utf8))
+}
+let diskVolumeTauScaleArg = (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? diskVolumeTauScaleRawArg : 0.0
+let diskVolumeFormatArg: UInt32 = (diskPhysicsModeID == 3) ? 1 : 0
+let diskVolumeLegacyEnabled = (diskPhysicsModeID == 2) && !diskVolumePathArg.isEmpty
+let diskVolumeGRMHDEnabled = (diskPhysicsModeID == 3)
+if diskVolumeGRMHDEnabled && (diskVol0PathArg.isEmpty || diskVol1PathArg.isEmpty) {
+    fail("grmhd mode requires --disk-vol0 <path> and --disk-vol1 <path>")
+}
+let diskVolumeEnabled = diskVolumeLegacyEnabled || diskVolumeGRMHDEnabled
+
+let diskVolume0Data: Data
+let diskVolume1Data: Data
+let diskVolumeR: Int
+let diskVolumePhi: Int
+let diskVolumeZ: Int
+var diskVolumeMetaRMin: Double? = nil
+var diskVolumeMetaRMax: Double? = nil
+var diskVolumeMetaZMax: Double? = nil
+let diskVol0PathResolved: String
+let diskVol1PathResolved: String
+if diskVolumeLegacyEnabled {
+    do {
+        let loaded = try loadDiskVolume(
+            path: diskVolumePathArg,
+            metaPath: diskMetaPathArg,
+            rOverride: diskVolumeROverrideArg,
+            phiOverride: diskVolumePhiOverrideArg,
+            zOverride: diskVolumeZOverrideArg
+        )
+        diskVolume0Data = loaded.data
+        diskVolumeR = loaded.r
+        diskVolumePhi = loaded.phi
+        diskVolumeZ = loaded.z
+        diskVolumeMetaRMin = loaded.rNormMin
+        diskVolumeMetaRMax = loaded.rNormMax
+        diskVolumeMetaZMax = loaded.zNormMax
+        var empty = SIMD4<Float>(repeating: 0.0)
+        diskVolume1Data = withUnsafeBytes(of: &empty) { Data($0) }
+        diskVol0PathResolved = diskVolumePathArg
+        diskVol1PathResolved = ""
+    } catch {
+        fail("failed to load --disk-volume: \(error.localizedDescription)")
+    }
+} else if diskVolumeGRMHDEnabled {
+    do {
+        let loaded0 = try loadDiskVolume(
+            path: diskVol0PathArg,
+            metaPath: diskMetaPathArg,
+            rOverride: diskVolumeROverrideArg,
+            phiOverride: diskVolumePhiOverrideArg,
+            zOverride: diskVolumeZOverrideArg
+        )
+        let loaded1 = try loadDiskVolume(
+            path: diskVol1PathArg,
+            metaPath: diskMetaPathArg,
+            rOverride: diskVolumeROverrideArg,
+            phiOverride: diskVolumePhiOverrideArg,
+            zOverride: diskVolumeZOverrideArg
+        )
+        if loaded0.r != loaded1.r || loaded0.phi != loaded1.phi || loaded0.z != loaded1.z {
+            fail("grmhd volume dimensions mismatch: vol0=\(loaded0.r)x\(loaded0.phi)x\(loaded0.z), vol1=\(loaded1.r)x\(loaded1.phi)x\(loaded1.z)")
+        }
+        diskVolume0Data = loaded0.data
+        diskVolume1Data = loaded1.data
+        diskVolumeR = loaded0.r
+        diskVolumePhi = loaded0.phi
+        diskVolumeZ = loaded0.z
+        diskVolumeMetaRMin = loaded0.rNormMin ?? loaded1.rNormMin
+        diskVolumeMetaRMax = loaded0.rNormMax ?? loaded1.rNormMax
+        diskVolumeMetaZMax = loaded0.zNormMax ?? loaded1.zNormMax
+        diskVol0PathResolved = diskVol0PathArg
+        diskVol1PathResolved = diskVol1PathArg
+    } catch {
+        fail("failed to load --disk-vol0/--disk-vol1: \(error.localizedDescription)")
+    }
+} else {
+    var empty = SIMD4<Float>(repeating: 0.0)
+    let emptyData = withUnsafeBytes(of: &empty) { Data($0) }
+    diskVolume0Data = emptyData
+    diskVolume1Data = emptyData
+    diskVolumeR = 1
+    diskVolumePhi = 1
+    diskVolumeZ = 1
+    diskVol0PathResolved = ""
+    diskVol1PathResolved = ""
+}
+let diskVolumeRMin = max(0.0, diskVolumeMetaRMin ?? 1.0)
+let diskVolumeRMax = max(diskVolumeRMin + 1e-6, diskVolumeMetaRMax ?? max(rcp, diskVolumeRMin + 0.1))
+let diskVolumeZMax = max(1e-4, diskVolumeMetaZMax ?? 0.35)
+var photosphereRhoThresholdResolved = photosphereRhoThresholdArg
+if diskPhysicsModeID == 3 && visibleModeEnabled && photosphereRhoThresholdResolved > 0.0 && diskVolumeFormatArg == 1 {
+    let rhoMax = estimateGRMHDRhoMax(vol0Data: diskVolume0Data)
+    if rhoMax > 0.0 && photosphereRhoThresholdResolved > rhoMax {
+        let clamped = max(rhoMax * 0.25, rhoMax * 1e-3)
+        FileHandle.standardError.write(
+            Data(
+                String(
+                    format: "warn: --photosphere-rho-threshold %.6e exceeds volume rho max %.6e; clamping to %.6e\n",
+                    photosphereRhoThresholdResolved,
+                    rhoMax,
+                    clamped
+                ).utf8
+            )
+        )
+        photosphereRhoThresholdResolved = clamped
+    }
+}
 
 if composeGPU {
     if imageOutPath.isEmpty {
@@ -813,7 +1391,17 @@ if composeGPU {
     }
 }
 
-print("render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)")
+print(
+    "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)"
+)
+if diskPhysicsModeID == 3 {
+    print(
+        "grmhd config vol0=\(diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved), vol1=\(diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved), nuObsHz=\(diskNuObsHzArg), rhoScale=\(diskGrmhdDensityScaleArg), bScale=\(diskGrmhdBScaleArg), jScale=\(diskGrmhdEmissionScaleArg), alphaScale=\(diskGrmhdAbsorptionScaleArg), velScale=\(diskGrmhdVelScaleArg), debug=\(diskGrmhdDebugName)"
+    )
+    print(
+        "visible config enabled=\(visibleModeEnabled), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg)"
+    )
+}
 
 let c: Double = 299_792_458
 let G: Double = 6.67430e-11
@@ -823,6 +1411,8 @@ let M: Double = 1e35
 let rsD = 2.0 * G * M / (c * c)
 let reD = rsD * rcp
 let heD = rsD * diskHFactor
+let visibleTeffR0Meters = visibleTeffR0RsArg * rsD
+let visibleRInMeters = visibleRInRsArg * rsD
 let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
 let diskHorizonRadiusCompose = diskHorizonRadiusM(metric: metricArg, spin: spinArg, rs: rsD) * (1.0 + 2.0e-5)
 
@@ -907,7 +1497,43 @@ var params = Params(
     diskReturnBounces: UInt32(diskReturnBouncesArg),
     diskRTSteps: UInt32(diskRTStepsArg),
     diskScatteringAlbedo: Float(diskScatteringAlbedoArg),
-    diskRTPad: 0
+    diskRTPad: 0,
+    diskVolumeMode: diskVolumeEnabled ? 1 : 0,
+    diskVolumeR: UInt32(diskVolumeR),
+    diskVolumePhi: UInt32(diskVolumePhi),
+    diskVolumeZ: UInt32(diskVolumeZ),
+    diskVolumeRNormMin: Float(diskVolumeRMin),
+    diskVolumeRNormMax: Float(diskVolumeRMax),
+    diskVolumeZNormMax: Float(diskVolumeZMax),
+    diskVolumeTauScale: Float(diskVolumeTauScaleArg),
+    diskVolumeFormat: diskVolumeFormatArg,
+    diskVolumeR0: UInt32(diskVolumeR),
+    diskVolumePhi0: UInt32(diskVolumePhi),
+    diskVolumeZ0: UInt32(diskVolumeZ),
+    diskVolumeR1: UInt32(diskVolumeR),
+    diskVolumePhi1: UInt32(diskVolumePhi),
+    diskVolumeZ1: UInt32(diskVolumeZ),
+    diskNuObsHz: Float(diskNuObsHzArg),
+    diskGrmhdDensityScale: Float(diskGrmhdDensityScaleArg),
+    diskGrmhdBScale: Float(diskGrmhdBScaleArg),
+    diskGrmhdEmissionScale: Float(diskGrmhdEmissionScaleArg),
+    diskGrmhdAbsorptionScale: Float(diskGrmhdAbsorptionScaleArg),
+    diskGrmhdVelScale: Float(diskGrmhdVelScaleArg),
+    diskGrmhdDebugView: diskGrmhdDebugID,
+    visibleMode: (diskPhysicsModeID == 3 && visibleModeEnabled) ? 1 : 0,
+    visibleSamples: UInt32(visibleSamplesArg),
+    visibleTeffModel: visibleTeffModelID,
+    visiblePad0: 0,
+    visibleTeffT0: Float(visibleTeffT0Arg),
+    visibleTeffR0: Float(visibleTeffR0Meters),
+    visibleTeffP: Float(visibleTeffPArg),
+    visiblePhotosphereRhoThreshold: Float(photosphereRhoThresholdResolved),
+    visibleBhMass: Float(visibleBhMassArg),
+    visibleMdot: Float(visibleMdotArg),
+    visibleRIn: Float(visibleRInMeters),
+    visibleKappa: 0.0,
+    visibleEmissionModel: visibleEmissionModelID,
+    visibleEmissionAlpha: Float(visibleSynchAlphaArg)
 )
 
 let count = width * height
@@ -960,9 +1586,23 @@ guard let traceTileBuf = device.makeBuffer(length: maxTraceTilePixels * stride, 
 guard let diskAtlasBuf = device.makeBuffer(length: diskAtlasData.count, options: .storageModeShared) else {
     fail("failed to allocate disk atlas buffer")
 }
-_ = diskAtlasData.withUnsafeBytes { raw in
+diskAtlasData.withUnsafeBytes { raw in
     guard let base = raw.baseAddress else { return }
     memcpy(diskAtlasBuf.contents(), base, diskAtlasData.count)
+}
+guard let diskVolume0Buf = device.makeBuffer(length: diskVolume0Data.count, options: .storageModeShared) else {
+    fail("failed to allocate disk volume0 buffer")
+}
+diskVolume0Data.withUnsafeBytes { raw in
+    guard let base = raw.baseAddress else { return }
+    memcpy(diskVolume0Buf.contents(), base, diskVolume0Data.count)
+}
+guard let diskVolume1Buf = device.makeBuffer(length: diskVolume1Data.count, options: .storageModeShared) else {
+    fail("failed to allocate disk volume1 buffer")
+}
+diskVolume1Data.withUnsafeBytes { raw in
+    guard let base = raw.baseAddress else { return }
+    memcpy(diskVolume1Buf.contents(), base, diskVolume1Data.count)
 }
 let composeLinearTileBuf: MTLBuffer? = useLinear32Intermediate
     ? device.makeBuffer(length: maxTraceTilePixels * linearStride, options: .storageModeShared)
@@ -991,8 +1631,10 @@ var linearGlobalCloudQ10: Float = 0.0
 var linearGlobalCloudQ90: Float = 1.0
 var linearGlobalCloudInvSpan: Float = 1.0
 let linearLumBins = 4096
-let linearLumLogMin: Float = 8.0
-let linearLumLogMax: Float = 20.0
+let composeLumLogMin: Float = (diskPhysicsModeID == 3) ? -36.0 : 8.0
+let composeLumLogMax: Float = (diskPhysicsModeID == 3) ? 4.0 : 20.0
+let linearLumLogMin: Float = composeLumLogMin
+let linearLumLogMax: Float = composeLumLogMax
 
 var hitCount = 0
 var donePixels = 0
@@ -1000,9 +1642,9 @@ let totalPixels = count
 let outWidth = width / downsampleArg
 let outHeight = height / downsampleArg
 let composePrepassOpsTarget: Int
-if composeGPU && gpuFullCompose && exposureArg <= 0 {
+if composeGPU && gpuFullCompose && autoExposureEnabled {
     composePrepassOpsTarget = 3 * count
-} else if composeGPU && useLinear32Intermediate && exposureArg <= 0 {
+} else if composeGPU && useLinear32Intermediate && autoExposureEnabled {
     composePrepassOpsTarget = count
 } else {
     composePrepassOpsTarget = 0
@@ -1041,6 +1683,8 @@ while ty < height {
         enc.setBuffer(traceParamBuf, offset: 0, index: 0)
         enc.setBuffer(traceTileBuf, offset: 0, index: 1)
         enc.setBuffer(diskAtlasBuf, offset: 0, index: 2)
+        enc.setBuffer(diskVolume0Buf, offset: 0, index: 3)
+        enc.setBuffer(diskVolume1Buf, offset: 0, index: 4)
 
         let grid = MTLSize(width: tileW, height: tileH, depth: 1)
         enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
@@ -1081,7 +1725,16 @@ while ty < height {
                 cloudBins: UInt32(linearCloudBins),
                 lumBins: UInt32(linearLumBins),
                 lumLogMin: linearLumLogMin,
-                lumLogMax: linearLumLogMax
+                lumLogMax: linearLumLogMax,
+                cameraModel: composeCameraModelID,
+                cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+                cameraReadNoise: composeCameraReadNoiseArg,
+                cameraShotNoise: composeCameraShotNoiseArg,
+                cameraFlareStrength: composeCameraFlareStrengthArg,
+                backgroundMode: backgroundModeID,
+                backgroundStarDensity: backgroundStarDensityArg,
+                backgroundStarStrength: backgroundStarStrengthArg,
+                backgroundNebulaStrength: backgroundNebulaStrengthArg
             )
             updateBuffer(composeLinearParamBuf, with: &linearTileParams)
 
@@ -1164,7 +1817,7 @@ if composeGPU {
         }
         print("compose cloud normalization q10=\(linearGlobalCloudQ10) q90=\(linearGlobalCloudQ90) (linear32)")
 
-        if exposureArg <= 0 {
+        if autoExposureEnabled {
             let rawComposeRows = max(1, composeChunkArg / max(width, 1))
             var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
             if composeRows <= 0 { composeRows = downsampleArg }
@@ -1238,7 +1891,16 @@ if composeGPU {
                     cloudBins: UInt32(linearCloudBins),
                     lumBins: UInt32(linearLumBins),
                     lumLogMin: linearLumLogMin,
-                    lumLogMax: linearLumLogMax
+                    lumLogMax: linearLumLogMax,
+                    cameraModel: composeCameraModelID,
+                    cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+                    cameraReadNoise: composeCameraReadNoiseArg,
+                    cameraShotNoise: composeCameraShotNoiseArg,
+                    cameraFlareStrength: composeCameraFlareStrengthArg,
+                    backgroundMode: backgroundModeID,
+                    backgroundStarDensity: backgroundStarDensityArg,
+                    backgroundStarStrength: backgroundStarStrengthArg,
+                    backgroundNebulaStrength: backgroundNebulaStrengthArg
                 )
                 updateBuffer(lumParamBuf, with: &lumParams)
                 memset(lumHistBuf.contents(), 0, lumHistBytes)
@@ -1287,10 +1949,9 @@ if composeGPU {
                 }
                 let p50 = pow(10.0, Double(p50Log))
                 let p995 = pow(10.0, Double(p995Log))
-                var targetWhite: Float = 0.8
-                if composeLookID == 1 { targetWhite = 0.9 }
-                else if composeLookID == 2 { targetWhite = 0.6 }
-                composeExposure = targetWhite / max(Float(p995), 1e-12)
+                let targetWhite: Float = composeTargetWhite(composeLookID)
+                let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
+                composeExposure = targetWhite / max(Float(p995), pFloor)
                 print("lum(linear32) p50=\(p50), p99.5=\(p995), samples=\(lumSampleCount)")
             }
         }
@@ -1303,8 +1964,8 @@ if composeGPU {
         }
         let cloudBins = 8192
         let lumBins = 4096
-        let lumLogMin: Float = 8.0
-        let lumLogMax: Float = 20.0
+        let lumLogMin: Float = composeLumLogMin
+        let lumLogMax: Float = composeLumLogMax
         let cloudHistBytes = cloudBins * MemoryLayout<UInt32>.stride
         let lumHistBytes = lumBins * MemoryLayout<UInt32>.stride
         let tgCloud1D = MTLSize(width: max(1, min(256, cloudHistPipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
@@ -1342,7 +2003,16 @@ if composeGPU {
             cloudBins: UInt32(cloudBins),
             lumBins: UInt32(lumBins),
             lumLogMin: lumLogMin,
-            lumLogMax: lumLogMax
+            lumLogMax: lumLogMax,
+            cameraModel: composeCameraModelID,
+            cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+            cameraReadNoise: composeCameraReadNoiseArg,
+            cameraShotNoise: composeCameraShotNoiseArg,
+            cameraFlareStrength: composeCameraFlareStrengthArg,
+            backgroundMode: backgroundModeID,
+            backgroundStarDensity: backgroundStarDensityArg,
+            backgroundStarStrength: backgroundStarStrengthArg,
+            backgroundNebulaStrength: backgroundNebulaStrengthArg
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -1373,14 +2043,14 @@ if composeGPU {
         guard let composeOutBuf = device.makeBuffer(length: maxComposeOutTileCount * 4, options: .storageModeShared) else {
             fail("failed to allocate compose output tile buffer")
         }
-        let composeLinearFullBuf: MTLBuffer? = (exposureArg <= 0)
+        let composeLinearFullBuf: MTLBuffer? = autoExposureEnabled
             ? device.makeBuffer(length: count * MemoryLayout<SIMD4<Float>>.stride, options: .storageModeShared)
             : nil
-        if exposureArg <= 0, composeLinearFullBuf == nil {
+        if autoExposureEnabled, composeLinearFullBuf == nil {
             fail("failed to allocate full-frame linear RGB buffer")
         }
 
-        if exposureArg <= 0 {
+        if autoExposureEnabled {
             guard let composeLinearFullBuf else {
                 fail("full-frame linear RGB buffer missing in auto-exposure path")
             }
@@ -1545,10 +2215,10 @@ if composeGPU {
                 let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, lumLogMin, lumLogMax) }
                 let p50 = pow(10.0, Double(p50Log))
                 let p995 = pow(10.0, Double(p995Log))
-                var targetWhite: Float = 0.8
-                if composeLookID == 1 { targetWhite = 0.9 }
-                else if composeLookID == 2 { targetWhite = 0.6 }
-                composeExposure = targetWhite / max(Float(p995), 1e-12)
+                var targetWhite: Float = composeTargetWhite(composeLookID)
+                if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
+                let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
+                composeExposure = targetWhite / max(Float(p995), pFloor)
                 print("lum(hist) p50=\(p50), p99.5=\(p995), samples=\(lumSampleCount)")
             }
         }
@@ -1557,7 +2227,7 @@ if composeGPU {
         composeParamsTemplate.cloudQ10 = globalCloudQ10
         composeParamsTemplate.cloudInvSpan = globalCloudInvSpan
         print("compose cloud normalization q10=\(globalCloudQ10) q90=\(globalCloudQ90)")
-        print("exposure=\(composeExposure) (auto=\(exposureArg <= 0), gpuFullCompose=true)")
+        print("exposure=\(composeExposure) (auto=\(autoExposureEnabled), gpuFullCompose=true)")
 
         var rgb = [UInt8](repeating: 0, count: outWidth * outHeight * 3)
         let composePixelOps = outWidth * outHeight
@@ -1565,7 +2235,7 @@ if composeGPU {
         var composed = 0
         var cty = 0
         var composeTileIndex = 0
-        if exposureArg <= 0 {
+        if autoExposureEnabled {
             guard let composeLinearFullBuf else {
                 fail("linear RGB buffer missing before compose stage")
             }
@@ -1720,7 +2390,7 @@ if composeGPU {
         print("Saved image at: \(imageOutPath)")
     } else if useLinear32Intermediate {
     print("linear32 source=\(linearURL.path)")
-    print("exposure=\(composeExposure) (auto=\(exposureArg <= 0), linear32=true)")
+    print("exposure=\(composeExposure) (auto=\(autoExposureEnabled), linear32=true)")
 
     var composeParamsTemplate = ComposeParams(
         tileWidth: 0,
@@ -1747,7 +2417,16 @@ if composeGPU {
         cloudBins: 2048,
         lumBins: UInt32(linearLumBins),
         lumLogMin: linearLumLogMin,
-        lumLogMax: linearLumLogMax
+        lumLogMax: linearLumLogMax,
+        cameraModel: composeCameraModelID,
+        cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+        cameraReadNoise: composeCameraReadNoiseArg,
+        cameraShotNoise: composeCameraShotNoiseArg,
+        cameraFlareStrength: composeCameraFlareStrengthArg,
+        backgroundMode: backgroundModeID,
+        backgroundStarDensity: backgroundStarDensityArg,
+        backgroundStarStrength: backgroundStarStrengthArg,
+        backgroundNebulaStrength: backgroundNebulaStrengthArg
     )
     let rawComposeRows = max(1, composeChunkArg / max(width, 1))
     var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
@@ -1870,13 +2549,16 @@ if composeGPU {
     let vDiskOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.v_disk) ?? 16
     let directOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.direct_world) ?? 32
     let noiseOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.noise) ?? 48
+    let emitROffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.emit_r_norm) ?? 52
+    let emitPhiOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.emit_phi) ?? 56
+    let emitZOffset = MemoryLayout<CollisionInfo>.offset(of: \CollisionInfo.emit_z_norm) ?? 60
     let cloudQ10: Float = 0.0
     let cloudQ90: Float = 1.0
     let cloudInvSpan = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
     var cpuP995ForCompose: Float = 0.0
     var sampledHits = 0
 
-    if exposureArg <= 0 {
+    if autoExposureEnabled {
         var lumSamples: [Float] = []
         let sampleStride = (exposureSamplesArg > 0) ? max(1, count / max(exposureSamplesArg, 1)) : 1
         let stepNm = Double(max(composeSpectralStepArg, 0.25))
@@ -1888,6 +2570,10 @@ if composeGPU {
         let xyzRow0 = SIMD3<Double>(3.2406, -1.5372, -0.4986)
         let xyzRow1 = SIMD3<Double>(-0.9689, 1.8758, 0.0415)
         let xyzRow2 = SIMD3<Double>(0.0557, -0.2040, 1.0570)
+        let camX = Double(params.camPos.x)
+        let camY = Double(params.camPos.y)
+        let camZ = Double(params.camPos.z)
+        let rObs = max(sqrt(camX * camX + camY * camY + camZ * camZ), rs * 1.0001)
         let sampleHandle = try FileHandle(forReadingFrom: url)
         defer { try? sampleHandle.close() }
         let scanRecords = max(1, composeChunkArg)
@@ -1902,10 +2588,18 @@ if composeGPU {
             var chunkV: [SIMD3<Double>] = []
             var chunkD: [SIMD3<Double>] = []
             var chunkN: [Double] = []
+            var chunkI: [Double] = []
+            var chunkEmitR: [Double] = []
+            var chunkEmitPhi: [Double] = []
+            var chunkEmitZ: [Double] = []
             chunkT.reserveCapacity(min(recCount, 8192))
             chunkV.reserveCapacity(min(recCount, 8192))
             chunkD.reserveCapacity(min(recCount, 8192))
             chunkN.reserveCapacity(min(recCount, 8192))
+            chunkI.reserveCapacity(min(recCount, 8192))
+            chunkEmitR.reserveCapacity(min(recCount, 8192))
+            chunkEmitPhi.reserveCapacity(min(recCount, 8192))
+            chunkEmitZ.reserveCapacity(min(recCount, 8192))
 
             data.withUnsafeBytes { raw in
                 guard let basePtr = raw.baseAddress else { return }
@@ -1937,11 +2631,27 @@ if composeGPU {
                     withUnsafeMutableBytes(of: &n) { dst in
                         dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + noiseOffset), count: MemoryLayout<Float>.size))
                     }
+                    var emitR: Float = 0
+                    withUnsafeMutableBytes(of: &emitR) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + emitROffset), count: MemoryLayout<Float>.size))
+                    }
+                    var emitPhi: Float = 0
+                    withUnsafeMutableBytes(of: &emitPhi) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + emitPhiOffset), count: MemoryLayout<Float>.size))
+                    }
+                    var emitZ: Float = 0
+                    withUnsafeMutableBytes(of: &emitZ) { dst in
+                        dst.copyMemory(from: UnsafeRawBufferPointer(start: basePtr.advanced(by: base + emitZOffset), count: MemoryLayout<Float>.size))
+                    }
 
                     chunkT.append(max(Double(t), 1.0))
                     chunkV.append(SIMD3<Double>(Double(v4.x), Double(v4.y), Double(v4.z)))
                     chunkD.append(SIMD3<Double>(Double(d4.x), Double(d4.y), Double(d4.z)))
                     chunkN.append(Double(n))
+                    chunkI.append(max(Double(v4.w), 0.0))
+                    chunkEmitR.append(Double(emitR))
+                    chunkEmitPhi.append(Double(emitPhi))
+                    chunkEmitZ.append(Double(emitZ))
                 }
             }
 
@@ -1984,6 +2694,120 @@ if composeGPU {
                 var chunkLum: [Float] = []
                 chunkLum.reserveCapacity(chunkT.count)
                 for i in 0..<chunkT.count {
+                    if diskPhysicsModeID == 3 {
+                        let rgb: SIMD3<Double>
+                        if composeAnalysisMode >= 11 && composeAnalysisMode <= 14 {
+                            var raw = 0.0
+                            var lo = -30.0
+                            var hi = 2.0
+                            if composeAnalysisMode == 11 {
+                                raw = max(chunkEmitR[i], 0.0) // max_rho
+                                lo = -16.0
+                            } else if composeAnalysisMode == 12 {
+                                raw = max(chunkEmitPhi[i], 0.0) // max_b2
+                                lo = -20.0
+                                hi = 4.0
+                            } else if composeAnalysisMode == 13 {
+                                raw = max(chunkEmitZ[i], 0.0) // max_jnu
+                                lo = -40.0
+                                hi = -20.0
+                            } else {
+                                raw = max(chunkN[i], 0.0) // max_inu
+                                lo = -40.0
+                                hi = -20.0
+                            }
+                            let lv = log10(max(raw, 1e-38))
+                            let t = min(max((lv - lo) / max(hi - lo, 1e-9), 0.0), 1.0)
+                            rgb = SIMD3<Double>(repeating: t)
+                        } else if composeAnalysisMode == 15 {
+                            let teff = max(chunkT[i], 1.0)
+                            let lv = log10(teff)
+                            let t = min(max((lv - 2.0) / max(7.0 - 2.0, 1e-9), 0.0), 1.0)
+                            rgb = SIMD3<Double>(repeating: t)
+                        } else if composeAnalysisMode == 16 {
+                            let g = min(max(chunkV[i].x, 1e-6), 1e6)
+                            let lv = log10(g)
+                            let t = min(max((lv - (-2.0)) / max(2.0 - (-2.0), 1e-9), 0.0), 1.0)
+                            rgb = SIMD3<Double>(repeating: t)
+                        } else if visibleModeEnabled {
+                            let g = min(max(chunkV[i].x, 1e-4), 1e4)
+                            let tEmit = max(chunkT[i], 1.0)
+                            let scalarI = max(chunkI[i], 0.0)
+                            let fCol = (visibleTeffModelID == 2) ? max(diskColorFactorArg, 1.0) : 1.0
+                            let tSpec = tEmit * fCol
+                            let colorDilution = 1.0 / pow(fCol, 4.0)
+                            let nLam = max(8, visibleSamplesArg)
+                            let lamMin = 380.0
+                            let lamMax = 780.0
+                            let dLamNm = (lamMax - lamMin) / Double(max(nLam - 1, 1))
+                            let dLamM = dLamNm * 1e-9
+                            let g3 = g * g * g
+
+                            var X = 0.0
+                            var Y = 0.0
+                            var Z = 0.0
+                            var peakLamNm = lamMin
+                            var peakIlam = 0.0
+                            for j in 0..<nLam {
+                                let lamNm = lamMin + dLamNm * Double(j)
+                                let lamM = lamNm * 1e-9
+                                let nuObs = cc / max(lamM, 1e-30)
+                                let nuEm = nuObs / max(g, 1e-8)
+                                let iNuEm = visibleINuEmit(nuEm, tSpec, visibleEmissionModelID, visibleSynchAlphaArg)
+                                let iNuObs = g3 * iNuEm
+                                let iLamObs = iNuObs * cc / max(lamM * lamM, 1e-30) * colorDilution
+                                let (xb, yb, zb) = cieXYZBar(lamNm)
+                                X += iLamObs * xb * dLamM
+                                Y += iLamObs * yb * dLamM
+                                Z += iLamObs * zb * dLamM
+                                if iLamObs > peakIlam {
+                                    peakIlam = iLamObs
+                                    peakLamNm = lamNm
+                                }
+                            }
+
+                            if scalarI > 1e-18 {
+                                let nuObsRef = max(diskNuObsHzArg, 1e6)
+                                let nuEmRef = nuObsRef / max(g, 1e-8)
+                                let iNuPred = g3 * visibleINuEmit(nuEmRef, tSpec, visibleEmissionModelID, visibleSynchAlphaArg) * colorDilution
+                                let amp = min(max(scalarI / max(iNuPred, 1e-38), 0.0), 1e12)
+                                X *= amp
+                                Y *= amp
+                                Z *= amp
+                            }
+
+                            if composeAnalysisMode == 17 {
+                                let lv = log10(max(Y, 1e-38))
+                                let t = min(max((lv - (-30.0)) / max(4.0 - (-30.0), 1e-9), 0.0), 1.0)
+                                rgb = SIMD3<Double>(repeating: t)
+                            } else if composeAnalysisMode == 18 {
+                                let w = min(max((peakLamNm - 380.0) / (780.0 - 380.0), 0.0), 1.0)
+                                let r = min(max(1.5 - abs(4.0 * w - 3.0), 0.0), 1.0)
+                                let gch = min(max(1.5 - abs(4.0 * w - 2.0), 0.0), 1.0)
+                                let b = min(max(1.5 - abs(4.0 * w - 1.0), 0.0), 1.0)
+                                rgb = SIMD3<Double>(r, gch, b)
+                            } else {
+                                var rgbLin = SIMD3<Double>(
+                                    xyzRow0.x * X + xyzRow0.y * Y + xyzRow0.z * Z,
+                                    xyzRow1.x * X + xyzRow1.y * Y + xyzRow1.z * Z,
+                                    xyzRow2.x * X + xyzRow2.y * Y + xyzRow2.z * Z
+                                )
+                                rgbLin.x = max(rgbLin.x, 0.0)
+                                rgbLin.y = max(rgbLin.y, 0.0)
+                                rgbLin.z = max(rgbLin.z, 0.0)
+                                let d = chunkD[i]
+                                let mu = abs(d.z) / max(sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1e-30)
+                                let limb = 0.4 + 0.6 * min(max(mu, 0.0), 1.0)
+                                rgb = rgbLin * limb
+                            }
+                        } else {
+                            let iNu = max(chunkI[i], 0.0)
+                            rgb = SIMD3<Double>(repeating: iNu)
+                        }
+                        chunkLum.append(Float(rgb.x * luma.x + rgb.y * luma.y + rgb.z * luma.z))
+                        continue
+                    }
+
                     let v = chunkV[i]
                     let d = chunkD[i]
                     let colorDilution: Double = (diskPhysicsModeID == 2) ? (1.0 / pow(max(diskColorFactorArg, 1.0), 4.0)) : 1.0
@@ -1997,9 +2821,11 @@ if composeGPU {
                         let gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-18))
                         let vd = v.x * d.x + v.y * d.y + v.z * d.z
                         let cosTheta = min(max(vd / (vNorm * dNorm), -1.0), 1.0)
-                        let delta = 1.0 / max(gamma * (1.0 + beta * cosTheta), 1e-9)
+                        let delta = 1.0 / max(gamma * (1.0 - beta * cosTheta), 1e-9)
                         let rEmitLegacy = max(gg * ghM / max(vNorm * vNorm, 1e-30), rs * 1.0001)
-                        let gGr = sqrt(min(max(1.0 - rs / rEmitLegacy, 1e-8), 1.0))
+                        let gravNum = min(max(1.0 - rs / rEmitLegacy, 1e-8), 1.0)
+                        let gravDen = min(max(1.0 - rs / rObs, 1e-8), 1.0)
+                        let gGr = sqrt(min(max(gravNum / gravDen, 1e-8), 4.0))
                         gTotal = min(max(delta * gGr, 1e-4), 1e4)
                     }
 
@@ -2080,16 +2906,16 @@ if composeGPU {
             lumSamples.sort()
             let p50 = percentileSorted(lumSamples, 0.50)
             let p995 = percentileSorted(lumSamples, 0.995)
-            var targetWhite: Float = 0.8
-            if composeLookID == 1 { targetWhite = 0.9 }
-            else if composeLookID == 2 { targetWhite = 0.6 }
-            composeExposure = targetWhite / max(p995, 1e-12)
+            var targetWhite: Float = composeTargetWhite(composeLookID)
+            if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
+            let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
+            composeExposure = targetWhite / max(p995, pFloor)
             cpuP995ForCompose = p995
             print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
         }
     }
     print("compose cloud normalization q10=\(cloudQ10) q90=\(cloudQ90)")
-    print("exposure=\(composeExposure) (auto=\(exposureArg <= 0))")
+    print("exposure=\(composeExposure) (auto=\(autoExposureEnabled))")
 
     var composeParamsTemplate = ComposeParams(
         tileWidth: 0,
@@ -2115,8 +2941,17 @@ if composeGPU {
         analysisMode: composeAnalysisMode,
         cloudBins: 2048,
         lumBins: 4096,
-        lumLogMin: 8.0,
-        lumLogMax: 20.0
+        lumLogMin: composeLumLogMin,
+        lumLogMax: composeLumLogMax,
+        cameraModel: composeCameraModelID,
+        cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+        cameraReadNoise: composeCameraReadNoiseArg,
+        cameraShotNoise: composeCameraShotNoiseArg,
+        cameraFlareStrength: composeCameraFlareStrengthArg,
+        backgroundMode: backgroundModeID,
+        backgroundStarDensity: backgroundStarDensityArg,
+        backgroundStarStrength: backgroundStarStrengthArg,
+        backgroundNebulaStrength: backgroundNebulaStrengthArg
     )
     let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])!
 
@@ -2126,7 +2961,7 @@ if composeGPU {
     if composeRows > height { composeRows = height }
     let composeTileTotal = max(1, (height + composeRows - 1) / composeRows)
 
-    if cpuP995ForCompose > 0 {
+    if cpuP995ForCompose > 0 && diskPhysicsModeID != 3 {
         var lumHistGlobal = [UInt32](repeating: 0, count: 4096)
         let lumTg = MTLSize(width: max(1, min(256, lumHistPipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
         let corrHandle = try FileHandle(forReadingFrom: url)
@@ -2310,7 +3145,9 @@ if useInMemoryCollisions && !discardCollisionOutput {
 let meta = RenderMeta(
     version: "dense_pruned_v10",
     spectralEncoding: spectralEncoding,
-    diskModel: diskAtlasEnabled ? "stage3_atlas_v1" : (diskModelResolved == "perlin" ? "perlin_texture_v1" : "streamline_particles_v1"),
+    diskModel: (diskPhysicsModeID == 3)
+        ? "grmhd_scalar_rt_v1"
+        : (diskVolumeEnabled ? "volume_rt_v1" : (diskAtlasEnabled ? "stage3_atlas_v1" : ((diskModelResolved == "perlin") ? "perlin_texture_v1" : ((diskModelResolved == "perlin-ec7") ? "perlin_texture_ec7_v1" : ((diskModelResolved == "perlin-classic") ? "perlin_texture_classic_v1" : "streamline_particles_v1"))))),
     bridgeCoordinateFrame: "camera_world_xy_disk, r_norm=r/rs, z_norm=z/rs, phi=atan2(y,x)",
     bridgeFields: ["emit_r_norm", "emit_phi", "emit_z_norm", "ct", "T", "v_disk", "direct_world", "noise"],
     width: width,
@@ -2361,6 +3198,39 @@ let meta = RenderMeta(
     diskReturnBounces: diskReturnBouncesArg,
     diskRTSteps: diskRTStepsArg,
     diskScatteringAlbedo: diskScatteringAlbedoArg,
+    diskVolumeEnabled: diskVolumeEnabled,
+    diskVolumeFormat: (diskVolumeFormatArg == 1) ? "grmhd_dual_float4" : "legacy_float4",
+    diskVolumePath: diskVolumeLegacyEnabled ? diskVolumePathArg : "",
+    diskVol0Path: diskVol0PathResolved,
+    diskVol1Path: diskVol1PathResolved,
+    diskVolumeR: diskVolumeR,
+    diskVolumePhi: diskVolumePhi,
+    diskVolumeZ: diskVolumeZ,
+    diskVolumeRNormMin: diskVolumeRMin,
+    diskVolumeRNormMax: diskVolumeRMax,
+    diskVolumeZNormMax: diskVolumeZMax,
+    diskVolumeTauScale: diskVolumeTauScaleArg,
+    diskNuObsHz: diskNuObsHzArg,
+    diskGrmhdDensityScale: diskGrmhdDensityScaleArg,
+    diskGrmhdBScale: diskGrmhdBScaleArg,
+    diskGrmhdEmissionScale: diskGrmhdEmissionScaleArg,
+    diskGrmhdAbsorptionScale: diskGrmhdAbsorptionScaleArg,
+    diskGrmhdVelScale: diskGrmhdVelScaleArg,
+    diskGrmhdDebug: diskGrmhdDebugName,
+    visibleMode: visibleModeEnabled && diskPhysicsModeID == 3,
+    visibleSamples: visibleSamplesArg,
+    visibleTeffModel: visibleTeffModelName,
+    visibleTeffT0: visibleTeffT0Arg,
+    visibleTeffR0Rs: visibleTeffR0RsArg,
+    visibleTeffP: visibleTeffPArg,
+    visibleBhMass: visibleBhMassArg,
+    visibleMdot: visibleMdotArg,
+    visibleRInRs: visibleRInRsArg,
+    visiblePhotosphereRhoThreshold: photosphereRhoThresholdResolved,
+    visibleEmissionModel: visibleEmissionModelName,
+    visibleSynchAlpha: visibleSynchAlphaArg,
+    exposureMode: exposureModeName,
+    exposureEV: exposureEVArg,
     diskAtlasEnabled: diskAtlasEnabled,
     diskAtlasPath: diskAtlasEnabled ? diskAtlasPathArg : "",
     diskAtlasWidth: diskAtlasWidth,
@@ -2379,6 +3249,15 @@ let meta = RenderMeta(
     outputHeight: outHeight,
     exposure: Double(composeExposure),
     look: composeLook,
+    cameraModel: cameraModelName,
+    cameraPsfSigmaPx: Double(cameraPsfSigmaArg),
+    cameraReadNoise: Double(cameraReadNoiseArg),
+    cameraShotNoise: Double(cameraShotNoiseArg),
+    cameraFlareStrength: Double(cameraFlareStrengthArg),
+    backgroundMode: backgroundModeName,
+    backgroundStarDensity: Double(backgroundStarDensityArg),
+    backgroundStarStrength: Double(backgroundStarStrengthArg),
+    backgroundNebulaStrength: Double(backgroundNebulaStrengthArg),
     collisionStride: MemoryLayout<CollisionInfo>.stride
 )
 let encoder = JSONEncoder()

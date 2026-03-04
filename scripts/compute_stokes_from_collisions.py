@@ -8,6 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
+H_PLANCK = 6.62607015e-34
+K_BOLTZMANN = 1.380649e-23
+C_LIGHT = 299792458.0
+
 
 COLLISION_DTYPE_V6 = np.dtype(
     [
@@ -58,8 +62,19 @@ def load_meta(path: Path) -> dict:
     return data
 
 
+def planck_nu(nu_hz: np.ndarray, temperature: np.ndarray) -> np.ndarray:
+    nu = np.maximum(nu_hz, 1e-30)
+    t = np.maximum(temperature, 1e-6)
+    x = (H_PLANCK * nu) / (K_BOLTZMANN * t)
+    x = np.clip(x, 1e-8, 700.0)
+    numer = 2.0 * H_PLANCK * np.power(nu, 3.0) / (C_LIGHT * C_LIGHT)
+    return numer / np.expm1(x)
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Compute approximate Stokes I/Q/U diagnostics from collision buffer.")
+    p = argparse.ArgumentParser(
+        description="Compute diagnostic Stokes I/Q/U from collision buffer (phenomenological polarization model)."
+    )
     p.add_argument("--input", required=True, help="collisions.bin path")
     p.add_argument("--meta", required=True, help="collisions.bin.json path")
     p.add_argument("--output-json", required=True, help="output JSON path")
@@ -67,7 +82,21 @@ def main() -> None:
     p.add_argument("--pol-frac", type=float, default=0.25, help="intrinsic polarization fraction [0..1]")
     p.add_argument("--faraday", type=float, default=1.0, help="Faraday depolarization strength")
     p.add_argument("--pitch-deg", type=float, default=10.0, help="magnetic pitch angle in degrees")
+    p.add_argument(
+        "--intensity-model",
+        choices=("bolometric", "monochromatic"),
+        default="bolometric",
+        help="diagnostic intensity model: bolometric=(g*T)^4, monochromatic=g^3*B_nu(nu_obs/g, T_em)",
+    )
+    p.add_argument(
+        "--nu-obs-hz",
+        type=float,
+        default=230.0e9,
+        help="observer frequency [Hz] for --intensity-model monochromatic (default 230e9)",
+    )
     args = p.parse_args()
+    if args.nu_obs_hz <= 0.0:
+        raise ValueError("--nu-obs-hz must be > 0")
 
     bin_path = Path(args.input).expanduser().resolve()
     meta_path = Path(args.meta).expanduser().resolve()
@@ -98,6 +127,8 @@ def main() -> None:
             "width": width,
             "height": height,
             "hit_count": 0,
+            "intensity_model": args.intensity_model,
+            "nu_obs_hz": (float(args.nu_obs_hz) if args.intensity_model == "monochromatic" else None),
             "stokes_sum": {"I": 0.0, "Q": 0.0, "U": 0.0, "V": 0.0},
             "mean_pol_fraction": 0.0,
             "max_pol_fraction": 0.0,
@@ -139,7 +170,14 @@ def main() -> None:
     y = np.sum(e_pol * ey[None, :], axis=1)
     chi = np.arctan2(y, x)
 
-    I = np.power(T * g, 4.0) * np.power(g, 3.0)
+    if args.intensity_model == "monochromatic":
+        nu_obs = max(float(args.nu_obs_hz), 1.0)
+        nu_em = nu_obs / g
+        I = np.power(g, 3.0) * planck_nu(nu_em, T)
+    else:
+        nu_obs = None
+        # Bolometric thermal proxy (avoid g double-counting with separate g^3 term).
+        I = np.power(T * g, 4.0)
     pol_frac = np.clip(float(args.pol_frac), 0.0, 1.0)
     faraday = max(0.0, float(args.faraday))
     mu = np.abs(n[:, 2])
@@ -162,6 +200,8 @@ def main() -> None:
         "pol_frac_input": pol_frac,
         "faraday_input": faraday,
         "pitch_deg_input": float(args.pitch_deg),
+        "intensity_model": args.intensity_model,
+        "nu_obs_hz": (float(nu_obs) if nu_obs is not None else None),
         "stokes_sum": {
             "I": float(np.sum(I)),
             "Q": float(np.sum(Q)),
@@ -177,7 +217,7 @@ def main() -> None:
     print(
         "STOKES "
         f"hits={hit_count} mean_p={mean_p:.6f} max_p={max_p:.6f} "
-        f"I_sum={result['stokes_sum']['I']:.6e}"
+        f"model={args.intensity_model} I_sum={result['stokes_sum']['I']:.6e}"
     )
     print(f"STOKES_REPORT {out_json}")
 
@@ -202,4 +242,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

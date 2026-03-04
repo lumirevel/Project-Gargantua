@@ -105,7 +105,7 @@ def main() -> None:
     ap.add_argument("--r-min", type=float, default=1.0, help="minimum r/rs mapped to row 0")
     ap.add_argument("--r-max", type=float, default=9.0, help="maximum r/rs mapped to last row")
     ap.add_argument("--r-warp", type=float, default=1.0, help="radial mapping exponent (<1.0 = higher inner-ring resolution)")
-    ap.add_argument("--density-source", choices=["noise", "ones"], default="noise")
+    ap.add_argument("--density-source", choices=["density", "noise", "ones"], default="density")
     args = ap.parse_args()
 
     in_path = Path(args.input).expanduser().resolve()
@@ -128,7 +128,11 @@ def main() -> None:
     vr_ratio = _pick_optional(src, 0.0, "vr_ratio", "v_r_ratio")
     vphi_scale = _pick_optional(src, 1.0, "vphi_scale", "v_phi_scale")
 
-    if args.density_source == "noise":
+    if args.density_source == "density":
+        density = _pick_optional(src, np.nan, "density", "rho")
+        if np.isnan(density).all():
+            density = _pick_optional(src, 0.0, "noise", "density")
+    elif args.density_source == "noise":
         density = _pick_optional(src, 0.0, "noise", "density")
     else:
         density = np.ones_like(r_norm)

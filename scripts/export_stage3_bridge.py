@@ -126,8 +126,10 @@ def main() -> None:
     if spectral == "gfactor_v1":
         g_factor = np.clip(v[:, 0], 1e-4, 1e4).astype(np.float32)
         r_emit_m = np.maximum(v[:, 1], RS * 1.0001).astype(np.float32)
+        vr_ratio = np.clip(v[:, 2], -1.0, 1.0).astype(np.float32)
     else:
         g_factor, r_emit_m = compute_gfactor_legacy(v.astype(np.float64), d.astype(np.float64))
+        vr_ratio = np.zeros_like(g_factor, dtype=np.float32)
 
     payload = {
         "pixel_index": idx,
@@ -141,6 +143,7 @@ def main() -> None:
         "direct_world": d,
         "g_factor": g_factor,
         "r_emit_m": r_emit_m,
+        "vr_ratio": vr_ratio,
         "emit_r_norm": rec["emit_r_norm"][sel].astype(np.float32),
         "emit_phi": rec["emit_phi"][sel].astype(np.float32),
         "emit_z_norm": rec["emit_z_norm"][sel].astype(np.float32),
@@ -163,6 +166,7 @@ def main() -> None:
                     "noise",
                     "g_factor",
                     "r_emit_m",
+                    "vr_ratio",
                     "emit_r_norm",
                     "emit_phi",
                     "emit_z_norm",
@@ -180,6 +184,7 @@ def main() -> None:
                         float(payload["noise"][i]),
                         float(payload["g_factor"][i]),
                         float(payload["r_emit_m"][i]),
+                        float(payload["vr_ratio"][i]),
                         float(payload["emit_r_norm"][i]),
                         float(payload["emit_phi"][i]),
                         float(payload["emit_z_norm"][i]),

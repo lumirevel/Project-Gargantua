@@ -177,7 +177,7 @@ def main() -> None:
     parser.add_argument("--atlas-r-min", type=float, default=1.0)
     parser.add_argument("--atlas-r-max", type=float, default=9.0)
     parser.add_argument("--atlas-r-warp", type=float, default=0.65)
-    parser.add_argument("--atlas-density-source", choices=["noise", "ones"], default="noise")
+    parser.add_argument("--atlas-density-source", choices=["density", "noise", "ones"], default="density")
 
     parser.add_argument("--disk-atlas-temp-scale", type=float, default=1.0)
     parser.add_argument("--disk-atlas-density-blend", type=float, default=0.7)

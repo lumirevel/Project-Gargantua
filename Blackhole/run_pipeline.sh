@@ -45,6 +45,7 @@ DISK_HDF5_RHO_KEY=""
 DISK_HDF5_TEMP_KEY=""
 DISK_HDF5_VR_KEY=""
 DISK_HDF5_VPHI_KEY=""
+DISK_HDF5_THETA_KEY=""
 DISK_HDF5_THETA_INDEX=""
 DISK_HDF5_DENSITY_P_LO=""
 DISK_HDF5_DENSITY_P_HI=""
@@ -58,10 +59,60 @@ DISK_HDF5_SAMPLE=0
 DISK_HDF5_SAMPLE_OUT=""
 DISK_HDF5_SAMPLE_OUT_EXPLICIT=0
 DISK_HDF5_SAMPLE_NR="96"
+DISK_HDF5_SAMPLE_NTH="64"
 DISK_HDF5_SAMPLE_NPHI="192"
+DISK_HDF5_SAMPLE_SPIN=""
+DISK_HDF5_SAMPLE_R_IN=""
+DISK_HDF5_SAMPLE_R_MAX_PRESSURE=""
+DISK_HDF5_SAMPLE_N_POLY=""
+DISK_HDF5_SAMPLE_TARGET_BETA=""
+DISK_HDF5_SAMPLE_RHO_CUT_FRAC=""
+DISK_HDF5_SAMPLE_PERTURB=""
+DISK_HDF5_SAMPLE_SEED=""
+DISK_HDF5_SAMPLE_SIGMA_MAX=""
+DISK_IC_SEED=""
+DISK_IC_AMP=""
+DISK_IC_SCALE=""
+DISK_IC_ENABLE=0
+DISK_IC_SEED_VAL=""
+DISK_IC_AMP_VAL=""
+DISK_IC_SCALE_VAL=""
+DISK_VOLUME_VALUE=""
+DISK_VOLUME_SET=0
+DISK_VOLUME_REQUESTED=0
+DISK_VOLUME_HDF5_PATH=""
+DISK_VOLUME_OUT=""
+DISK_VOLUME_OUT_EXPLICIT=0
+DISK_VOLUME_NR="128"
+DISK_VOLUME_NPHI="256"
+DISK_VOLUME_NZ="72"
+DISK_VOLUME_Z_MAX=""
+DISK_VOLUME_R_OVERRIDE=""
+DISK_VOLUME_PHI_OVERRIDE=""
+DISK_VOLUME_Z_OVERRIDE=""
+DISK_VOLUME_TAU_SCALE=""
+DISK_VOL0_VALUE=""
+DISK_VOL1_VALUE=""
+DISK_META_VALUE=""
+DISK_VOL0_SET=0
+DISK_VOL1_SET=0
+DISK_META_SET=0
+DISK_GRMHD_NR="128"
+DISK_GRMHD_NPHI="256"
+DISK_GRMHD_NZ="72"
+DISK_GRMHD_Z_MAX=""
+DISK_GRMHD_U_TO_THETAE=""
+DISK_GRMHD_NATIVE_3D="auto"
+DISK_GRMHD_DEBUG=""
 TEMP_HDF5_ATLAS=""
 TEMP_HDF5_SAMPLE=""
 TEMP_HDF5_FLOW_PROFILE=""
+TEMP_HDF5_VOLUME=""
+TEMP_HDF5_VOL0=""
+TEMP_HDF5_VOL1=""
+TEMP_HDF5_VOLMETA=""
+TEMP_HDF5_IC_MAIN=""
+TEMP_HDF5_IC_VOLUME=""
 TEMP_COLLISIONS=""
 DISK_ORBITAL_BOOST_SET=0
 DISK_RADIAL_DRIFT_SET=0
@@ -112,6 +163,8 @@ STOKES_PNG=""
 STOKES_POL_FRAC=""
 STOKES_FARADAY=""
 STOKES_PITCH_DEG=""
+STOKES_INTENSITY_MODEL=""
+STOKES_NU_OBS_HZ=""
 
 case "$ETA_RELAY" in
   always|errors|none) ;;
@@ -136,6 +189,24 @@ cleanup_temp_artifacts() {
   fi
   if [[ -n "${TEMP_HDF5_FLOW_PROFILE:-}" ]]; then
     rm -f "${TEMP_HDF5_FLOW_PROFILE}"
+  fi
+  if [[ -n "${TEMP_HDF5_VOLUME:-}" ]]; then
+    rm -f "${TEMP_HDF5_VOLUME}" "${TEMP_HDF5_VOLUME}.json"
+  fi
+  if [[ -n "${TEMP_HDF5_VOL0:-}" ]]; then
+    rm -f "${TEMP_HDF5_VOL0}"
+  fi
+  if [[ -n "${TEMP_HDF5_VOL1:-}" ]]; then
+    rm -f "${TEMP_HDF5_VOL1}"
+  fi
+  if [[ -n "${TEMP_HDF5_VOLMETA:-}" ]]; then
+    rm -f "${TEMP_HDF5_VOLMETA}"
+  fi
+  if [[ -n "${TEMP_HDF5_IC_MAIN:-}" ]]; then
+    rm -f "${TEMP_HDF5_IC_MAIN}"
+  fi
+  if [[ -n "${TEMP_HDF5_IC_VOLUME:-}" ]]; then
+    rm -f "${TEMP_HDF5_IC_VOLUME}"
   fi
 }
 
@@ -183,6 +254,12 @@ canonical_disk_model() {
     perlin)
       printf 'perlin'
       ;;
+    perlin-classic|perlin-f552)
+      printf 'perlin-classic'
+      ;;
+    perlin-ec7|perlin-legacy)
+      printf 'perlin-ec7'
+      ;;
     atlas)
       printf 'atlas'
       ;;
@@ -191,6 +268,27 @@ canonical_disk_model() {
       ;;
     *)
       printf '%s' "$model"
+      ;;
+  esac
+}
+
+canonical_disk_mode() {
+  local mode="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    thin|nt|strict)
+      printf 'thin'
+      ;;
+    thick|plasma|riaf)
+      printf 'thick'
+      ;;
+    precision|analysis|pt|auto|unified|adaptive|smart|"")
+      printf 'precision'
+      ;;
+    grmhd|rt|volume-rt)
+      printf 'grmhd'
+      ;;
+    *)
+      printf '%s' "$mode"
       ;;
   esac
 }
@@ -278,6 +376,47 @@ ensure_h5py_python() {
   exit 2
 }
 
+apply_hdf5_ic_perturb() {
+  local input_path="$1"
+  local output_path="$2"
+  local script_path="$ROOT_DIR/scripts/perturb_hdf5_initial_conditions.py"
+
+  if [[ ! -f "$script_path" ]]; then
+    echo "error: HDF5 IC perturb script not found: $script_path" >&2
+    exit 2
+  fi
+
+  local cmd=(
+    "$PYTHON_BIN" "$script_path"
+    --input "$input_path"
+    --output "$output_path"
+    --seed "$DISK_IC_SEED_VAL"
+    --amp "$DISK_IC_AMP_VAL"
+    --scale "$DISK_IC_SCALE_VAL"
+  )
+
+  if [[ -n "$DISK_HDF5_R_KEY" ]]; then
+    cmd+=(--r-key "$DISK_HDF5_R_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_PHI_KEY" ]]; then
+    cmd+=(--phi-key "$DISK_HDF5_PHI_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_RHO_KEY" ]]; then
+    cmd+=(--rho-key "$DISK_HDF5_RHO_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_TEMP_KEY" ]]; then
+    cmd+=(--temp-key "$DISK_HDF5_TEMP_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_VR_KEY" ]]; then
+    cmd+=(--vr-key "$DISK_HDF5_VR_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_VPHI_KEY" ]]; then
+    cmd+=(--vphi-key "$DISK_HDF5_VPHI_KEY")
+  fi
+
+  "${cmd[@]}"
+}
+
 if ! python_executable_exists "$PYTHON_BIN"; then
   echo "error: python interpreter not found: $PYTHON_BIN" >&2
   echo "hint: set BH_PYTHON to a valid python executable path/name." >&2
@@ -344,26 +483,38 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics-mode --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp
-- Disk model values: --disk-model {flow|perlin|atlas|auto} (alias: procedural)
-- Disk mode values: --disk-mode {thin|thick|precision} (legacy: --disk-physics-mode)
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --visible-mode --visible-samples --visible-emission-model --visible-synch-alpha --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+- Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
+- Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
+  - auto: precision alias with diskH-adaptive thin/thick defaults
 - Disk representation selector: --disk-repr {2d|3d}
-- Disk source selector: --disk-source {flow|perlin|atlas|hdf5|pluto}
-  - 2d + {perlin|atlas|hdf5|pluto}: textured/atlas path (hdf5/pluto auto-bridge to atlas)
-  - 3d + {flow|hdf5|pluto}: precision flow path (hdf5/pluto auto-bridge to flow profile)
+- Disk source selector: --disk-source {flow|perlin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
+  - 2d + {perlin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}: textured/atlas path (hdf5/pluto auto-bridge to atlas)
+  - 3d + {flow|hdf5|pluto}: precision/grmhd volumetric path
 - Precision texture controls: --disk-returning-rad <0..1> --disk-return-bounces <1..4> --disk-rt-steps <0..32> --disk-scattering-albedo <0..1> --disk-precision-texture <0..1>
 - Precision cloud controls: --disk-precision-clouds {on|off} --disk-cloud-coverage <0..1> --disk-cloud-optical-depth <0..12> --disk-cloud-porosity <0..1> --disk-cloud-shadow-strength <0..1>
 - Precision physics requires GPU compose path (--pipeline gpu-only).
 - Atlas auto path: in non-precision mode, when --disk-model atlas is set and --disk-atlas is omitted, auto-search order is BH_DISK_ATLAS, ./disk_atlas.bin, /tmp/stage3_ab/disk_atlas.bin
-- Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look
+- Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
 - PLUTO shortcut: --disk-pluto (auto-discover .h5, fallback to auto sample) or --disk-pluto-path <snapshot.h5>
 - HDF5 auto bridge: --disk-hdf5 <snapshot.h5> [--disk-hdf5-out <atlas.bin>] [--disk-hdf5-r-to-rs <x>] [--disk-hdf5-kepler-gm <x>] [--disk-hdf5-theta-index <i>|--disk-hdf5-theta-average] [--disk-hdf5-density-log]
   - default atlas output is temporary and auto-cleaned; use --disk-hdf5-out to keep it
 - HDF5 mapping preset: --disk-hdf5-preset {auto|pluto}
   - pluto preset defaults: r=x1v phi=x3v rho=rho vr=vx1 vphi=vx3 temp=prs (override with key args)
 - HDF5 key overrides: --disk-hdf5-r-key --disk-hdf5-phi-key --disk-hdf5-rho-key --disk-hdf5-temp-key --disk-hdf5-vr-key --disk-hdf5-vphi-key
+- HDF5 theta key override: --disk-hdf5-theta-key
 - HDF5 flow bridge: --disk-hdf5-flow (force direct flow-profile bridge; precision mode uses this path automatically)
-- HDF5 sample generator: --disk-hdf5-sample [--disk-hdf5-sample-out <snapshot.h5>] [--disk-hdf5-sample-nr <n>] [--disk-hdf5-sample-nphi <n>]
+- HDF5 volume bridge: --disk-volume-hdf5 <snapshot.h5> [--disk-volume-out <volume.bin>] [--disk-volume-nr <n>] [--disk-volume-nphi <n>] [--disk-volume-nz <n>] [--disk-volume-z-max <x>]
+  - precision mode with --disk-hdf5/--disk-pluto auto-builds temporary disk volume when --disk-volume is not provided
+- GRMHD volume bridge: --disk-mode grmhd --disk-hdf5 <snapshot.h5> [--disk-grmhd-nr <n>] [--disk-grmhd-nphi <n>] [--disk-grmhd-nz <n>] [--disk-grmhd-z-max <x>]
+  - native 3D mapping control: --disk-grmhd-native-3d {auto|on|off}
+  - diagnostic map: --disk-grmhd-debug {off|rho|b2|jnu|inu|teff|g|y|peak}
+  - visible controls: --visible-mode {on|off} --visible-samples <N> --visible-emission-model {blackbody|synchrotron} --visible-synch-alpha <a> --teff-model {parametric|thin-disk|nt} --teff-T0 <K> --teff-r0 <rs> --teff-p <p> --bh-mass <kg> --mdot <kg/s> [--r-in <rs>|0(auto)] [--photosphere-rho-threshold <rho>]
+  - emits temporary vol0/vol1/meta and auto-wires --disk-vol0/--disk-vol1/--disk-meta to Swift
+- HDF5 sample generator (Fishbone-Moncrief torus IC): --disk-hdf5-sample [--disk-hdf5-sample-out <snapshot.h5>] [--disk-hdf5-sample-nr <n>] [--disk-hdf5-sample-nth <n>] [--disk-hdf5-sample-nphi <n>]
+  - optional FM params: --disk-hdf5-sample-spin --disk-hdf5-sample-r-in --disk-hdf5-sample-r-max-pressure --disk-hdf5-sample-n-poly --disk-hdf5-sample-target-beta --disk-hdf5-sample-rho-cut-frac --disk-hdf5-sample-perturb --disk-hdf5-sample-seed --disk-hdf5-sample-sigma-max
+- HDF5 IC perturbation (seeded phenomenological initial condition): --disk-ic-amp <>=0> [--disk-ic-seed <int>] [--disk-ic-scale <cells>]
+  - applies correlated perturbation to HDF5 fields before volume/flow bridge (seeded + reproducible)
 - Python override: BH_PYTHON=<python> (default: auto-detect; PLUTO/HDF5 paths require h5py)
 - Pipeline quality: --ssaa {1|2|4} (2=2x2, 4=4x4 supersampling)
 - Swift memory: --tile-size <pixels> (optional, e.g. 512/1024)
@@ -400,6 +551,8 @@ Output controls:
 - --stokes-pol-frac <0..1>: intrinsic polarization fraction (default 0.25)
 - --stokes-faraday <x>: Faraday depolarization strength (default 1.0)
 - --stokes-pitch-deg <deg>: magnetic pitch angle for diagnostic model (default 10)
+- --stokes-intensity-model {bolometric|monochromatic}: diagnostic intensity model (default bolometric)
+- --stokes-nu-obs-hz <Hz>: observer frequency for monochromatic model (default 230e9)
 
 Special mode:
 - stage3-ab (or --stage3-ab): run stage-3 A/B automation in one shot
@@ -552,9 +705,173 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --stokes-intensity-model)
+      need_value "$arg" "$@"
+      STOKES_INTENSITY_MODEL="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      continue
+      ;;
+    --stokes-nu-obs-hz)
+      need_value "$arg" "$@"
+      STOKES_NU_OBS_HZ="$1"
+      shift
+      continue
+      ;;
     --disk-hdf5)
       need_value "$arg" "$@"
       DISK_HDF5_PATH="$1"
+      shift
+      continue
+      ;;
+    --disk-volume)
+      need_value "$arg" "$@"
+      DISK_VOLUME_VALUE="$1"
+      DISK_VOLUME_SET=1
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-vol0)
+      need_value "$arg" "$@"
+      DISK_VOL0_VALUE="$1"
+      DISK_VOL0_SET=1
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-vol1)
+      need_value "$arg" "$@"
+      DISK_VOL1_VALUE="$1"
+      DISK_VOL1_SET=1
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-meta)
+      need_value "$arg" "$@"
+      DISK_META_VALUE="$1"
+      DISK_META_SET=1
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-r)
+      need_value "$arg" "$@"
+      DISK_VOLUME_R_OVERRIDE="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-phi)
+      need_value "$arg" "$@"
+      DISK_VOLUME_PHI_OVERRIDE="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-z)
+      need_value "$arg" "$@"
+      DISK_VOLUME_Z_OVERRIDE="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-tau-scale)
+      need_value "$arg" "$@"
+      DISK_VOLUME_TAU_SCALE="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-hdf5)
+      need_value "$arg" "$@"
+      DISK_VOLUME_HDF5_PATH="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-out)
+      need_value "$arg" "$@"
+      DISK_VOLUME_OUT="$1"
+      DISK_VOLUME_OUT_EXPLICIT=1
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-nr)
+      need_value "$arg" "$@"
+      DISK_VOLUME_NR="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-nphi)
+      need_value "$arg" "$@"
+      DISK_VOLUME_NPHI="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-nz)
+      need_value "$arg" "$@"
+      DISK_VOLUME_NZ="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-volume-z-max)
+      need_value "$arg" "$@"
+      DISK_VOLUME_Z_MAX="$1"
+      DISK_VOLUME_REQUESTED=1
+      shift
+      continue
+      ;;
+    --disk-grmhd-nr)
+      need_value "$arg" "$@"
+      DISK_GRMHD_NR="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-nphi)
+      need_value "$arg" "$@"
+      DISK_GRMHD_NPHI="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-nz)
+      need_value "$arg" "$@"
+      DISK_GRMHD_NZ="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-z-max)
+      need_value "$arg" "$@"
+      DISK_GRMHD_Z_MAX="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-u-to-thetae)
+      need_value "$arg" "$@"
+      DISK_GRMHD_U_TO_THETAE="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-native-3d)
+      need_value "$arg" "$@"
+      DISK_GRMHD_NATIVE_3D="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      case "$DISK_GRMHD_NATIVE_3D" in
+        auto|on|off) ;;
+        *)
+          echo "error: --disk-grmhd-native-3d must be one of auto, on, off" >&2
+          exit 2
+          ;;
+      esac
+      continue
+      ;;
+    --disk-grmhd-debug)
+      need_value "$arg" "$@"
+      DISK_GRMHD_DEBUG="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       shift
       continue
       ;;
@@ -625,6 +942,12 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --disk-hdf5-theta-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_THETA_KEY="$1"
+      shift
+      continue
+      ;;
     --disk-hdf5-flow)
       DISK_HDF5_FLOW=1
       continue
@@ -646,9 +969,87 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --disk-hdf5-sample-nth)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_NTH="$1"
+      shift
+      continue
+      ;;
     --disk-hdf5-sample-nphi)
       need_value "$arg" "$@"
       DISK_HDF5_SAMPLE_NPHI="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-spin)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_SPIN="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-r-in)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_R_IN="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-r-max-pressure)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_R_MAX_PRESSURE="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-n-poly)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_N_POLY="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-target-beta)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_TARGET_BETA="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-rho-cut-frac)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_RHO_CUT_FRAC="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-perturb)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_PERTURB="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-seed)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_SEED="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-sample-sigma-max)
+      need_value "$arg" "$@"
+      DISK_HDF5_SAMPLE_SIGMA_MAX="$1"
+      shift
+      continue
+      ;;
+    --disk-ic-seed)
+      need_value "$arg" "$@"
+      DISK_IC_SEED="$1"
+      shift
+      continue
+      ;;
+    --disk-ic-amp)
+      need_value "$arg" "$@"
+      DISK_IC_AMP="$1"
+      shift
+      continue
+      ;;
+    --disk-ic-scale)
+      need_value "$arg" "$@"
+      DISK_IC_SCALE="$1"
       shift
       continue
       ;;
@@ -925,17 +1326,46 @@ while [[ "$#" -gt 0 ]]; do
       need_value "$arg" "$@"
       val="$1"
       shift
-      DISK_PHYSICS_MODE_VALUE="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+      DISK_PHYSICS_MODE_VALUE="$(canonical_disk_mode "$val")"
+      case "$DISK_PHYSICS_MODE_VALUE" in
+        thin|thick|precision|grmhd) ;;
+        *)
+          echo "error: --disk-physics-mode must be one of thin, thick, precision, grmhd, auto" >&2
+          exit 2
+          ;;
+      esac
       DISK_MODE_ARG_PRESENT=1
-      SWIFT_ARGS+=("$arg" "$val")
+      SWIFT_ARGS+=("$arg" "$DISK_PHYSICS_MODE_VALUE")
+      ;;
+    --disk-physics)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      DISK_PHYSICS_MODE_VALUE="$(canonical_disk_mode "$val")"
+      case "$DISK_PHYSICS_MODE_VALUE" in
+        thin|thick|precision|grmhd) ;;
+        *)
+          echo "error: --disk-physics must be one of thin, thick, precision, grmhd" >&2
+          exit 2
+          ;;
+      esac
+      DISK_MODE_ARG_PRESENT=1
+      SWIFT_ARGS+=("$arg" "$DISK_PHYSICS_MODE_VALUE")
       ;;
     --disk-mode)
       need_value "$arg" "$@"
       val="$1"
       shift
-      DISK_PHYSICS_MODE_VALUE="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+      DISK_PHYSICS_MODE_VALUE="$(canonical_disk_mode "$val")"
+      case "$DISK_PHYSICS_MODE_VALUE" in
+        thin|thick|precision|grmhd) ;;
+        *)
+          echo "error: --disk-mode must be one of thin, thick, precision, grmhd, auto" >&2
+          exit 2
+          ;;
+      esac
       DISK_MODE_ARG_PRESENT=1
-      SWIFT_ARGS+=("$arg" "$val")
+      SWIFT_ARGS+=("$arg" "$DISK_PHYSICS_MODE_VALUE")
       ;;
     --disk-atlas)
       need_value "$arg" "$@"
@@ -1097,7 +1527,7 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
       exit 2
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--visible-emission-model|--visible-synch-alpha|--camera-model|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -1166,17 +1596,36 @@ fi
 
 if [[ "$DISK_SOURCE_SET" -eq 1 ]]; then
   case "$DISK_SOURCE_VALUE" in
-    flow|perlin|atlas|hdf5|pluto) ;;
+    flow|perlin|perlin-classic|perlin-ec7|atlas|hdf5|pluto) ;;
     *)
-      echo "error: --disk-source must be one of flow, perlin, atlas, hdf5, pluto" >&2
+      echo "error: --disk-source must be one of flow, perlin, perlin-classic, perlin-ec7, atlas, hdf5, pluto" >&2
       exit 2
       ;;
   esac
 fi
 
+if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
+  case "$DISK_GRMHD_DEBUG" in
+    off|none|rho|b2|j|jnu|i|inu|intensity|teff|t|g|gfactor|y|luma|luminance|peak|lambda_peak) ;;
+    *)
+      echo "error: --disk-grmhd-debug must be one of off, rho, b2, jnu, inu, teff, g, y, peak" >&2
+      exit 2
+      ;;
+  esac
+  case "$DISK_GRMHD_DEBUG" in
+    none) DISK_GRMHD_DEBUG="off" ;;
+    j) DISK_GRMHD_DEBUG="jnu" ;;
+    i|intensity) DISK_GRMHD_DEBUG="inu" ;;
+    t) DISK_GRMHD_DEBUG="teff" ;;
+    gfactor) DISK_GRMHD_DEBUG="g" ;;
+    luma|luminance) DISK_GRMHD_DEBUG="y" ;;
+    lambda_peak) DISK_GRMHD_DEBUG="peak" ;;
+  esac
+fi
+
 if [[ "$DISK_REPR_SET" -eq 1 ]]; then
   if [[ "$DISK_REPR_VALUE" == "2d" ]]; then
-    if [[ "$DISK_MODE_ARG_PRESENT" -eq 1 && ( "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" ) ]]; then
+    if [[ "$DISK_MODE_ARG_PRESENT" -eq 1 && ( "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" || "$DISK_PHYSICS_MODE_VALUE" == "grmhd" ) ]]; then
       echo "error: --disk-repr 2d cannot be combined with precision disk mode." >&2
       echo "hint: use --disk-repr 3d or switch --disk-mode to thin/thick." >&2
       exit 2
@@ -1188,10 +1637,10 @@ if [[ "$DISK_REPR_SET" -eq 1 ]]; then
   else
     if [[ "$DISK_MODE_ARG_PRESENT" -eq 1 ]]; then
       case "$DISK_PHYSICS_MODE_VALUE" in
-        precision|analysis|pt) ;;
+        precision|analysis|pt|grmhd) ;;
         *)
-          echo "error: --disk-repr 3d requires precision disk mode." >&2
-          echo "hint: use --disk-mode precision (or remove --disk-mode thin/thick)." >&2
+          echo "error: --disk-repr 3d requires precision or grmhd disk mode." >&2
+          echo "hint: use --disk-mode precision|grmhd (or remove --disk-mode thin/thick)." >&2
           exit 2
           ;;
       esac
@@ -1211,10 +1660,49 @@ if [[ "$DISK_REPR_SET" -eq 1 ]]; then
   fi
 fi
 
+if [[ -n "$DISK_VOLUME_HDF5_PATH" ]]; then
+  if [[ -z "$DISK_HDF5_PATH" ]]; then
+    DISK_HDF5_PATH="$DISK_VOLUME_HDF5_PATH"
+  elif [[ "$DISK_HDF5_PATH" != "$DISK_VOLUME_HDF5_PATH" ]]; then
+    echo "warn: --disk-volume-hdf5 overrides --disk-hdf5 for volume build ($DISK_HDF5_PATH -> $DISK_VOLUME_HDF5_PATH)." >&2
+  fi
+fi
+
+if [[ "$DISK_VOLUME_REQUESTED" -eq 1 ]]; then
+  if [[ "$DISK_REPR_SET" -eq 1 && "$DISK_REPR_VALUE" != "3d" ]]; then
+    echo "error: disk volume options require --disk-repr 3d." >&2
+    exit 2
+  fi
+  if [[ "$DISK_MODE_ARG_PRESENT" -eq 1 ]]; then
+    case "$DISK_PHYSICS_MODE_VALUE" in
+      precision|analysis|pt|grmhd) ;;
+      *)
+        echo "error: disk volume options require --disk-mode precision or grmhd." >&2
+        exit 2
+        ;;
+    esac
+  else
+    if [[ "$DISK_VOL0_SET" -eq 1 || "$DISK_VOL1_SET" -eq 1 ]]; then
+      DISK_PHYSICS_MODE_VALUE="grmhd"
+    else
+      DISK_PHYSICS_MODE_VALUE="precision"
+    fi
+    DISK_MODE_ARG_PRESENT=1
+    SWIFT_ARGS+=(--disk-mode "$DISK_PHYSICS_MODE_VALUE")
+  fi
+  if [[ "$PIPELINE_ARG_PRESENT" -eq 1 && "$PIPELINE_MODE" != "gpu-only" ]]; then
+    echo "error: disk volume options require --pipeline gpu-only." >&2
+    exit 2
+  fi
+  if [[ "$PIPELINE_ARG_PRESENT" -eq 0 ]]; then
+    PIPELINE_MODE="gpu-only"
+  fi
+fi
+
 EFFECTIVE_DISK_REPR="2d"
 if [[ "$DISK_REPR_SET" -eq 1 ]]; then
   EFFECTIVE_DISK_REPR="$DISK_REPR_VALUE"
-elif [[ "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" ]]; then
+elif [[ "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" || "$DISK_PHYSICS_MODE_VALUE" == "grmhd" ]]; then
   EFFECTIVE_DISK_REPR="3d"
 fi
 
@@ -1231,6 +1719,22 @@ if [[ "$DISK_SOURCE_SET" -eq 1 ]]; then
         exit 2
       fi
       REQUESTED_DISK_MODEL="perlin"
+      ;;
+    perlin-classic)
+      if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
+        echo "error: --disk-source perlin-classic is a 2d path and cannot be combined with 3d representation." >&2
+        echo "hint: use --disk-repr 2d or switch source to flow/hdf5/pluto." >&2
+        exit 2
+      fi
+      REQUESTED_DISK_MODEL="perlin-classic"
+      ;;
+    perlin-ec7)
+      if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
+        echo "error: --disk-source perlin-ec7 is a 2d path and cannot be combined with 3d representation." >&2
+        echo "hint: use --disk-repr 2d or switch source to flow/hdf5/pluto." >&2
+        exit 2
+      fi
+      REQUESTED_DISK_MODEL="perlin-ec7"
       ;;
     atlas)
       if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
@@ -1287,7 +1791,7 @@ if [[ -n "$REQUESTED_DISK_MODEL" ]]; then
   fi
 fi
 
-if [[ "$LOOK_SET" -eq 0 && -n "$PRESET_VALUE" && "$DISK_PHYSICS_MODE_VALUE" != "precision" && "$DISK_PHYSICS_MODE_VALUE" != "analysis" && "$DISK_PHYSICS_MODE_VALUE" != "pt" ]]; then
+if [[ "$LOOK_SET" -eq 0 && -n "$PRESET_VALUE" && "$DISK_PHYSICS_MODE_VALUE" != "precision" && "$DISK_PHYSICS_MODE_VALUE" != "analysis" && "$DISK_PHYSICS_MODE_VALUE" != "pt" && "$DISK_PHYSICS_MODE_VALUE" != "grmhd" ]]; then
   SWIFT_ARGS+=(--look "$PRESET_VALUE")
   PY_ARGS+=(--look "$PRESET_VALUE")
 fi
@@ -1295,6 +1799,29 @@ fi
 is_precision_mode=0
 if [[ "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" ]]; then
   is_precision_mode=1
+fi
+is_grmhd_mode=0
+if [[ "$DISK_PHYSICS_MODE_VALUE" == "grmhd" ]]; then
+  is_grmhd_mode=1
+fi
+
+DISK_IC_SEED_VAL="${DISK_IC_SEED:-1337}"
+DISK_IC_AMP_VAL="${DISK_IC_AMP:-0.0}"
+DISK_IC_SCALE_VAL="${DISK_IC_SCALE:-12.0}"
+if ! [[ "$DISK_IC_SEED_VAL" =~ ^-?[0-9]+$ ]]; then
+  echo "error: --disk-ic-seed must be an integer" >&2
+  exit 2
+fi
+if ! awk -v x="$DISK_IC_AMP_VAL" 'BEGIN { exit !(x >= 0.0) }'; then
+  echo "error: --disk-ic-amp must be >= 0" >&2
+  exit 2
+fi
+if ! awk -v x="$DISK_IC_SCALE_VAL" 'BEGIN { exit !(x > 0.0) }'; then
+  echo "error: --disk-ic-scale must be > 0" >&2
+  exit 2
+fi
+if awk -v x="$DISK_IC_AMP_VAL" 'BEGIN { exit !(x > 0.0) }'; then
+  DISK_IC_ENABLE=1
 fi
 
 if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
@@ -1317,11 +1844,42 @@ if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
 
   log_section "Preprocess - HDF5 Sample"
   log_item "output" "$DISK_HDF5_PATH"
-  log_item "nr,nphi" "${DISK_HDF5_SAMPLE_NR},${DISK_HDF5_SAMPLE_NPHI}"
-  "$PYTHON_BIN" "$HDF5_SAMPLE_SCRIPT" \
-    --output "$DISK_HDF5_PATH" \
-    --nr "$DISK_HDF5_SAMPLE_NR" \
+  log_item "nr,nth,nphi" "${DISK_HDF5_SAMPLE_NR},${DISK_HDF5_SAMPLE_NTH},${DISK_HDF5_SAMPLE_NPHI}"
+  HDF5_SAMPLE_CMD=(
+    "$PYTHON_BIN" "$HDF5_SAMPLE_SCRIPT"
+    --output "$DISK_HDF5_PATH"
+    --nr "$DISK_HDF5_SAMPLE_NR"
+    --nth "$DISK_HDF5_SAMPLE_NTH"
     --nphi "$DISK_HDF5_SAMPLE_NPHI"
+  )
+  if [[ -n "$DISK_HDF5_SAMPLE_SPIN" ]]; then
+    HDF5_SAMPLE_CMD+=(--spin "$DISK_HDF5_SAMPLE_SPIN")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_R_IN" ]]; then
+    HDF5_SAMPLE_CMD+=(--r-in "$DISK_HDF5_SAMPLE_R_IN")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_R_MAX_PRESSURE" ]]; then
+    HDF5_SAMPLE_CMD+=(--r-max-pressure "$DISK_HDF5_SAMPLE_R_MAX_PRESSURE")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_N_POLY" ]]; then
+    HDF5_SAMPLE_CMD+=(--n-poly "$DISK_HDF5_SAMPLE_N_POLY")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_TARGET_BETA" ]]; then
+    HDF5_SAMPLE_CMD+=(--target-beta "$DISK_HDF5_SAMPLE_TARGET_BETA")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_RHO_CUT_FRAC" ]]; then
+    HDF5_SAMPLE_CMD+=(--rho-cut-frac "$DISK_HDF5_SAMPLE_RHO_CUT_FRAC")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_PERTURB" ]]; then
+    HDF5_SAMPLE_CMD+=(--perturb "$DISK_HDF5_SAMPLE_PERTURB")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_SEED" ]]; then
+    HDF5_SAMPLE_CMD+=(--seed "$DISK_HDF5_SAMPLE_SEED")
+  fi
+  if [[ -n "$DISK_HDF5_SAMPLE_SIGMA_MAX" ]]; then
+    HDF5_SAMPLE_CMD+=(--sigma-max "$DISK_HDF5_SAMPLE_SIGMA_MAX")
+  fi
+  "${HDF5_SAMPLE_CMD[@]}"
   if [[ ! -f "$DISK_HDF5_PATH" ]]; then
     echo "error: sample HDF5 was not created: $DISK_HDF5_PATH" >&2
     exit 2
@@ -1343,7 +1901,41 @@ if [[ "$DISK_PLUTO_MODE" -eq 1 ]]; then
     fi
     TEMP_HDF5_SAMPLE="$(mktemp /tmp/blackhole_pluto_sample.XXXXXX).h5"
     DISK_HDF5_PATH="$TEMP_HDF5_SAMPLE"
-    "$PYTHON_BIN" "$HDF5_SAMPLE_SCRIPT" --output "$DISK_HDF5_PATH" --nr "$DISK_HDF5_SAMPLE_NR" --nphi "$DISK_HDF5_SAMPLE_NPHI"
+    HDF5_SAMPLE_CMD=(
+      "$PYTHON_BIN" "$HDF5_SAMPLE_SCRIPT"
+      --output "$DISK_HDF5_PATH"
+      --nr "$DISK_HDF5_SAMPLE_NR"
+      --nth "$DISK_HDF5_SAMPLE_NTH"
+      --nphi "$DISK_HDF5_SAMPLE_NPHI"
+    )
+    if [[ -n "$DISK_HDF5_SAMPLE_SPIN" ]]; then
+      HDF5_SAMPLE_CMD+=(--spin "$DISK_HDF5_SAMPLE_SPIN")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_R_IN" ]]; then
+      HDF5_SAMPLE_CMD+=(--r-in "$DISK_HDF5_SAMPLE_R_IN")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_R_MAX_PRESSURE" ]]; then
+      HDF5_SAMPLE_CMD+=(--r-max-pressure "$DISK_HDF5_SAMPLE_R_MAX_PRESSURE")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_N_POLY" ]]; then
+      HDF5_SAMPLE_CMD+=(--n-poly "$DISK_HDF5_SAMPLE_N_POLY")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_TARGET_BETA" ]]; then
+      HDF5_SAMPLE_CMD+=(--target-beta "$DISK_HDF5_SAMPLE_TARGET_BETA")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_RHO_CUT_FRAC" ]]; then
+      HDF5_SAMPLE_CMD+=(--rho-cut-frac "$DISK_HDF5_SAMPLE_RHO_CUT_FRAC")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_PERTURB" ]]; then
+      HDF5_SAMPLE_CMD+=(--perturb "$DISK_HDF5_SAMPLE_PERTURB")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_SEED" ]]; then
+      HDF5_SAMPLE_CMD+=(--seed "$DISK_HDF5_SAMPLE_SEED")
+    fi
+    if [[ -n "$DISK_HDF5_SAMPLE_SIGMA_MAX" ]]; then
+      HDF5_SAMPLE_CMD+=(--sigma-max "$DISK_HDF5_SAMPLE_SIGMA_MAX")
+    fi
+    "${HDF5_SAMPLE_CMD[@]}"
     if [[ ! -f "$DISK_HDF5_PATH" ]]; then
       echo "error: failed to resolve PLUTO HDF5 snapshot and auto sample generation failed." >&2
       exit 2
@@ -1371,9 +1963,238 @@ if [[ -n "$DISK_HDF5_PATH" ]]; then
   esac
 fi
 
+if [[ "$DISK_IC_ENABLE" -eq 1 && -n "$DISK_HDF5_PATH" ]]; then
+  if [[ ! -f "$DISK_HDF5_PATH" ]]; then
+    echo "error: HDF5 IC perturb input not found: $DISK_HDF5_PATH" >&2
+    exit 2
+  fi
+  ensure_h5py_python
+  TEMP_HDF5_IC_MAIN="$(mktemp /tmp/blackhole_hdf5_ic_main.XXXXXX).h5"
+  log_section "Preprocess - HDF5 IC Perturb"
+  log_item "input" "$DISK_HDF5_PATH"
+  log_item "output" "$TEMP_HDF5_IC_MAIN"
+  log_item "seed,amp,scale" "${DISK_IC_SEED_VAL},${DISK_IC_AMP_VAL},${DISK_IC_SCALE_VAL}"
+  apply_hdf5_ic_perturb "$DISK_HDF5_PATH" "$TEMP_HDF5_IC_MAIN"
+  if [[ ! -f "$TEMP_HDF5_IC_MAIN" ]]; then
+    echo "error: HDF5 IC perturbation did not produce output: $TEMP_HDF5_IC_MAIN" >&2
+    exit 2
+  fi
+  DISK_HDF5_PATH="$TEMP_HDF5_IC_MAIN"
+fi
+
+if [[ "$DISK_VOLUME_SET" -eq 1 && -n "$DISK_VOLUME_HDF5_PATH" ]]; then
+  echo "warn: --disk-volume is set; --disk-volume-hdf5 is ignored." >&2
+fi
+
+VOLUME_HDF5_SOURCE=""
+if [[ "$DISK_VOLUME_SET" -eq 0 && "$DISK_VOL0_SET" -eq 0 && "$DISK_VOL1_SET" -eq 0 ]]; then
+  if [[ -n "$DISK_VOLUME_HDF5_PATH" ]]; then
+    VOLUME_HDF5_SOURCE="$DISK_VOLUME_HDF5_PATH"
+  elif [[ ( "$is_precision_mode" -eq 1 || "$is_grmhd_mode" -eq 1 ) && -n "$DISK_HDF5_PATH" ]]; then
+    VOLUME_HDF5_SOURCE="$DISK_HDF5_PATH"
+  fi
+fi
+
+if [[ "$DISK_IC_ENABLE" -eq 1 && -z "$DISK_HDF5_PATH" && -z "$VOLUME_HDF5_SOURCE" ]]; then
+  echo "warn: --disk-ic-* options were provided but no HDF5 source is active; IC perturbation is skipped." >&2
+fi
+
+if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
+  if [[ ! -f "$VOLUME_HDF5_SOURCE" ]]; then
+    echo "error: HDF5 source for disk volume not found: $VOLUME_HDF5_SOURCE" >&2
+    exit 2
+  fi
+
+  if [[ "$DISK_IC_ENABLE" -eq 1 && "$VOLUME_HDF5_SOURCE" != "$DISK_HDF5_PATH" ]]; then
+    ensure_h5py_python
+    TEMP_HDF5_IC_VOLUME="$(mktemp /tmp/blackhole_hdf5_ic_volume.XXXXXX).h5"
+    log_section "Preprocess - HDF5 IC Perturb (Volume Source)"
+    log_item "input" "$VOLUME_HDF5_SOURCE"
+    log_item "output" "$TEMP_HDF5_IC_VOLUME"
+    log_item "seed,amp,scale" "${DISK_IC_SEED_VAL},${DISK_IC_AMP_VAL},${DISK_IC_SCALE_VAL}"
+    apply_hdf5_ic_perturb "$VOLUME_HDF5_SOURCE" "$TEMP_HDF5_IC_VOLUME"
+    if [[ ! -f "$TEMP_HDF5_IC_VOLUME" ]]; then
+      echo "error: HDF5 IC perturbation did not produce volume source output: $TEMP_HDF5_IC_VOLUME" >&2
+      exit 2
+    fi
+    VOLUME_HDF5_SOURCE="$TEMP_HDF5_IC_VOLUME"
+  fi
+
+  if [[ "$is_grmhd_mode" -eq 1 ]]; then
+    GRMHD_VOLUME_SCRIPT="$ROOT_DIR/scripts/build_grmhd_volumes.py"
+    if [[ ! -f "$GRMHD_VOLUME_SCRIPT" ]]; then
+      echo "error: GRMHD volume script not found: $GRMHD_VOLUME_SCRIPT" >&2
+      exit 2
+    fi
+    ensure_h5py_python
+
+    if [[ "$DISK_VOL0_SET" -eq 0 ]]; then
+      TEMP_HDF5_VOL0="$(mktemp /tmp/blackhole_grmhd_vol0.XXXXXX).bin"
+      DISK_VOL0_VALUE="$TEMP_HDF5_VOL0"
+      DISK_VOL0_SET=1
+    fi
+    if [[ "$DISK_VOL1_SET" -eq 0 ]]; then
+      TEMP_HDF5_VOL1="$(mktemp /tmp/blackhole_grmhd_vol1.XXXXXX).bin"
+      DISK_VOL1_VALUE="$TEMP_HDF5_VOL1"
+      DISK_VOL1_SET=1
+    fi
+    if [[ "$DISK_META_SET" -eq 0 ]]; then
+      TEMP_HDF5_VOLMETA="$(mktemp /tmp/blackhole_grmhd_meta.XXXXXX).json"
+      DISK_META_VALUE="$TEMP_HDF5_VOLMETA"
+      DISK_META_SET=1
+    fi
+
+    GRMHD_VOLUME_CMD=(
+      "$PYTHON_BIN" "$GRMHD_VOLUME_SCRIPT"
+      --input "$VOLUME_HDF5_SOURCE"
+      --vol0 "$DISK_VOL0_VALUE"
+      --vol1 "$DISK_VOL1_VALUE"
+      --meta "$DISK_META_VALUE"
+      --nr "$DISK_GRMHD_NR"
+      --nphi "$DISK_GRMHD_NPHI"
+      --nz "$DISK_GRMHD_NZ"
+      --native-3d "$DISK_GRMHD_NATIVE_3D"
+    )
+    if [[ -n "$DISK_HDF5_R_TO_RS" ]]; then
+      GRMHD_VOLUME_CMD+=(--r-to-rs "$DISK_HDF5_R_TO_RS")
+    fi
+    if [[ -n "$DISK_HDF5_R_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--r-key "$DISK_HDF5_R_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_PHI_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--phi-key "$DISK_HDF5_PHI_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_THETA_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--theta-key "$DISK_HDF5_THETA_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_RHO_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--rho-key "$DISK_HDF5_RHO_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_TEMP_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--thetae-key "$DISK_HDF5_TEMP_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_VR_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--vr-key "$DISK_HDF5_VR_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_VPHI_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--vphi-key "$DISK_HDF5_VPHI_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_THETA_INDEX" ]]; then
+      GRMHD_VOLUME_CMD+=(--theta-index "$DISK_HDF5_THETA_INDEX")
+    fi
+    if [[ "$DISK_HDF5_THETA_AVERAGE" -eq 1 ]]; then
+      GRMHD_VOLUME_CMD+=(--theta-average)
+    fi
+    if [[ -n "$DISK_GRMHD_Z_MAX" ]]; then
+      GRMHD_VOLUME_CMD+=(--z-max "$DISK_GRMHD_Z_MAX")
+    fi
+    if [[ -n "$DISK_GRMHD_U_TO_THETAE" ]]; then
+      GRMHD_VOLUME_CMD+=(--u-to-thetae "$DISK_GRMHD_U_TO_THETAE")
+    fi
+
+    log_section "Preprocess - GRMHD Volumes"
+    log_item "input" "$VOLUME_HDF5_SOURCE"
+    log_item "vol0" "$DISK_VOL0_VALUE"
+    log_item "vol1" "$DISK_VOL1_VALUE"
+    log_item "meta" "$DISK_META_VALUE"
+    log_item "nr,nphi,nz" "${DISK_GRMHD_NR},${DISK_GRMHD_NPHI},${DISK_GRMHD_NZ}"
+    log_item "native3d" "$DISK_GRMHD_NATIVE_3D"
+    "${GRMHD_VOLUME_CMD[@]}"
+    if [[ ! -f "$DISK_VOL0_VALUE" || ! -f "$DISK_VOL1_VALUE" || ! -f "$DISK_META_VALUE" ]]; then
+      echo "error: GRMHD volume bridge did not produce vol0/vol1/meta outputs." >&2
+      exit 2
+    fi
+  else
+    HDF5_VOLUME_SCRIPT="$ROOT_DIR/scripts/build_hdf5_volume.py"
+    if [[ ! -f "$HDF5_VOLUME_SCRIPT" ]]; then
+      echo "error: HDF5 volume script not found: $HDF5_VOLUME_SCRIPT" >&2
+      exit 2
+    fi
+    ensure_h5py_python
+
+    if [[ "$DISK_VOLUME_OUT_EXPLICIT" -eq 1 ]]; then
+      DISK_VOLUME_VALUE="$DISK_VOLUME_OUT"
+    else
+      TEMP_HDF5_VOLUME="$(mktemp /tmp/blackhole_hdf5_volume.XXXXXX).bin"
+      DISK_VOLUME_VALUE="$TEMP_HDF5_VOLUME"
+    fi
+
+    HDF5_VOLUME_CMD=(
+      "$PYTHON_BIN" "$HDF5_VOLUME_SCRIPT"
+      --input "$VOLUME_HDF5_SOURCE"
+      --output "$DISK_VOLUME_VALUE"
+      --nr "$DISK_VOLUME_NR"
+      --nphi "$DISK_VOLUME_NPHI"
+      --nz "$DISK_VOLUME_NZ"
+    )
+  if [[ -n "$DISK_HDF5_R_TO_RS" ]]; then
+    HDF5_VOLUME_CMD+=(--r-to-rs "$DISK_HDF5_R_TO_RS")
+  fi
+  if [[ -n "$DISK_HDF5_KEPLER_GM" ]]; then
+    HDF5_VOLUME_CMD+=(--kepler-gm "$DISK_HDF5_KEPLER_GM")
+  fi
+  if [[ -n "$DISK_HDF5_R_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--r-key "$DISK_HDF5_R_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_PHI_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--phi-key "$DISK_HDF5_PHI_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_RHO_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--rho-key "$DISK_HDF5_RHO_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_TEMP_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--temp-key "$DISK_HDF5_TEMP_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_VR_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--vr-key "$DISK_HDF5_VR_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_VPHI_KEY" ]]; then
+    HDF5_VOLUME_CMD+=(--vphi-key "$DISK_HDF5_VPHI_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_THETA_INDEX" ]]; then
+    HDF5_VOLUME_CMD+=(--theta-index "$DISK_HDF5_THETA_INDEX")
+  fi
+  if [[ "$DISK_HDF5_THETA_AVERAGE" -eq 1 ]]; then
+    HDF5_VOLUME_CMD+=(--theta-average)
+  fi
+  if [[ "$DISK_HDF5_DENSITY_LOG" -eq 1 ]]; then
+    HDF5_VOLUME_CMD+=(--density-log)
+  fi
+  if [[ "$DISK_HDF5_TEMP_IS_SCALE" -eq 1 ]]; then
+    HDF5_VOLUME_CMD+=(--temp-is-scale)
+  fi
+  if [[ "$DISK_HDF5_VR_IS_RATIO" -eq 1 ]]; then
+    HDF5_VOLUME_CMD+=(--vr-is-ratio)
+  fi
+  if [[ "$DISK_HDF5_VPHI_IS_SCALE" -eq 1 ]]; then
+    HDF5_VOLUME_CMD+=(--vphi-is-scale)
+  fi
+  if [[ -n "$DISK_HDF5_DENSITY_P_LO" ]]; then
+    HDF5_VOLUME_CMD+=(--density-p-lo "$DISK_HDF5_DENSITY_P_LO")
+  fi
+  if [[ -n "$DISK_HDF5_DENSITY_P_HI" ]]; then
+    HDF5_VOLUME_CMD+=(--density-p-hi "$DISK_HDF5_DENSITY_P_HI")
+  fi
+  if [[ -n "$DISK_VOLUME_Z_MAX" ]]; then
+    HDF5_VOLUME_CMD+=(--z-max "$DISK_VOLUME_Z_MAX")
+  fi
+
+  log_section "Preprocess - HDF5 Volume"
+  log_item "input" "$VOLUME_HDF5_SOURCE"
+  log_item "volume_out" "$DISK_VOLUME_VALUE"
+  log_item "nr,nphi,nz" "${DISK_VOLUME_NR},${DISK_VOLUME_NPHI},${DISK_VOLUME_NZ}"
+  "${HDF5_VOLUME_CMD[@]}"
+  if [[ ! -f "$DISK_VOLUME_VALUE" ]]; then
+    echo "error: HDF5 volume bridge did not produce volume: $DISK_VOLUME_VALUE" >&2
+    exit 2
+  fi
+  DISK_VOLUME_SET=1
+  fi
+fi
+
 USE_HDF5_FLOW_BRIDGE=0
 if [[ -n "$DISK_HDF5_PATH" ]]; then
-  if [[ "$DISK_HDF5_FLOW" -eq 1 || "$is_precision_mode" -eq 1 ]]; then
+  if [[ "$is_grmhd_mode" -eq 0 && ( "$DISK_HDF5_FLOW" -eq 1 || "$is_precision_mode" -eq 1 ) ]]; then
     USE_HDF5_FLOW_BRIDGE=1
   fi
 fi
@@ -1515,7 +2336,7 @@ PY
   log_item "flow_steps" "$FLOW_STEPS"
 fi
 
-if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 ]]; then
+if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" -eq 0 ]]; then
   HDF5_BUILD_SCRIPT="$ROOT_DIR/scripts/build_grmhd_atlas.py"
   if [[ ! -f "$HDF5_BUILD_SCRIPT" ]]; then
     echo "error: HDF5 bridge script not found: $HDF5_BUILD_SCRIPT" >&2
@@ -1618,9 +2439,9 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 ]]; then
 fi
 
 # Atlas auto-discovery: when atlas is requested but path is omitted.
-if [[ "$is_precision_mode" -eq 1 ]]; then
+if [[ "$is_precision_mode" -eq 1 || "$is_grmhd_mode" -eq 1 ]]; then
   if [[ "$DISK_MODEL_VALUE" == "atlas" || "$DISK_ATLAS_SET" -eq 1 ]]; then
-    echo "warn: precision mode renders with flow disk model; atlas inputs are ignored at render stage." >&2
+    echo "warn: precision/grmhd mode renders with flow disk model; atlas inputs are ignored at render stage." >&2
   fi
 elif [[ "$DISK_ATLAS_SET" -eq 0 ]]; then
   case "$DISK_MODEL_VALUE" in
@@ -1688,8 +2509,8 @@ case "$PIPELINE_MODE" in
     ;;
 esac
 
-if [[ "$COMPOSE_BACKEND" == "python" && ( "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" ) ]]; then
-  echo "error: precision disk physics requires gpu-only compose path." >&2
+if [[ "$COMPOSE_BACKEND" == "python" && ( "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" || "$DISK_PHYSICS_MODE_VALUE" == "grmhd" ) ]]; then
+  echo "error: precision/grmhd disk physics requires gpu-only compose path." >&2
   echo "hint: rerun with --pipeline gpu-only (or --gpu-only)." >&2
   exit 2
 fi
@@ -1698,6 +2519,24 @@ if [[ -n "$STOKES_OUT" && "$COLLISIONS_MODE" != "debug" ]]; then
   echo "info: enabling --collisions debug for Stokes diagnostics output." >&2
   COLLISIONS_MODE="debug"
   MODE="debug"
+fi
+
+if [[ -n "$STOKES_INTENSITY_MODEL" ]]; then
+  case "$STOKES_INTENSITY_MODEL" in
+    bolometric|monochromatic)
+      ;;
+    *)
+      echo "error: --stokes-intensity-model must be one of bolometric, monochromatic" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+if [[ -n "$STOKES_NU_OBS_HZ" ]]; then
+  if ! awk -v x="$STOKES_NU_OBS_HZ" 'BEGIN { exit !(x > 0.0) }'; then
+    echo "error: --stokes-nu-obs-hz must be > 0" >&2
+    exit 2
+  fi
 fi
 
 case "$COLLISIONS_MODE" in
@@ -1726,6 +2565,34 @@ case "$COLLISIONS_MODE" in
     exit 2
     ;;
 esac
+
+if [[ "$DISK_VOLUME_SET" -eq 1 ]]; then
+  SWIFT_ARGS+=(--disk-volume "$DISK_VOLUME_VALUE")
+fi
+if [[ "$DISK_VOL0_SET" -eq 1 ]]; then
+  SWIFT_ARGS+=(--disk-vol0 "$DISK_VOL0_VALUE")
+fi
+if [[ "$DISK_VOL1_SET" -eq 1 ]]; then
+  SWIFT_ARGS+=(--disk-vol1 "$DISK_VOL1_VALUE")
+fi
+if [[ "$DISK_META_SET" -eq 1 ]]; then
+  SWIFT_ARGS+=(--disk-meta "$DISK_META_VALUE")
+fi
+if [[ -n "$DISK_VOLUME_R_OVERRIDE" ]]; then
+  SWIFT_ARGS+=(--disk-volume-r "$DISK_VOLUME_R_OVERRIDE")
+fi
+if [[ -n "$DISK_VOLUME_PHI_OVERRIDE" ]]; then
+  SWIFT_ARGS+=(--disk-volume-phi "$DISK_VOLUME_PHI_OVERRIDE")
+fi
+if [[ -n "$DISK_VOLUME_Z_OVERRIDE" ]]; then
+  SWIFT_ARGS+=(--disk-volume-z "$DISK_VOLUME_Z_OVERRIDE")
+fi
+if [[ -n "$DISK_VOLUME_TAU_SCALE" ]]; then
+  SWIFT_ARGS+=(--disk-volume-tau-scale "$DISK_VOLUME_TAU_SCALE")
+fi
+if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
+  SWIFT_ARGS+=(--disk-grmhd-debug "$DISK_GRMHD_DEBUG")
+fi
 
 if [[ "$WIDTH_SET" -eq 1 ]]; then
   if ! [[ "$WIDTH_VALUE" =~ ^[0-9]+$ ]] || [[ "$WIDTH_VALUE" -le 0 ]]; then
@@ -1852,7 +2719,7 @@ log_item "render_size" "${RENDER_WIDTH}x${RENDER_HEIGHT}"
 log_item "tile_size" "$TILE_INFO"
 log_item "eta_output" "$ETA_RELAY"
 log_item "eta_history" "$ETA_HISTORY"
-if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 ]]; then
+if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" -eq 0 ]]; then
   if [[ "$DISK_HDF5_OUT_EXPLICIT" -eq 1 ]]; then
     log_item "hdf5_atlas" "$DISK_HDF5_OUT"
   else
@@ -1861,6 +2728,30 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 ]]; then
 fi
 if [[ "$USE_HDF5_FLOW_BRIDGE" -eq 1 ]]; then
   log_item "hdf5_flow" "$TEMP_HDF5_FLOW_PROFILE (temporary)"
+fi
+if [[ "$DISK_IC_ENABLE" -eq 1 ]]; then
+  if [[ -n "$TEMP_HDF5_IC_MAIN" || -n "$TEMP_HDF5_IC_VOLUME" ]]; then
+    log_item "hdf5_ic" "seed=${DISK_IC_SEED_VAL},amp=${DISK_IC_AMP_VAL},scale=${DISK_IC_SCALE_VAL} (applied)"
+  else
+    log_item "hdf5_ic" "seed=${DISK_IC_SEED_VAL},amp=${DISK_IC_AMP_VAL},scale=${DISK_IC_SCALE_VAL} (skipped)"
+  fi
+fi
+if [[ "$DISK_VOLUME_SET" -eq 1 ]]; then
+  if [[ -n "$TEMP_HDF5_VOLUME" ]]; then
+    log_item "disk_volume" "$DISK_VOLUME_VALUE (temporary)"
+  else
+    log_item "disk_volume" "$DISK_VOLUME_VALUE"
+  fi
+fi
+if [[ "$DISK_VOL0_SET" -eq 1 || "$DISK_VOL1_SET" -eq 1 ]]; then
+  log_item "disk_vol0" "${DISK_VOL0_VALUE:-unset}"
+  log_item "disk_vol1" "${DISK_VOL1_VALUE:-unset}"
+  if [[ "$DISK_META_SET" -eq 1 ]]; then
+    log_item "disk_meta" "${DISK_META_VALUE}"
+  fi
+fi
+if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
+  log_item "disk_grmhd_debug" "$DISK_GRMHD_DEBUG"
 fi
 if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
   if [[ "$DISK_HDF5_SAMPLE_OUT_EXPLICIT" -eq 1 ]]; then
@@ -1898,6 +2789,12 @@ if [[ -n "$STOKES_OUT" ]]; then
   log_item "stokes_out" "$STOKES_OUT"
   if [[ -n "$STOKES_PNG" ]]; then
     log_item "stokes_png" "$STOKES_PNG"
+  fi
+  if [[ -n "$STOKES_INTENSITY_MODEL" ]]; then
+    log_item "stokes_model" "$STOKES_INTENSITY_MODEL"
+  fi
+  if [[ -n "$STOKES_NU_OBS_HZ" ]]; then
+    log_item "stokes_nu_hz" "$STOKES_NU_OBS_HZ"
   fi
 fi
 
@@ -2104,6 +3001,12 @@ if [[ -n "$STOKES_OUT" ]]; then
   if [[ -n "$STOKES_PITCH_DEG" ]]; then
     STOKES_CMD+=(--pitch-deg "$STOKES_PITCH_DEG")
   fi
+  if [[ -n "$STOKES_INTENSITY_MODEL" ]]; then
+    STOKES_CMD+=(--intensity-model "$STOKES_INTENSITY_MODEL")
+  fi
+  if [[ -n "$STOKES_NU_OBS_HZ" ]]; then
+    STOKES_CMD+=(--nu-obs-hz "$STOKES_NU_OBS_HZ")
+  fi
   log_section "Stage - Stokes"
   "${STOKES_CMD[@]}"
 fi
@@ -2151,4 +3054,19 @@ fi
 if [[ -n "$TEMP_HDF5_FLOW_PROFILE" ]]; then
   rm -f "$TEMP_HDF5_FLOW_PROFILE"
   log_item "cleanup" "temporary HDF5 flow profile removed"
+fi
+
+if [[ -n "$TEMP_HDF5_VOLUME" ]]; then
+  rm -f "$TEMP_HDF5_VOLUME" "${TEMP_HDF5_VOLUME}.json"
+  log_item "cleanup" "temporary HDF5 volume removed"
+fi
+
+if [[ -n "$TEMP_HDF5_IC_MAIN" ]]; then
+  rm -f "$TEMP_HDF5_IC_MAIN"
+  log_item "cleanup" "temporary HDF5 IC (main) removed"
+fi
+
+if [[ -n "$TEMP_HDF5_IC_VOLUME" ]]; then
+  rm -f "$TEMP_HDF5_IC_VOLUME"
+  log_item "cleanup" "temporary HDF5 IC (volume) removed"
 fi
