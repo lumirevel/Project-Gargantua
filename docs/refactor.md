@@ -51,3 +51,23 @@ Planned modular split under `Blackhole/Sources/`:
 
 Entry point policy:
 - `Blackhole/main.swift` remains a thin launcher only.
+
+## Phase 2: Metal Split
+
+`integral.metal` is now an include aggregator and keeps kernel entry names unchanged:
+
+- `Blackhole/Metal/gr_math.metal`
+- `Blackhole/Metal/disk_models.metal`
+- `Blackhole/Metal/volume_rt.metal`
+- `Blackhole/Metal/spectrum_visible.metal`
+- `Blackhole/Metal/post_compose.metal`
+
+The split is behavior-preserving (textual include composition) so runtime outputs should remain hash-identical in deterministic cases.
+
+## Phase 3: Model Interface Seam
+
+Future accretion models are prepared behind a stable Swift interface:
+
+- `Blackhole/Sources/AccretionModel.swift`
+
+Current runtime remains mapped to `DefaultAccretionModel`, which preserves legacy mode resolution/output.

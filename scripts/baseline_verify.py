@@ -107,6 +107,8 @@ def main() -> None:
 
     work_dir.mkdir(parents=True, exist_ok=True)
     results: list[CaseResult] = []
+    perf_fail = None
+    perf_summary: dict[str, Any] = {}
 
     for case in cases:
         name = str(case["name"])
@@ -153,48 +155,43 @@ def main() -> None:
             )
             results.append(CaseResult(name=name, passed=passed, message=msg, wall_sec=wall))
 
-    # Performance gate
-    perf_fail = None
-    perf_entries = [c for c in cases if c.get("perf_anchor")]
-    perf_summary: dict[str, Any] = {}
-    if perf_entries:
-        perf_case = perf_entries[0]
-        name = str(perf_case["name"])
-        report_case = _find_case(baseline, name)
-        anchor = report_case.get("perf_anchor")
-        if not anchor:
-            perf_fail = f"baseline report missing perf_anchor for case {name}"
-        else:
-            warmup_runs = int(anchor.get("warmup_runs", perf_case.get("perf_warmup_runs", 1)))
-            measured_runs = int(anchor.get("measured_runs", perf_case.get("perf_measured_runs", 5)))
-            max_factor = float(anchor.get("max_allowed_factor", perf_case.get("perf_regression_factor", 1.03)))
-            baseline_mean = float(anchor["mean_sec"])
-            times: list[float] = []
-            out_ext = perf_case.get("output_ext", "png")
-            for i in range(warmup_runs + measured_runs):
-                out_path = work_dir / f"{name}.perf_verify{i}.{out_ext}"
-                rc, wall, stdout, stderr = _run_case(run_script, list(perf_case["args"]), out_path)
-                (work_dir / f"{name}.perf_verify{i}.stdout.log").write_text(stdout, encoding="utf-8")
-                (work_dir / f"{name}.perf_verify{i}.stderr.log").write_text(stderr, encoding="utf-8")
-                if rc != 0:
-                    perf_fail = f"perf run failed rc={rc} at iteration {i}"
-                    break
-                if i >= warmup_runs:
-                    times.append(wall)
-            if perf_fail is None:
-                cur_mean = statistics.mean(times)
-                limit = baseline_mean * max_factor
-                perf_summary = {
-                    "case": name,
-                    "baseline_mean_sec": baseline_mean,
-                    "current_mean_sec": cur_mean,
-                    "max_factor": max_factor,
-                    "limit_sec": limit,
-                    "measured_runs": measured_runs,
-                    "times_sec": times,
-                }
-                if cur_mean > limit:
-                    perf_fail = f"perf regression: mean={cur_mean:.4f}s > limit={limit:.4f}s"
+        # Performance gate: run in manifest order right after the anchor case check.
+        # This mirrors baseline_capture ordering and reduces thermal ordering bias.
+        if case.get("perf_anchor") and perf_fail is None and not perf_summary:
+            anchor = report_case.get("perf_anchor")
+            if not anchor:
+                perf_fail = f"baseline report missing perf_anchor for case {name}"
+            else:
+                warmup_runs = int(anchor.get("warmup_runs", case.get("perf_warmup_runs", 1)))
+                measured_runs = int(anchor.get("measured_runs", case.get("perf_measured_runs", 5)))
+                max_factor = float(anchor.get("max_allowed_factor", case.get("perf_regression_factor", 1.03)))
+                baseline_mean = float(anchor["mean_sec"])
+                times: list[float] = []
+                out_ext = case.get("output_ext", "png")
+                for i in range(warmup_runs + measured_runs):
+                    perf_out_path = work_dir / f"{name}.perf_verify{i}.{out_ext}"
+                    prc, pwall, pstdout, pstderr = _run_case(run_script, list(case["args"]), perf_out_path)
+                    (work_dir / f"{name}.perf_verify{i}.stdout.log").write_text(pstdout, encoding="utf-8")
+                    (work_dir / f"{name}.perf_verify{i}.stderr.log").write_text(pstderr, encoding="utf-8")
+                    if prc != 0:
+                        perf_fail = f"perf run failed rc={prc} at iteration {i}"
+                        break
+                    if i >= warmup_runs:
+                        times.append(pwall)
+                if perf_fail is None:
+                    cur_mean = statistics.mean(times)
+                    limit = baseline_mean * max_factor
+                    perf_summary = {
+                        "case": name,
+                        "baseline_mean_sec": baseline_mean,
+                        "current_mean_sec": cur_mean,
+                        "max_factor": max_factor,
+                        "limit_sec": limit,
+                        "measured_runs": measured_runs,
+                        "times_sec": times,
+                    }
+                    if cur_mean > limit:
+                        perf_fail = f"perf regression: mean={cur_mean:.4f}s > limit={limit:.4f}s"
 
     all_pass = all(r.passed for r in results) and perf_fail is None
 

@@ -933,8 +933,14 @@ enum AppMain {
         }
         fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision, grmhd, auto")
     }
-    let diskPhysicsModeID: UInt32 = diskModeParsed.id
-    let diskPhysicsModeArg: String = diskModeParsed.canonical
+    let accretionModel = AccretionModels.default
+    let resolvedMode = accretionModel.resolvePhysicsMode(
+        parsedModeID: diskModeParsed.id,
+        parsedModeName: diskModeParsed.canonical,
+        rawMode: diskModeResolvedRaw
+    )
+    let diskPhysicsModeID: UInt32 = resolvedMode.id
+    let diskPhysicsModeArg: String = resolvedMode.name
     let hasDiskVolumeArg = cliArguments.contains("--disk-volume")
         || cliArguments.contains("--disk-vol0")
         || cliArguments.contains("--disk-vol1")
