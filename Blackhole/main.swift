@@ -105,6 +105,10 @@ struct Params {
     var diskGrmhdAbsorptionScale: Float
     var diskGrmhdVelScale: Float
     var diskGrmhdDebugView: UInt32
+    var diskPolarizedRT: UInt32
+    var diskPolarizationFrac: Float
+    var diskFaradayRotScale: Float
+    var diskFaradayConvScale: Float
     var visibleMode: UInt32
     var visibleSamples: UInt32
     var visibleTeffModel: UInt32
@@ -119,6 +123,20 @@ struct Params {
     var visibleKappa: Float
     var visibleEmissionModel: UInt32
     var visibleEmissionAlpha: Float
+    var rayBundleSSAA: UInt32
+    var rayBundleJacobian: UInt32
+    var rayBundleJacobianStrength: Float
+    var rayBundleFootprintClamp: Float
+    var coolAbsorptionMode: UInt32
+    var coolDustToGas: Float
+    var coolDustKappaV: Float
+    var coolDustBeta: Float
+    var coolDustTSub: Float
+    var coolDustTWidth: Float
+    var coolGasKappa0: Float
+    var coolGasNuSlope: Float
+    var coolClumpStrength: Float
+    var coolAbsorptionPad: Float
 }
 
 struct CollisionInfo {
@@ -132,6 +150,12 @@ struct CollisionInfo {
     var emit_r_norm: Float
     var emit_phi: Float
     var emit_z_norm: Float
+}
+
+// 2xfloat4 (32-byte) lite collision payload for linear32 path.
+struct CollisionLite32 {
+    var vDiskXYZ_T: SIMD4<Float>
+    var noise_dirOct_hit: SIMD4<Float>
 }
 
 struct ExposureSample {
@@ -176,6 +200,7 @@ struct ComposeParams {
     var backgroundStarDensity: Float
     var backgroundStarStrength: Float
     var backgroundNebulaStrength: Float
+    var preserveHighlightColor: UInt32
 }
 
 struct RenderMeta: Codable {
@@ -449,29 +474,6 @@ func runProcess(_ launchPath: String, _ args: [String]) -> Int32 {
     }
 }
 
-func copyCollisionTileRows(sourceBase: UnsafeRawPointer,
-                           fullWidth: Int,
-                           stride: Int,
-                           srcX: Int,
-                           srcY: Int,
-                           tileWidth: Int,
-                           tileHeight: Int,
-                           destinationBase: UnsafeMutableRawPointer) {
-    if srcX == 0 && tileWidth == fullWidth {
-        let byteCount = tileWidth * tileHeight * stride
-        let srcOffset = srcY * fullWidth * stride
-        memcpy(destinationBase, sourceBase.advanced(by: srcOffset), byteCount)
-        return
-    }
-    let rowBytes = tileWidth * stride
-    var dst = destinationBase
-    for row in 0..<tileHeight {
-        let srcOffset = ((srcY + row) * fullWidth + srcX) * stride
-        memcpy(dst, sourceBase.advanced(by: srcOffset), rowBytes)
-        dst = dst.advanced(by: rowBytes)
-    }
-}
-
 func updateBuffer<T>(_ buffer: MTLBuffer, with value: inout T) {
     withUnsafeBytes(of: &value) { raw in
         guard let base = raw.baseAddress else { return }
@@ -493,6 +495,65 @@ func writeRawBuffer(to url: URL, sourceBase: UnsafeRawPointer, byteCount: Int) t
         try handle.write(contentsOf: Data(bytes: ptr, count: count))
         offset += count
     }
+}
+
+func makeFloat4Texture2D(device: MTLDevice,
+                         width: Int,
+                         height: Int,
+                         data: Data,
+                         label: String) -> MTLTexture {
+    let w = max(width, 1)
+    let h = max(height, 1)
+    let expectedBytes = w * h * MemoryLayout<SIMD4<Float>>.stride
+    if data.count != expectedBytes {
+        fail("\(label) size mismatch: got \(data.count), expected \(expectedBytes) for \(w)x\(h) float4")
+    }
+    let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: w, height: h, mipmapped: false)
+    desc.usage = [.shaderRead]
+    desc.storageMode = .shared
+    guard let tex = device.makeTexture(descriptor: desc) else {
+        fail("failed to create texture: \(label)")
+    }
+    let rowBytes = w * MemoryLayout<SIMD4<Float>>.stride
+    data.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: base, bytesPerRow: rowBytes)
+    }
+    return tex
+}
+
+func makeFloat4Texture3D(device: MTLDevice,
+                         width: Int,
+                         height: Int,
+                         depth: Int,
+                         data: Data,
+                         label: String) -> MTLTexture {
+    let w = max(width, 1)
+    let h = max(height, 1)
+    let d = max(depth, 1)
+    let expectedBytes = w * h * d * MemoryLayout<SIMD4<Float>>.stride
+    if data.count != expectedBytes {
+        fail("\(label) size mismatch: got \(data.count), expected \(expectedBytes) for \(w)x\(h)x\(d) float4")
+    }
+    let desc = MTLTextureDescriptor()
+    desc.textureType = .type3D
+    desc.pixelFormat = .rgba32Float
+    desc.width = w
+    desc.height = h
+    desc.depth = d
+    desc.mipmapLevelCount = 1
+    desc.usage = [.shaderRead]
+    desc.storageMode = .shared
+    guard let tex = device.makeTexture(descriptor: desc) else {
+        fail("failed to create 3D texture: \(label)")
+    }
+    let rowBytes = w * MemoryLayout<SIMD4<Float>>.stride
+    let imageBytes = rowBytes * h
+    data.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        tex.replace(region: MTLRegionMake3D(0, 0, 0, w, h, d), mipmapLevel: 0, slice: 0, withBytes: base, bytesPerRow: rowBytes, bytesPerImage: imageBytes)
+    }
+    return tex
 }
 
 func percentileSorted(_ sorted: [Float], _ q: Float) -> Float {
@@ -533,6 +594,7 @@ func composeTargetWhite(_ lookID: UInt32) -> Float {
     if lookID == 1 { return 0.9 }   // interstellar
     if lookID == 2 { return 0.6 }   // eht
     if lookID == 3 { return 1.25 }  // agx/filmic: avoid chronic underexposure vs ACES-tuned default
+    if lookID == 5 { return 1.40 }  // hdr: keep richer highlight headroom before display rolloff
     return 0.8
 }
 
@@ -714,47 +776,6 @@ guard let queue = device.makeCommandQueue() else {
 guard let library = device.makeDefaultLibrary() else {
     fail("failed to load default Metal library")
 }
-guard let fn = library.makeFunction(name: "renderBH") else {
-    fail("Metal function renderBH not found in default library")
-}
-let pipeline = try device.makeComputePipelineState(function: fn)
-guard let composeFn = library.makeFunction(name: "composeBH") else {
-    fail("Metal function composeBH not found in default library")
-}
-let composePipeline = try device.makeComputePipelineState(function: composeFn)
-guard let composeLinearFn = library.makeFunction(name: "composeLinearRGB") else {
-    fail("Metal function composeLinearRGB not found in default library")
-}
-let composeLinearPipeline = try device.makeComputePipelineState(function: composeLinearFn)
-guard let composeLinearTileFn = library.makeFunction(name: "composeLinearRGBTile") else {
-    fail("Metal function composeLinearRGBTile not found in default library")
-}
-let composeLinearTilePipeline = try device.makeComputePipelineState(function: composeLinearTileFn)
-guard let composeBHLinearFn = library.makeFunction(name: "composeBHLinear") else {
-    fail("Metal function composeBHLinear not found in default library")
-}
-let composeBHLinearPipeline = try device.makeComputePipelineState(function: composeBHLinearFn)
-guard let composeBHLinearTileFn = library.makeFunction(name: "composeBHLinearTile") else {
-    fail("Metal function composeBHLinearTile not found in default library")
-}
-let composeBHLinearTilePipeline = try device.makeComputePipelineState(function: composeBHLinearTileFn)
-guard let cloudHistFn = library.makeFunction(name: "composeCloudHist") else {
-    fail("Metal function composeCloudHist not found in default library")
-}
-let cloudHistPipeline = try device.makeComputePipelineState(function: cloudHistFn)
-guard let lumHistFn = library.makeFunction(name: "composeLumHist") else {
-    fail("Metal function composeLumHist not found in default library")
-}
-let lumHistPipeline = try device.makeComputePipelineState(function: lumHistFn)
-guard let lumHistLinearFn = library.makeFunction(name: "composeLumHistLinear") else {
-    fail("Metal function composeLumHistLinear not found in default library")
-}
-let lumHistLinearPipeline = try device.makeComputePipelineState(function: lumHistLinearFn)
-guard let lumHistLinearTileCloudFn = library.makeFunction(name: "composeLumHistLinearTileCloud") else {
-    fail("Metal function composeLumHistLinearTileCloud not found in default library")
-}
-let lumHistLinearTileCloudPipeline = try device.makeComputePipelineState(function: lumHistLinearTileCloudFn)
-
 let width = intArg("--width", default: 1200)
 let height = intArg("--height", default: 1200)
 let preset = stringArg("--preset", default: "balanced").lowercased()
@@ -943,7 +964,7 @@ let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", defa
 let diskRTStepsRawArg = max(0, min(32, intArg("--disk-rt-steps", default: 0)))
 let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.52 : 0.62) : 0.0))))
 let diskReturningRadArg = (diskPhysicsModeID == 2) ? diskReturningRadRawArg : 0.0
-let diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
+var diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
 let diskCloudCoverageArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudCoverageRawArg : 0.0
 let diskCloudOpticalDepthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudOpticalDepthRawArg : 0.0
 let diskCloudPorosityArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudPorosityRawArg : 0.0
@@ -951,8 +972,8 @@ let diskCloudShadowStrengthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsE
 let diskReturnBouncesArg = (diskPhysicsModeID == 2) ? diskReturnBouncesRawArg : 1
 let diskRTStepsArg = (diskPhysicsModeID == 2) ? diskRTStepsRawArg : 0
 let diskScatteringAlbedoArg = (diskPhysicsModeID == 2) ? diskScatteringAlbedoRawArg : 0.0
-if diskPhysicsModeID != 2 && (diskReturningRadRawArg > 1e-8 || diskPrecisionTextureRawArg > 1e-8) {
-    FileHandle.standardError.write(Data("warn: --disk-returning-rad and --disk-precision-texture are only active in precision mode\n".utf8))
+if diskPhysicsModeID != 2 && diskReturningRadRawArg > 1e-8 {
+    FileHandle.standardError.write(Data("warn: --disk-returning-rad is only active in precision mode\n".utf8))
 }
 if diskPhysicsModeID != 2 && (diskCloudCoverageRawArg > 1e-8 || diskCloudOpticalDepthRawArg > 1e-8 || diskCloudPorosityRawArg > 1e-8 || diskCloudShadowStrengthRawArg > 1e-8) {
     FileHandle.standardError.write(Data("warn: precision cloud args are only active in precision mode\n".utf8))
@@ -1007,11 +1028,29 @@ case "y", "luma", "luminance":
     diskGrmhdDebugID = 7
 case "peak", "peak-lambda", "lambda-peak":
     diskGrmhdDebugID = 8
+case "pol", "polarization", "polfrac":
+    diskGrmhdDebugID = 9
 default:
-    fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak")
+    fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak, pol")
 }
 if diskPhysicsModeID != 3 && diskGrmhdDebugID != 0 {
     FileHandle.standardError.write(Data("warn: --disk-grmhd-debug is only active in grmhd mode\n".utf8))
+}
+let diskPolarizedRTName = stringArg("--disk-polarized-rt", default: "off").lowercased()
+let diskPolarizedRTEnabled: Bool
+switch diskPolarizedRTName {
+case "on", "true", "1", "yes":
+    diskPolarizedRTEnabled = true
+case "off", "false", "0", "no":
+    diskPolarizedRTEnabled = false
+default:
+    fail("invalid --disk-polarized-rt \(diskPolarizedRTName). use on|off")
+}
+let diskPolarizationFracArg = min(max(doubleArg("--disk-pol-frac", default: 0.25), 0.0), 0.95)
+let diskFaradayRotScaleArg = doubleArg("--disk-faraday-rot", default: 0.0)
+let diskFaradayConvScaleArg = doubleArg("--disk-faraday-conv", default: 0.0)
+if diskPhysicsModeID != 3 && (diskPolarizedRTEnabled || abs(diskFaradayRotScaleArg) > 1e-30 || abs(diskFaradayConvScaleArg) > 1e-30) {
+    FileHandle.standardError.write(Data("warn: polarized GRRT options are only active in grmhd mode\n".utf8))
 }
 let visibleModeName = stringArg("--visible-mode", default: "off").lowercased()
 let visibleModeEnabled: Bool
@@ -1057,7 +1096,83 @@ default:
     fail("invalid --visible-emission-model \(visibleEmissionModelName). use one of: blackbody, synchrotron")
 }
 let visibleSynchAlphaArg = min(max(doubleArg("--visible-synch-alpha", default: 0.85), 0.0), 4.0)
+let visibleKappaArg = max(0.0, doubleArg("--visible-kappa", default: 0.0))
+let coolAbsorptionName = stringArg("--disk-cool-absorption", default: ((diskPhysicsModeID == 3 && visibleModeEnabled) ? "on" : "off")).lowercased()
+let coolAbsorptionEnabled: Bool
+switch coolAbsorptionName {
+case "on", "true", "1", "yes":
+    coolAbsorptionEnabled = true
+case "off", "false", "0", "no":
+    coolAbsorptionEnabled = false
+default:
+    fail("invalid --disk-cool-absorption \(coolAbsorptionName). use on|off")
+}
+let coolDustToGasArg = max(0.0, min(0.2, doubleArg("--disk-cool-dust-to-gas", default: 0.01)))
+let coolDustKappaVArg = max(0.0, doubleArg("--disk-cool-dust-kappa-v", default: 1800.0))
+let coolDustBetaArg = max(0.0, min(4.0, doubleArg("--disk-cool-dust-beta", default: 1.7)))
+let coolDustTSubArg = max(300.0, doubleArg("--disk-cool-dust-tsub", default: 1500.0))
+let coolDustTWidthArg = max(10.0, doubleArg("--disk-cool-dust-twidth", default: 180.0))
+let coolGasKappa0Arg = max(0.0, doubleArg("--disk-cool-gas-kappa0", default: 4.0e-3))
+let coolGasNuSlopeArg = max(0.0, min(6.0, doubleArg("--disk-cool-gas-nu-slope", default: 2.0)))
+let coolClumpStrengthArg = max(0.0, min(2.0, doubleArg("--disk-cool-clump-strength", default: 0.7)))
+let coolAbsorptionArgsExplicit =
+    CommandLine.arguments.contains("--disk-cool-absorption") ||
+    CommandLine.arguments.contains("--disk-cool-dust-to-gas") ||
+    CommandLine.arguments.contains("--disk-cool-dust-kappa-v") ||
+    CommandLine.arguments.contains("--disk-cool-dust-beta") ||
+    CommandLine.arguments.contains("--disk-cool-dust-tsub") ||
+    CommandLine.arguments.contains("--disk-cool-dust-twidth") ||
+    CommandLine.arguments.contains("--disk-cool-gas-kappa0") ||
+    CommandLine.arguments.contains("--disk-cool-gas-nu-slope") ||
+    CommandLine.arguments.contains("--disk-cool-clump-strength")
+if !(diskPhysicsModeID == 3 && visibleModeEnabled) &&
+    (coolAbsorptionEnabled || coolAbsorptionArgsExplicit) {
+    FileHandle.standardError.write(Data("warn: cool gas/dust absorption args are active only in grmhd visible mode\n".utf8))
+}
+if diskPhysicsModeID == 3 && visibleModeEnabled {
+    // GRMHD visible mode benefits from mild unresolved-photosphere texture contrast.
+    // Keep user override if explicitly provided.
+    let hasTextureArg = CommandLine.arguments.contains("--disk-precision-texture")
+    if hasTextureArg {
+        diskPrecisionTextureArg = diskPrecisionTextureRawArg
+    } else {
+        diskPrecisionTextureArg = 0.58
+    }
+} else if diskPhysicsModeID != 2 && diskPrecisionTextureRawArg > 1e-8 {
+    FileHandle.standardError.write(Data("warn: --disk-precision-texture is active in precision mode and grmhd visible mode only\n".utf8))
+}
+let rayBundleName = stringArg("--ray-bundle", default: "off").lowercased()
+let rayBundleEnabled: Bool
+switch rayBundleName {
+case "on", "true", "1", "yes":
+    rayBundleEnabled = true
+case "off", "false", "0", "no":
+    rayBundleEnabled = false
+default:
+    fail("invalid --ray-bundle \(rayBundleName). use on|off")
+}
+let rayBundleJacobianName = stringArg("--ray-bundle-jacobian", default: "off").lowercased()
+let rayBundleJacobianEnabled: Bool
+switch rayBundleJacobianName {
+case "on", "true", "1", "yes":
+    rayBundleJacobianEnabled = true
+case "off", "false", "0", "no":
+    rayBundleJacobianEnabled = false
+default:
+    fail("invalid --ray-bundle-jacobian \(rayBundleJacobianName). use on|off")
+}
+let rayBundleJacobianStrengthArg = max(0.0, doubleArg("--ray-bundle-jacobian-strength", default: 1.0))
+let rayBundleFootprintClampArg = min(max(doubleArg("--ray-bundle-footprint-clamp", default: 6.0), 0.0), 20.0)
+let rayBundleEligible = (diskPhysicsModeID == 3 && visibleModeEnabled && diskGrmhdDebugID == 0)
+let rayBundleActive = rayBundleEnabled && rayBundleEligible
+let rayBundleJacobianActive = rayBundleActive && rayBundleJacobianEnabled
+if rayBundleEnabled && !rayBundleEligible {
+    FileHandle.standardError.write(
+        Data("warn: --ray-bundle is currently applied only for grmhd visible mode (--disk-mode grmhd --visible-mode on --disk-grmhd-debug off); falling back to single-ray path\n".utf8)
+    )
+}
 let tileSizeArg = max(0, intArg("--tile-size", default: 0))
+let traceInFlightOverrideArg = max(0, intArg("--trace-inflight", default: 0))
 let pixelCount = width * height
 // Kerr high-resolution full-frame dispatch (e.g. 2000x2000 in SSAA path)
 // can intermittently miss disk hits; force tiled tracing earlier for stability.
@@ -1072,6 +1187,7 @@ case "interstellar": composeLookID = 1
 case "eht": composeLookID = 2
 case "agx", "filmic": composeLookID = 3
 case "none", "linear": composeLookID = 4
+case "hdr", "hdr-rich", "hdrrich": composeLookID = 5
 default: composeLookID = 0
 }
 let composeDitherDefault: Double = {
@@ -1196,6 +1312,7 @@ let composeExposureBase: Float = {
 }()
 let spectralEncodingID: UInt32 = (spectralEncoding == "gfactor_v1") ? 1 : 0
 var composeExposure = composeExposureBase
+let preserveHighlightColor: UInt32 = (diskPhysicsModeID == 3 && visibleModeEnabled && composeAnalysisMode == 0) ? 1 : 0
 let useLinear32Intermediate = composeGPU && !gpuFullCompose && linear32Intermediate
 var diskModelResolved: String
 switch diskModelArg {
@@ -1392,14 +1509,14 @@ if composeGPU {
 }
 
 print(
-    "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)"
+    "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)"
 )
 if diskPhysicsModeID == 3 {
     print(
-        "grmhd config vol0=\(diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved), vol1=\(diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved), nuObsHz=\(diskNuObsHzArg), rhoScale=\(diskGrmhdDensityScaleArg), bScale=\(diskGrmhdBScaleArg), jScale=\(diskGrmhdEmissionScaleArg), alphaScale=\(diskGrmhdAbsorptionScaleArg), velScale=\(diskGrmhdVelScaleArg), debug=\(diskGrmhdDebugName)"
+        "grmhd config vol0=\(diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved), vol1=\(diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved), nuObsHz=\(diskNuObsHzArg), rhoScale=\(diskGrmhdDensityScaleArg), bScale=\(diskGrmhdBScaleArg), jScale=\(diskGrmhdEmissionScaleArg), alphaScale=\(diskGrmhdAbsorptionScaleArg), velScale=\(diskGrmhdVelScaleArg), polarized=\(diskPolarizedRTEnabled), polFrac=\(diskPolarizationFracArg), faradayRot=\(diskFaradayRotScaleArg), faradayConv=\(diskFaradayConvScaleArg), debug=\(diskGrmhdDebugName)"
     )
     print(
-        "visible config enabled=\(visibleModeEnabled), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg)"
+        "visible config enabled=\(visibleModeEnabled), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
     )
 }
 
@@ -1520,6 +1637,10 @@ var params = Params(
     diskGrmhdAbsorptionScale: Float(diskGrmhdAbsorptionScaleArg),
     diskGrmhdVelScale: Float(diskGrmhdVelScaleArg),
     diskGrmhdDebugView: diskGrmhdDebugID,
+    diskPolarizedRT: (diskPhysicsModeID == 3 && diskPolarizedRTEnabled) ? 1 : 0,
+    diskPolarizationFrac: Float(diskPolarizationFracArg),
+    diskFaradayRotScale: Float(diskFaradayRotScaleArg),
+    diskFaradayConvScale: Float(diskFaradayConvScaleArg),
     visibleMode: (diskPhysicsModeID == 3 && visibleModeEnabled) ? 1 : 0,
     visibleSamples: UInt32(visibleSamplesArg),
     visibleTeffModel: visibleTeffModelID,
@@ -1531,19 +1652,42 @@ var params = Params(
     visibleBhMass: Float(visibleBhMassArg),
     visibleMdot: Float(visibleMdotArg),
     visibleRIn: Float(visibleRInMeters),
-    visibleKappa: 0.0,
+    visibleKappa: Float(visibleKappaArg),
     visibleEmissionModel: visibleEmissionModelID,
-    visibleEmissionAlpha: Float(visibleSynchAlphaArg)
+    visibleEmissionAlpha: Float(visibleSynchAlphaArg),
+    rayBundleSSAA: rayBundleActive ? 1 : 0,
+    rayBundleJacobian: rayBundleJacobianActive ? 1 : 0,
+    rayBundleJacobianStrength: Float(rayBundleJacobianStrengthArg),
+    rayBundleFootprintClamp: Float(rayBundleFootprintClampArg),
+    coolAbsorptionMode: (diskPhysicsModeID == 3 && visibleModeEnabled && coolAbsorptionEnabled) ? 1 : 0,
+    coolDustToGas: Float(coolDustToGasArg),
+    coolDustKappaV: Float(coolDustKappaVArg),
+    coolDustBeta: Float(coolDustBetaArg),
+    coolDustTSub: Float(coolDustTSubArg),
+    coolDustTWidth: Float(coolDustTWidthArg),
+    coolGasKappa0: Float(coolGasKappa0Arg),
+    coolGasNuSlope: Float(coolGasNuSlopeArg),
+    coolClumpStrength: Float(coolClumpStrengthArg),
+    coolAbsorptionPad: 0
 )
 
 let count = width * height
 let stride = MemoryLayout<CollisionInfo>.stride
+let useInMemoryCollisions = composeGPU && gpuFullCompose
+let collisionLite32Enabled =
+    useLinear32Intermediate &&
+    !useInMemoryCollisions &&
+    !rayBundleActive &&
+    diskPhysicsModeID <= 1 &&
+    !visibleModeEnabled &&
+    composeAnalysisMode == 0 &&
+    diskGrmhdDebugID == 0
+let traceStride = collisionLite32Enabled ? MemoryLayout<CollisionLite32>.stride : stride
 let outSize = count * stride
 let url = URL(fileURLWithPath: outPath)
 let linearStride = MemoryLayout<SIMD4<Float>>.stride
 let linearOutSize = count * linearStride
 let linearURL = URL(fileURLWithPath: linear32OutPath)
-let useInMemoryCollisions = composeGPU && gpuFullCompose
 if discardCollisionOutput && !(useInMemoryCollisions || useLinear32Intermediate) {
     fail("--discard-collisions is only supported with --gpu-full-compose or --linear32-intermediate")
 }
@@ -1552,6 +1696,9 @@ if useInMemoryCollisions, collisionBuffer == nil {
     fail("failed to allocate in-memory collision buffer (\(outSize) bytes)")
 }
 let collisionBase = collisionBuffer?.contents()
+if collisionLite32Enabled {
+    print("collision layout=lite32 (2xfloat4) for linear32 trace tiles")
+}
 var linearOutHandle: FileHandle? = nil
 if useLinear32Intermediate {
     _ = FileManager.default.createFile(atPath: linearURL.path, contents: nil)
@@ -1576,46 +1723,136 @@ let effectiveTile = alignedTile
 if effectiveTile < max(width, height) {
     print("tile rendering enabled: \(effectiveTile)x\(effectiveTile)")
 }
-guard let traceParamBuf = device.makeBuffer(length: MemoryLayout<Params>.stride, options: .storageModeShared) else {
-    fail("failed to allocate trace param buffer")
-}
 let maxTraceTilePixels = effectiveTile * effectiveTile
-guard let traceTileBuf = device.makeBuffer(length: maxTraceTilePixels * stride, options: .storageModeShared) else {
-    fail("failed to allocate trace tile buffer")
+let traceTilesX = max(1, (width + effectiveTile - 1) / effectiveTile)
+let traceTilesY = max(1, (height + effectiveTile - 1) / effectiveTile)
+let traceTileTotal = max(1, traceTilesX * traceTilesY)
+
+let diskAtlasTex = makeFloat4Texture2D(
+    device: device,
+    width: Int(max(params.diskAtlasWidth, 1)),
+    height: Int(max(params.diskAtlasHeight, 1)),
+    data: diskAtlasData,
+    label: "diskAtlas"
+)
+let diskVol0Tex = makeFloat4Texture3D(
+    device: device,
+    width: Int(max(params.diskVolumeR0, 1)),
+    height: Int(max(params.diskVolumePhi0, 1)),
+    depth: Int(max(params.diskVolumeZ0, 1)),
+    data: diskVolume0Data,
+    label: "diskVol0"
+)
+let diskVol1Tex = makeFloat4Texture3D(
+    device: device,
+    width: Int(max(params.diskVolumeR1, 1)),
+    height: Int(max(params.diskVolumePhi1, 1)),
+    depth: Int(max(params.diskVolumeZ1, 1)),
+    data: diskVolume1Data,
+    label: "diskVol1"
+)
+
+let traceKernelBase: String
+if collisionLite32Enabled {
+    traceKernelBase = "renderBHClassicLite"
+} else {
+    traceKernelBase = rayBundleActive ? "renderBHBundle" : "renderBHClassic"
 }
-guard let diskAtlasBuf = device.makeBuffer(length: diskAtlasData.count, options: .storageModeShared) else {
-    fail("failed to allocate disk atlas buffer")
+let traceKernelName = useInMemoryCollisions ? "\(traceKernelBase)Global" : traceKernelBase
+let traceFC = MTLFunctionConstantValues()
+var metricFC = Int32(metricArg)
+var physicsFC = UInt32(diskPhysicsModeID)
+var visibleFC = UInt32((diskPhysicsModeID == 3 && visibleModeEnabled) ? 1 : 0)
+var traceDebugOffFC = UInt32(diskGrmhdDebugID == 0 ? 1 : 0)
+traceFC.setConstantValue(&metricFC, type: .int, index: 0)
+traceFC.setConstantValue(&physicsFC, type: .uint, index: 1)
+traceFC.setConstantValue(&visibleFC, type: .uint, index: 2)
+traceFC.setConstantValue(&traceDebugOffFC, type: .uint, index: 3)
+guard let traceFn = try? library.makeFunction(name: traceKernelName, constantValues: traceFC) else {
+    fail("Metal function \(traceKernelName) with function constants not found")
 }
-diskAtlasData.withUnsafeBytes { raw in
-    guard let base = raw.baseAddress else { return }
-    memcpy(diskAtlasBuf.contents(), base, diskAtlasData.count)
+let tracePipeline = try device.makeComputePipelineState(function: traceFn)
+
+func specializedFunction(_ name: String) -> MTLFunction {
+    guard let fn = try? library.makeFunction(name: name, constantValues: traceFC) else {
+        fail("Metal function \(name) with function constants not found")
+    }
+    return fn
 }
-guard let diskVolume0Buf = device.makeBuffer(length: diskVolume0Data.count, options: .storageModeShared) else {
-    fail("failed to allocate disk volume0 buffer")
+
+let composePipeline = try device.makeComputePipelineState(function: specializedFunction("composeBH"))
+let composeLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLinearRGB"))
+let composeLinearTileKernelName = collisionLite32Enabled ? "composeLinearRGBTileLite" : "composeLinearRGBTile"
+let composeLinearTilePipeline = try device.makeComputePipelineState(function: specializedFunction(composeLinearTileKernelName))
+let composeBHLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeBHLinear"))
+let composeBHLinearTilePipeline = try device.makeComputePipelineState(function: specializedFunction("composeBHLinearTile"))
+let cloudHistPipeline = try device.makeComputePipelineState(function: specializedFunction("composeCloudHist"))
+let lumHistPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHist"))
+let lumHistLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHistLinear"))
+let lumHistLinearTileCloudPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHistLinearTileCloud"))
+
+struct InFlightSlot {
+    let traceParamBuf: MTLBuffer
+    let traceTileBuf: MTLBuffer?
+    let linearParamBuf: MTLBuffer?
+    let linearTileBuf: MTLBuffer?
 }
-diskVolume0Data.withUnsafeBytes { raw in
-    guard let base = raw.baseAddress else { return }
-    memcpy(diskVolume0Buf.contents(), base, diskVolume0Data.count)
+
+let slotTraceParamBytes = MemoryLayout<Params>.stride
+let slotTraceTileBytes = maxTraceTilePixels * traceStride
+let slotLinearParamBytes = useLinear32Intermediate ? MemoryLayout<ComposeParams>.stride : 0
+let slotLinearTileBytes = useLinear32Intermediate ? (maxTraceTilePixels * linearStride) : 0
+let slotBytes = slotTraceParamBytes
+    + ((useInMemoryCollisions && !useLinear32Intermediate) ? 0 : slotTraceTileBytes)
+    + slotLinearParamBytes
+    + slotLinearTileBytes
+let workingSetCap = Int(min(device.recommendedMaxWorkingSetSize, UInt64(Int.max)))
+let inFlightBudget = max(64 * 1024 * 1024, min(workingSetCap / 8, 768 * 1024 * 1024))
+var maxInFlight = 2
+if slotBytes > 0 && slotBytes * 3 <= inFlightBudget {
+    maxInFlight = 3
 }
-guard let diskVolume1Buf = device.makeBuffer(length: diskVolume1Data.count, options: .storageModeShared) else {
-    fail("failed to allocate disk volume1 buffer")
+if traceInFlightOverrideArg > 0 {
+    maxInFlight = traceInFlightOverrideArg
 }
-diskVolume1Data.withUnsafeBytes { raw in
-    guard let base = raw.baseAddress else { return }
-    memcpy(diskVolume1Buf.contents(), base, diskVolume1Data.count)
+maxInFlight = min(maxInFlight, traceTileTotal)
+maxInFlight = max(1, maxInFlight)
+print("trace in-flight=\(maxInFlight), slotBytes=\(slotBytes), tiles=\(traceTileTotal)")
+
+var traceSlots: [InFlightSlot] = []
+traceSlots.reserveCapacity(maxInFlight)
+for _ in 0..<maxInFlight {
+    guard let traceParamBuf = device.makeBuffer(length: slotTraceParamBytes, options: .storageModeShared) else {
+        fail("failed to allocate trace param buffer slot")
+    }
+    let needsTraceTile = !(useInMemoryCollisions && !useLinear32Intermediate)
+    let traceTileBuf: MTLBuffer?
+    if needsTraceTile {
+        guard let buf = device.makeBuffer(length: slotTraceTileBytes, options: .storageModeShared) else {
+            fail("failed to allocate trace tile buffer slot")
+        }
+        traceTileBuf = buf
+    } else {
+        traceTileBuf = nil
+    }
+    let linearParamBuf: MTLBuffer?
+    let linearTileBuf: MTLBuffer?
+    if useLinear32Intermediate {
+        guard let lp = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
+            fail("failed to allocate linear32 compose param buffer slot")
+        }
+        guard let lt = device.makeBuffer(length: maxTraceTilePixels * linearStride, options: .storageModeShared) else {
+            fail("failed to allocate linear32 tile buffer slot")
+        }
+        linearParamBuf = lp
+        linearTileBuf = lt
+    } else {
+        linearParamBuf = nil
+        linearTileBuf = nil
+    }
+    traceSlots.append(InFlightSlot(traceParamBuf: traceParamBuf, traceTileBuf: traceTileBuf, linearParamBuf: linearParamBuf, linearTileBuf: linearTileBuf))
 }
-let composeLinearTileBuf: MTLBuffer? = useLinear32Intermediate
-    ? device.makeBuffer(length: maxTraceTilePixels * linearStride, options: .storageModeShared)
-    : nil
-if useLinear32Intermediate, composeLinearTileBuf == nil {
-    fail("failed to allocate linear32 tile buffer")
-}
-let composeLinearParamBuf: MTLBuffer? = useLinear32Intermediate
-    ? device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared)
-    : nil
-if useLinear32Intermediate, composeLinearParamBuf == nil {
-    fail("failed to allocate linear32 compose param buffer")
-}
+
 var composeParamsBase = params
 let composeBaseBufForLinear: MTLBuffer? = useLinear32Intermediate
     ? device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])
@@ -1654,60 +1891,67 @@ let totalOps = totalPixels + composeOps
 let progressStep = max(1, totalOps / 256)
 var nextProgressMark = progressStep
 var lastProgressPrint = Date().timeIntervalSince1970
-let traceTilesX = max(1, (width + effectiveTile - 1) / effectiveTile)
-let traceTilesY = max(1, (height + effectiveTile - 1) / effectiveTile)
-let traceTileTotal = max(1, traceTilesX * traceTilesY)
 var traceTileIndex = 0
 emitETAProgress(0, totalOps, "swift_trace", "task=trace tile=0/\(traceTileTotal)")
+let inFlightSemaphore = DispatchSemaphore(value: maxInFlight)
+let traceDispatchGroup = DispatchGroup()
+let ioQueue = DispatchQueue(label: "blackhole.trace.io")
+var traceIOError: Error? = nil
+let traceIOErrorLock = NSLock()
+func traceGetError() -> Error? {
+    traceIOErrorLock.lock()
+    defer { traceIOErrorLock.unlock() }
+    return traceIOError
+}
+func traceSetErrorIfNil(_ error: Error) {
+    traceIOErrorLock.lock()
+    if traceIOError == nil {
+        traceIOError = error
+    }
+    traceIOErrorLock.unlock()
+}
+var traceDispatchIndex = 0
 var ty = 0
 while ty < height {
     let tileH = min(effectiveTile, height - ty)
     var tx = 0
     while tx < width {
         let tileW = min(effectiveTile, width - tx)
+        let tileCount = tileW * tileH
+        let tileOriginX = tx
+        let tileOriginY = ty
+        let tileOrdinal = traceTileIndex + 1
+        traceTileIndex += 1
+
+        inFlightSemaphore.wait()
+        if let e = traceGetError() {
+            inFlightSemaphore.signal()
+            throw e
+        }
+        let slot = traceSlots[traceDispatchIndex % maxInFlight]
+        traceDispatchIndex += 1
 
         var tileParams = params
         tileParams.width = UInt32(tileW)
         tileParams.height = UInt32(tileH)
         tileParams.fullWidth = UInt32(width)
         tileParams.fullHeight = UInt32(height)
-        tileParams.offsetX = UInt32(tx)
-        tileParams.offsetY = UInt32(ty)
-
-        updateBuffer(traceParamBuf, with: &tileParams)
-        let tileCount = tileW * tileH
-
-        let cmd = queue.makeCommandBuffer()!
-        let enc = cmd.makeComputeCommandEncoder()!
-        enc.setComputePipelineState(pipeline)
-        enc.setBuffer(traceParamBuf, offset: 0, index: 0)
-        enc.setBuffer(traceTileBuf, offset: 0, index: 1)
-        enc.setBuffer(diskAtlasBuf, offset: 0, index: 2)
-        enc.setBuffer(diskVolume0Buf, offset: 0, index: 3)
-        enc.setBuffer(diskVolume1Buf, offset: 0, index: 4)
-
-        let grid = MTLSize(width: tileW, height: tileH, depth: 1)
-        enc.dispatchThreads(grid, threadsPerThreadgroup: tg)
-        enc.endEncoding()
-        cmd.commit()
-        cmd.waitUntilCompleted()
-
-        let ptr = traceTileBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
-        for i in 0..<tileCount where ptr[i].hit != 0 { hitCount += 1 }
+        tileParams.offsetX = UInt32(tileOriginX)
+        tileParams.offsetY = UInt32(tileOriginY)
+        updateBuffer(slot.traceParamBuf, with: &tileParams)
 
         if useLinear32Intermediate {
-            guard let composeBaseBufForLinear, let composeLinearParamBuf, let composeLinearTileBuf, let linearOutHandle else {
-                fail("linear32 intermediate buffers are not available")
+            guard let linearParamBuf = slot.linearParamBuf else {
+                fail("linear32 slot param buffer missing")
             }
-
             var linearTileParams = ComposeParams(
                 tileWidth: UInt32(tileW),
                 tileHeight: UInt32(tileH),
                 downsample: 1,
                 outTileWidth: 0,
                 outTileHeight: 0,
-                srcOffsetX: UInt32(tx),
-                srcOffsetY: UInt32(ty),
+                srcOffsetX: UInt32(tileOriginX),
+                srcOffsetY: UInt32(tileOriginY),
                 outOffsetX: 0,
                 outOffsetY: 0,
                 fullInputWidth: UInt32(width),
@@ -1734,69 +1978,149 @@ while ty < height {
                 backgroundMode: backgroundModeID,
                 backgroundStarDensity: backgroundStarDensityArg,
                 backgroundStarStrength: backgroundStarStrengthArg,
-                backgroundNebulaStrength: backgroundNebulaStrengthArg
+                backgroundNebulaStrength: backgroundNebulaStrengthArg,
+                preserveHighlightColor: preserveHighlightColor
             )
-            updateBuffer(composeLinearParamBuf, with: &linearTileParams)
+            updateBuffer(linearParamBuf, with: &linearTileParams)
+        }
 
-            let linearCmd = queue.makeCommandBuffer()!
-            let linearEnc = linearCmd.makeComputeCommandEncoder()!
+        traceDispatchGroup.enter()
+        let cmd = queue.makeCommandBuffer()!
+        let enc = cmd.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(tracePipeline)
+        enc.setBuffer(slot.traceParamBuf, offset: 0, index: 0)
+        if useInMemoryCollisions {
+            guard let collisionBuffer else {
+                fail("in-memory collision buffer missing for global trace path")
+            }
+            enc.setBuffer(collisionBuffer, offset: 0, index: 1)
+        } else {
+            guard let traceTileBuf = slot.traceTileBuf else {
+                fail("trace tile buffer missing for local trace path")
+            }
+            enc.setBuffer(traceTileBuf, offset: 0, index: 1)
+        }
+        enc.setTexture(diskAtlasTex, index: 0)
+        enc.setTexture(diskVol0Tex, index: 1)
+        enc.setTexture(diskVol1Tex, index: 2)
+        enc.dispatchThreads(MTLSize(width: tileW, height: tileH, depth: 1), threadsPerThreadgroup: tg)
+        enc.endEncoding()
+
+        if useLinear32Intermediate {
+            guard let composeBaseBufForLinear,
+                  let linearParamBuf = slot.linearParamBuf,
+                  let traceTileBuf = slot.traceTileBuf,
+                  let linearTileBuf = slot.linearTileBuf else {
+                fail("linear32 slot buffers are not available")
+            }
+            let linearEnc = cmd.makeComputeCommandEncoder()!
             linearEnc.setComputePipelineState(composeLinearTilePipeline)
             linearEnc.setBuffer(composeBaseBufForLinear, offset: 0, index: 0)
-            linearEnc.setBuffer(composeLinearParamBuf, offset: 0, index: 1)
+            linearEnc.setBuffer(linearParamBuf, offset: 0, index: 1)
             linearEnc.setBuffer(traceTileBuf, offset: 0, index: 2)
-            linearEnc.setBuffer(composeLinearTileBuf, offset: 0, index: 3)
+            linearEnc.setBuffer(linearTileBuf, offset: 0, index: 3)
             linearEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgLinearTile1D)
             linearEnc.endEncoding()
-            linearCmd.commit()
-            linearCmd.waitUntilCompleted()
+        }
 
-            let linearPtr = composeLinearTileBuf.contents().bindMemory(to: SIMD4<Float>.self, capacity: tileCount)
-            for i in 0..<tileCount {
-                let w = linearPtr[i].w
-                if w < 0 { continue }
-                let cloud = min(max(Double(w), 0.0), 1.0)
-                let bin = min(max(Int(floor(cloud * Double(linearCloudBins - 1) + 0.5)), 0), linearCloudBins - 1)
-                linearCloudHistGlobal[bin] = linearCloudHistGlobal[bin] &+ 1
-                linearCloudSampleCount += 1
-            }
+        cmd.addCompletedHandler { cmdBuf in
+            ioQueue.async {
+                defer {
+                    inFlightSemaphore.signal()
+                    traceDispatchGroup.leave()
+                }
+                if traceGetError() != nil { return }
+                if cmdBuf.status != .completed {
+                    traceSetErrorIfNil(cmdBuf.error ?? NSError(domain: "Blackhole", code: 70, userInfo: [NSLocalizedDescriptionKey: "trace command buffer failed"]))
+                    return
+                }
+                do {
+                    if useInMemoryCollisions {
+                        if let collisionBase {
+                            let fullPtr = collisionBase.bindMemory(to: CollisionInfo.self, capacity: count)
+                            var localHits = 0
+                            for row in 0..<tileH {
+                                let rowBase = (tileOriginY + row) * width + tileOriginX
+                                for col in 0..<tileW {
+                                    if fullPtr[rowBase + col].hit != 0 { localHits += 1 }
+                                }
+                            }
+                            hitCount += localHits
+                        }
+                    } else if let traceTileBuf = slot.traceTileBuf {
+                        var localHits = 0
+                        if collisionLite32Enabled {
+                            let ptr = traceTileBuf.contents().bindMemory(to: CollisionLite32.self, capacity: tileCount)
+                            for i in 0..<tileCount where ptr[i].noise_dirOct_hit.w > 0.5 { localHits += 1 }
+                        } else {
+                            let ptr = traceTileBuf.contents().bindMemory(to: CollisionInfo.self, capacity: tileCount)
+                            for i in 0..<tileCount where ptr[i].hit != 0 { localHits += 1 }
+                        }
+                        hitCount += localHits
+                    }
 
-            for row in 0..<tileH {
-                let rowBytes = tileW * linearStride
-                let src = composeLinearTileBuf.contents().advanced(by: row * rowBytes)
-                let dstOffset = ((ty + row) * width + tx) * linearStride
-                try linearOutHandle.seek(toOffset: UInt64(dstOffset))
-                try linearOutHandle.write(contentsOf: Data(bytes: src, count: rowBytes))
-            }
-        } else {
-            for row in 0..<tileH {
-                let rowBytes = tileW * stride
-                let src = traceTileBuf.contents().advanced(by: row * rowBytes)
-                let dstOffset = ((ty + row) * width + tx) * stride
-                if let collisionBase {
-                    memcpy(collisionBase.advanced(by: dstOffset), src, rowBytes)
-                } else if let outHandle {
-                    try outHandle.seek(toOffset: UInt64(dstOffset))
-                    try outHandle.write(contentsOf: Data(bytes: src, count: rowBytes))
-                } else if discardCollisionOutput {
-                    // intentionally skip collision writes when output is marked disposable
-                } else {
-                    fail("no collision output sink available")
+                    if useLinear32Intermediate {
+                        guard let linearOutHandle, let linearTileBuf = slot.linearTileBuf else {
+                            throw NSError(domain: "Blackhole", code: 71, userInfo: [NSLocalizedDescriptionKey: "linear32 output buffers missing"])
+                        }
+                        let linearPtr = linearTileBuf.contents().bindMemory(to: SIMD4<Float>.self, capacity: tileCount)
+                        for i in 0..<tileCount {
+                            let w = linearPtr[i].w
+                            if w < 0 { continue }
+                            let cloud = min(max(Double(w), 0.0), 1.0)
+                            let bin = min(max(Int(floor(cloud * Double(linearCloudBins - 1) + 0.5)), 0), linearCloudBins - 1)
+                            linearCloudHistGlobal[bin] = linearCloudHistGlobal[bin] &+ 1
+                            linearCloudSampleCount += 1
+                        }
+                        for row in 0..<tileH {
+                            let rowBytes = tileW * linearStride
+                            let src = linearTileBuf.contents().advanced(by: row * rowBytes)
+                            let dstOffset = ((tileOriginY + row) * width + tileOriginX) * linearStride
+                            try linearOutHandle.seek(toOffset: UInt64(dstOffset))
+                            try linearOutHandle.write(contentsOf: Data(bytes: src, count: rowBytes))
+                        }
+                    } else if !useInMemoryCollisions {
+                        if let traceTileBuf = slot.traceTileBuf {
+                            for row in 0..<tileH {
+                                let rowBytes = tileW * traceStride
+                                let src = traceTileBuf.contents().advanced(by: row * rowBytes)
+                                let dstOffset = ((tileOriginY + row) * width + tileOriginX) * traceStride
+                                if let outHandle {
+                                    try outHandle.seek(toOffset: UInt64(dstOffset))
+                                    try outHandle.write(contentsOf: Data(bytes: src, count: rowBytes))
+                                } else if discardCollisionOutput {
+                                    // intentionally skip collision writes when output is marked disposable
+                                } else {
+                                    throw NSError(domain: "Blackhole", code: 72, userInfo: [NSLocalizedDescriptionKey: "no collision output sink available"])
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    traceSetErrorIfNil(error)
+                    return
+                }
+
+                donePixels += tileCount
+                let now = Date().timeIntervalSince1970
+                if donePixels >= totalPixels || donePixels >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
+                    emitETAProgress(donePixels, totalOps, "swift_trace", "task=trace tile=\(tileOrdinal)/\(traceTileTotal)")
+                    lastProgressPrint = now
+                    while nextProgressMark <= donePixels {
+                        nextProgressMark += progressStep
+                    }
                 }
             }
         }
-        donePixels += tileCount
-        traceTileIndex += 1
-        let now = Date().timeIntervalSince1970
-        if donePixels >= totalPixels || donePixels >= nextProgressMark || (now - lastProgressPrint) >= 0.5 {
-            emitETAProgress(donePixels, totalOps, "swift_trace", "task=trace tile=\(traceTileIndex)/\(traceTileTotal)")
-            lastProgressPrint = now
-            while nextProgressMark <= donePixels {
-                nextProgressMark += progressStep
-            }
-        }
+        cmd.commit()
         tx += tileW
     }
     ty += tileH
+}
+
+traceDispatchGroup.wait()
+if let e = traceGetError() {
+    throw e
 }
 
 if composeGPU {
@@ -1900,7 +2224,8 @@ if composeGPU {
                     backgroundMode: backgroundModeID,
                     backgroundStarDensity: backgroundStarDensityArg,
                     backgroundStarStrength: backgroundStarStrengthArg,
-                    backgroundNebulaStrength: backgroundNebulaStrengthArg
+                    backgroundNebulaStrength: backgroundNebulaStrengthArg,
+                    preserveHighlightColor: preserveHighlightColor
                 )
                 updateBuffer(lumParamBuf, with: &lumParams)
                 memset(lumHistBuf.contents(), 0, lumHistBytes)
@@ -1959,7 +2284,7 @@ if composeGPU {
 
     composeParamsBase = params
     if gpuFullCompose {
-        guard let collisionBase else {
+        guard let collisionBuffer else {
             fail("gpu-full-compose requires in-memory collision buffer")
         }
         let cloudBins = 8192
@@ -2012,7 +2337,8 @@ if composeGPU {
             backgroundMode: backgroundModeID,
             backgroundStarDensity: backgroundStarDensityArg,
             backgroundStarStrength: backgroundStarStrengthArg,
-            backgroundNebulaStrength: backgroundNebulaStrengthArg
+            backgroundNebulaStrength: backgroundNebulaStrengthArg,
+            preserveHighlightColor: preserveHighlightColor
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -2020,11 +2346,7 @@ if composeGPU {
         if composeRows <= 0 { composeRows = downsampleArg }
         if composeRows > height { composeRows = height }
         let composeTileTotal = max(1, (height + composeRows - 1) / composeRows)
-        let maxComposeTileCount = width * composeRows
         let maxComposeOutTileCount = (width / downsampleArg) * (composeRows / downsampleArg)
-        guard let composeTileInBuf = device.makeBuffer(length: maxComposeTileCount * stride, options: .storageModeShared) else {
-            fail("failed to allocate compose input tile buffer")
-        }
         guard let composeParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
             fail("failed to allocate compose param buffer")
         }
@@ -2066,16 +2388,7 @@ if composeGPU {
                 let tileH = min(composeRows, height - pty)
                 let tileW = width
                 let tileCount = tileW * tileH
-                copyCollisionTileRows(
-                    sourceBase: UnsafeRawPointer(collisionBase),
-                    fullWidth: width,
-                    stride: stride,
-                    srcX: 0,
-                    srcY: pty,
-                    tileWidth: tileW,
-                    tileHeight: tileH,
-                    destinationBase: composeTileInBuf.contents()
-                )
+                let srcOffsetBytes = pty * width * stride
 
                 composeParamsTemplate.tileWidth = UInt32(tileW)
                 composeParamsTemplate.tileHeight = UInt32(tileH)
@@ -2092,7 +2405,7 @@ if composeGPU {
                 cloudEnc.setComputePipelineState(cloudHistPipeline)
                 cloudEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
                 cloudEnc.setBuffer(cloudParamBuf, offset: 0, index: 1)
-                cloudEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                cloudEnc.setBuffer(collisionBuffer, offset: srcOffsetBytes, index: 2)
                 cloudEnc.setBuffer(cloudHistBuf, offset: 0, index: 3)
                 cloudEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgCloud1D)
                 cloudEnc.endEncoding()
@@ -2134,16 +2447,7 @@ if composeGPU {
                 let tileH = min(composeRows, height - pty)
                 let tileW = width
                 let tileCount = tileW * tileH
-                copyCollisionTileRows(
-                    sourceBase: UnsafeRawPointer(collisionBase),
-                    fullWidth: width,
-                    stride: stride,
-                    srcX: 0,
-                    srcY: pty,
-                    tileWidth: tileW,
-                    tileHeight: tileH,
-                    destinationBase: composeTileInBuf.contents()
-                )
+                let srcOffsetBytes = pty * width * stride
 
                 composeParamsTemplate.tileWidth = UInt32(tileW)
                 composeParamsTemplate.tileHeight = UInt32(tileH)
@@ -2164,7 +2468,7 @@ if composeGPU {
                 linearEnc.setComputePipelineState(composeLinearPipeline)
                 linearEnc.setBuffer(composeBaseBuf, offset: 0, index: 0)
                 linearEnc.setBuffer(lumParamBuf, offset: 0, index: 1)
-                linearEnc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                linearEnc.setBuffer(collisionBuffer, offset: srcOffsetBytes, index: 2)
                 linearEnc.setBuffer(composeLinearFullBuf, offset: 0, index: 3)
                 linearEnc.dispatchThreads(MTLSize(width: tileCount, height: 1, depth: 1), threadsPerThreadgroup: tgLinear1D)
                 linearEnc.endEncoding()
@@ -2298,17 +2602,7 @@ if composeGPU {
             while cty < height {
                 let tileH = min(composeRows, height - cty)
                 let tileW = width
-
-                copyCollisionTileRows(
-                    sourceBase: UnsafeRawPointer(collisionBase),
-                    fullWidth: width,
-                    stride: stride,
-                    srcX: 0,
-                    srcY: cty,
-                    tileWidth: tileW,
-                    tileHeight: tileH,
-                    destinationBase: composeTileInBuf.contents()
-                )
+                let srcOffsetBytes = cty * width * stride
 
                 let outTileW = tileW / downsampleArg
                 let outTileH = tileH / downsampleArg
@@ -2333,7 +2627,7 @@ if composeGPU {
                 enc.setComputePipelineState(composePipeline)
                 enc.setBuffer(composeBaseBuf, offset: 0, index: 0)
                 enc.setBuffer(composeParamBuf, offset: 0, index: 1)
-                enc.setBuffer(composeTileInBuf, offset: 0, index: 2)
+                enc.setBuffer(collisionBuffer, offset: srcOffsetBytes, index: 2)
                 enc.setBuffer(composeOutBuf, offset: 0, index: 3)
                 enc.dispatchThreads(MTLSize(width: outTileW, height: outTileH, depth: 1), threadsPerThreadgroup: tg)
                 enc.endEncoding()
@@ -2426,7 +2720,8 @@ if composeGPU {
         backgroundMode: backgroundModeID,
         backgroundStarDensity: backgroundStarDensityArg,
         backgroundStarStrength: backgroundStarStrengthArg,
-        backgroundNebulaStrength: backgroundNebulaStrengthArg
+        backgroundNebulaStrength: backgroundNebulaStrengthArg,
+        preserveHighlightColor: preserveHighlightColor
     )
     let rawComposeRows = max(1, composeChunkArg / max(width, 1))
     var composeRows = max(downsampleArg, (rawComposeRows / downsampleArg) * downsampleArg)
@@ -2736,6 +3031,12 @@ if composeGPU {
                             let fCol = (visibleTeffModelID == 2) ? max(diskColorFactorArg, 1.0) : 1.0
                             let tSpec = tEmit * fCol
                             let colorDilution = 1.0 / pow(fCol, 4.0)
+                            let usePackedVisibleAnchors =
+                                (diskPhysicsModeID == 3 &&
+                                 photosphereRhoThresholdResolved <= 0.0 &&
+                                 chunkEmitR[i] > 0.0 &&
+                                 chunkEmitPhi[i] > 0.0 &&
+                                 chunkEmitZ[i] > 0.0)
                             let nLam = max(8, visibleSamplesArg)
                             let lamMin = 380.0
                             let lamMax = 780.0
@@ -2748,32 +3049,90 @@ if composeGPU {
                             var Z = 0.0
                             var peakLamNm = lamMin
                             var peakIlam = 0.0
-                            for j in 0..<nLam {
-                                let lamNm = lamMin + dLamNm * Double(j)
-                                let lamM = lamNm * 1e-9
-                                let nuObs = cc / max(lamM, 1e-30)
-                                let nuEm = nuObs / max(g, 1e-8)
-                                let iNuEm = visibleINuEmit(nuEm, tSpec, visibleEmissionModelID, visibleSynchAlphaArg)
-                                let iNuObs = g3 * iNuEm
-                                let iLamObs = iNuObs * cc / max(lamM * lamM, 1e-30) * colorDilution
-                                let (xb, yb, zb) = cieXYZBar(lamNm)
-                                X += iLamObs * xb * dLamM
-                                Y += iLamObs * yb * dLamM
-                                Z += iLamObs * zb * dLamM
-                                if iLamObs > peakIlam {
-                                    peakIlam = iLamObs
-                                    peakLamNm = lamNm
-                                }
-                            }
 
-                            if scalarI > 1e-18 {
-                                let nuObsRef = max(diskNuObsHzArg, 1e6)
-                                let nuEmRef = nuObsRef / max(g, 1e-8)
-                                let iNuPred = g3 * visibleINuEmit(nuEmRef, tSpec, visibleEmissionModelID, visibleSynchAlphaArg) * colorDilution
-                                let amp = min(max(scalarI / max(iNuPred, 1e-38), 0.0), 1e12)
-                                X *= amp
-                                Y *= amp
-                                Z *= amp
+                            if usePackedVisibleAnchors {
+                                // GRMHD visible volumetric path already integrated three I_nu anchors
+                                // in Metal: {650nm, 550nm, 450nm}. Reconstruct a smooth spectrum here
+                                // instead of re-imposing a blackbody from T/g, which over-whitens output.
+                                let lamRnm = 650.0
+                                let lamGnm = 550.0
+                                let lamBnm = 450.0
+                                let lamRm = lamRnm * 1e-9
+                                let lamGm = lamGnm * 1e-9
+                                let lamBm = lamBnm * 1e-9
+
+                                let iNuR = max(chunkEmitR[i], 1e-38)
+                                let iNuG = max(chunkEmitPhi[i], 1e-38)
+                                let iNuB = max(chunkEmitZ[i], 1e-38)
+                                let iLamR = iNuR * cc / max(lamRm * lamRm, 1e-30)
+                                let iLamG = iNuG * cc / max(lamGm * lamGm, 1e-30)
+                                let iLamB = iNuB * cc / max(lamBm * lamBm, 1e-30)
+
+                                let xR = log(lamRnm)
+                                let xG = log(lamGnm)
+                                let xB = log(lamBnm)
+                                let yR = log(max(iLamR, 1e-38))
+                                let yG = log(max(iLamG, 1e-38))
+                                let yB = log(max(iLamB, 1e-38))
+                                let slopeBG = (yG - yB) / max(xG - xB, 1e-12)
+                                let slopeGR = (yR - yG) / max(xR - xG, 1e-12)
+
+                                for j in 0..<nLam {
+                                    let lamNm = lamMin + dLamNm * Double(j)
+                                    let xLam = log(max(lamNm, 1e-9))
+                                    let logILam: Double
+                                    if lamNm <= lamGnm {
+                                        logILam = yB + slopeBG * (xLam - xB)
+                                    } else {
+                                        logILam = yG + slopeGR * (xLam - xG)
+                                    }
+                                    let iLamObs = exp(min(max(logILam, -90.0), 90.0))
+                                    let (xb, yb, zb) = cieXYZBar(lamNm)
+                                    X += iLamObs * xb * dLamM
+                                    Y += iLamObs * yb * dLamM
+                                    Z += iLamObs * zb * dLamM
+                                    if iLamObs > peakIlam {
+                                        peakIlam = iLamObs
+                                        peakLamNm = lamNm
+                                    }
+                                }
+
+                                // Keep flux consistency with scalar payload, but avoid massive re-scaling.
+                                let iNuRef = 0.30 * iNuR + 0.40 * iNuG + 0.30 * iNuB
+                                if scalarI > 1e-18 {
+                                    let amp = min(max(scalarI / max(iNuRef, 1e-38), 0.1), 10.0)
+                                    X *= amp
+                                    Y *= amp
+                                    Z *= amp
+                                }
+                            } else {
+                                for j in 0..<nLam {
+                                    let lamNm = lamMin + dLamNm * Double(j)
+                                    let lamM = lamNm * 1e-9
+                                    let nuObs = cc / max(lamM, 1e-30)
+                                    let nuEm = nuObs / max(g, 1e-8)
+                                    let iNuEm = visibleINuEmit(nuEm, tSpec, visibleEmissionModelID, visibleSynchAlphaArg)
+                                    let iNuObs = g3 * iNuEm
+                                    let iLamObs = iNuObs * cc / max(lamM * lamM, 1e-30) * colorDilution
+                                    let (xb, yb, zb) = cieXYZBar(lamNm)
+                                    X += iLamObs * xb * dLamM
+                                    Y += iLamObs * yb * dLamM
+                                    Z += iLamObs * zb * dLamM
+                                    if iLamObs > peakIlam {
+                                        peakIlam = iLamObs
+                                        peakLamNm = lamNm
+                                    }
+                                }
+
+                                if scalarI > 1e-18 {
+                                    let nuObsRef = max(diskNuObsHzArg, 1e6)
+                                    let nuEmRef = nuObsRef / max(g, 1e-8)
+                                    let iNuPred = g3 * visibleINuEmit(nuEmRef, tSpec, visibleEmissionModelID, visibleSynchAlphaArg) * colorDilution
+                                    let amp = min(max(scalarI / max(iNuPred, 1e-38), 0.0), 1e12)
+                                    X *= amp
+                                    Y *= amp
+                                    Z *= amp
+                                }
                             }
 
                             if composeAnalysisMode == 17 {
@@ -2951,7 +3310,8 @@ if composeGPU {
         backgroundMode: backgroundModeID,
         backgroundStarDensity: backgroundStarDensityArg,
         backgroundStarStrength: backgroundStarStrengthArg,
-        backgroundNebulaStrength: backgroundNebulaStrengthArg
+        backgroundNebulaStrength: backgroundNebulaStrengthArg,
+        preserveHighlightColor: preserveHighlightColor
     )
     let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<Params>.stride, options: [])!
 
@@ -3258,7 +3618,7 @@ let meta = RenderMeta(
     backgroundStarDensity: Double(backgroundStarDensityArg),
     backgroundStarStrength: Double(backgroundStarStrengthArg),
     backgroundNebulaStrength: Double(backgroundNebulaStrengthArg),
-    collisionStride: MemoryLayout<CollisionInfo>.stride
+    collisionStride: traceStride
 )
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

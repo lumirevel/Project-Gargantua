@@ -159,6 +159,12 @@ def aces_tonemap(x: np.ndarray) -> np.ndarray:
     return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
 
 
+def hdr_tonemap(x: np.ndarray) -> np.ndarray:
+    a, b, c, d, e = 2.00, 0.020, 1.80, 0.240, 0.020
+    y = np.clip((x * (a * x + b)) / np.maximum(x * (c * x + d) + e, 1e-12), 0.0, 1.0)
+    return np.clip(np.power(y, 0.92), 0.0, 1.0)
+
+
 def apply_look(rgb: np.ndarray, look: str) -> np.ndarray:
     look = look.lower()
     if look == "interstellar":
@@ -186,6 +192,15 @@ def apply_look(rgb: np.ndarray, look: str) -> np.ndarray:
         y = out @ LUMA
         out = 0.75 * out + 0.25 * y[:, None]
         return np.clip(np.power(out, 1.05), 0.0, 1.0)
+
+    if look in {"hdr", "hdr-rich", "hdrrich"}:
+        y = rgb @ LUMA
+        sat_boost = 1.18 + 0.10 * np.clip((y - 0.05) / max(0.55 - 0.05, 1e-12), 0.0, 1.0) - 0.08 * np.clip((y - 0.82) / max(1.0 - 0.82, 1e-12), 0.0, 1.0)
+        out = (1.0 - sat_boost[:, None]) * y[:, None] + sat_boost[:, None] * rgb
+        out[:, 0] *= 1.03
+        out[:, 2] *= 0.98
+        out = np.clip(out, 0.0, 1.0)
+        return np.clip(np.power(out, 0.97), 0.0, 1.0)
 
     return np.clip(rgb, 0.0, 1.0)
 
@@ -478,6 +493,10 @@ def main():
             target_white = 0.9
         elif look.lower() == "eht":
             target_white = 0.6
+        elif look.lower() in {"agx", "filmic"}:
+            target_white = 1.25
+        elif look.lower() in {"hdr", "hdr-rich", "hdrrich"}:
+            target_white = 1.40
         exposure = target_white / max(p99, eps)
         print(f"lum p50={p50:.6g}, p99.5={p99:.6g}, exposureSamples={sample_hits}")
 
@@ -516,9 +535,21 @@ def main():
         rgb_lin = render_linear_rgb(T, v, d, noise, lam_m, x_bar, y_bar, z_bar, args.inner_edge_mult, metric, spectral_encoding)
         rgb_exp = rgb_lin * exposure
         lum = rgb_exp @ LUMA
-        lum_tm = aces_tonemap(lum)
+        if look.lower() in {"agx", "filmic"}:
+            lum_tm = np.clip(np.power(np.log2(1.0 + np.maximum(lum, 0.0)) / np.maximum(1.0 + np.log2(1.0 + np.maximum(lum, 0.0)), 1e-12), 2.0) * (3.0 - 2.0 * (np.log2(1.0 + np.maximum(lum, 0.0)) / np.maximum(1.0 + np.log2(1.0 + np.maximum(lum, 0.0)), 1e-12))), 0.0, 1.0)
+        elif look.lower() in {"hdr", "hdr-rich", "hdrrich"}:
+            lum_tm = hdr_tonemap(lum)
+        elif look.lower() in {"none", "linear"}:
+            lum_tm = np.clip(lum, 0.0, 1.0)
+        else:
+            lum_tm = aces_tonemap(lum)
         scale = lum_tm / np.maximum(lum, 1e-12)
         rgb_tm = rgb_exp * scale[:, None]
+        if look.lower() not in {"none", "linear"}:
+            shoulder = np.clip((lum_tm - 0.55) / max(1.0 - 0.55, 1e-12), 0.0, 1.0)
+            gray = rgb_tm @ LUMA
+            desat = 0.08 if look.lower() in {"hdr", "hdr-rich", "hdrrich"} else 0.24
+            rgb_tm = (1.0 - desat * shoulder)[:, None] * rgb_tm + (desat * shoulder)[:, None] * gray[:, None]
         rgb_tm = apply_look(rgb_tm, look)
         rgb_srgb = np.power(np.clip(rgb_tm, 0.0, 1.0), 1.0 / 2.2)
 

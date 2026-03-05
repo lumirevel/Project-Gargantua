@@ -483,7 +483,7 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --visible-mode --visible-samples --visible-emission-model --visible-synch-alpha --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
   - auto: precision alias with diskH-adaptive thin/thick defaults
@@ -496,6 +496,7 @@ Routing rules:
 - Precision physics requires GPU compose path (--pipeline gpu-only).
 - Atlas auto path: in non-precision mode, when --disk-model atlas is set and --disk-atlas is omitted, auto-search order is BH_DISK_ATLAS, ./disk_atlas.bin, /tmp/stage3_ab/disk_atlas.bin
 - Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+  - look options: balanced(default), interstellar, eht, agx/filmic, hdr
 - PLUTO shortcut: --disk-pluto (auto-discover .h5, fallback to auto sample) or --disk-pluto-path <snapshot.h5>
 - HDF5 auto bridge: --disk-hdf5 <snapshot.h5> [--disk-hdf5-out <atlas.bin>] [--disk-hdf5-r-to-rs <x>] [--disk-hdf5-kepler-gm <x>] [--disk-hdf5-theta-index <i>|--disk-hdf5-theta-average] [--disk-hdf5-density-log]
   - default atlas output is temporary and auto-cleaned; use --disk-hdf5-out to keep it
@@ -508,8 +509,10 @@ Routing rules:
   - precision mode with --disk-hdf5/--disk-pluto auto-builds temporary disk volume when --disk-volume is not provided
 - GRMHD volume bridge: --disk-mode grmhd --disk-hdf5 <snapshot.h5> [--disk-grmhd-nr <n>] [--disk-grmhd-nphi <n>] [--disk-grmhd-nz <n>] [--disk-grmhd-z-max <x>]
   - native 3D mapping control: --disk-grmhd-native-3d {auto|on|off}
-  - diagnostic map: --disk-grmhd-debug {off|rho|b2|jnu|inu|teff|g|y|peak}
-  - visible controls: --visible-mode {on|off} --visible-samples <N> --visible-emission-model {blackbody|synchrotron} --visible-synch-alpha <a> --teff-model {parametric|thin-disk|nt} --teff-T0 <K> --teff-r0 <rs> --teff-p <p> --bh-mass <kg> --mdot <kg/s> [--r-in <rs>|0(auto)] [--photosphere-rho-threshold <rho>]
+  - diagnostic map: --disk-grmhd-debug {off|rho|b2|jnu|inu|teff|g|y|peak|pol}
+  - polarized GRRT controls: --disk-polarized-rt {on|off} --disk-pol-frac <0..1> --disk-faraday-rot <x> --disk-faraday-conv <x>
+  - visible controls: --visible-mode {on|off} --visible-samples <N> --visible-emission-model {blackbody|synchrotron} --visible-synch-alpha <a> --visible-kappa <kappa> --teff-model {parametric|thin-disk|nt} --teff-T0 <K> --teff-r0 <rs> --teff-p <p> --bh-mass <kg> --mdot <kg/s> [--r-in <rs>|0(auto)] [--photosphere-rho-threshold <rho>]
+  - cool absorber controls (grmhd visible): --disk-cool-absorption {on|off} --disk-cool-dust-to-gas <0..0.2> --disk-cool-dust-kappa-v <cm2/g(dust)> --disk-cool-dust-beta <0..4> --disk-cool-dust-tsub <K> --disk-cool-dust-twidth <K> --disk-cool-gas-kappa0 <cm2/g> --disk-cool-gas-nu-slope <0..6> --disk-cool-clump-strength <0..2>
   - emits temporary vol0/vol1/meta and auto-wires --disk-vol0/--disk-vol1/--disk-meta to Swift
 - HDF5 sample generator (Fishbone-Moncrief torus IC): --disk-hdf5-sample [--disk-hdf5-sample-out <snapshot.h5>] [--disk-hdf5-sample-nr <n>] [--disk-hdf5-sample-nth <n>] [--disk-hdf5-sample-nphi <n>]
   - optional FM params: --disk-hdf5-sample-spin --disk-hdf5-sample-r-in --disk-hdf5-sample-r-max-pressure --disk-hdf5-sample-n-poly --disk-hdf5-sample-target-beta --disk-hdf5-sample-rho-cut-frac --disk-hdf5-sample-perturb --disk-hdf5-sample-seed --disk-hdf5-sample-sigma-max
@@ -1527,7 +1530,7 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
       exit 2
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--visible-emission-model|--visible-synch-alpha|--camera-model|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-kappa|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--camera-model|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -1606,9 +1609,9 @@ fi
 
 if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
   case "$DISK_GRMHD_DEBUG" in
-    off|none|rho|b2|j|jnu|i|inu|intensity|teff|t|g|gfactor|y|luma|luminance|peak|lambda_peak) ;;
+    off|none|rho|b2|j|jnu|i|inu|intensity|teff|t|g|gfactor|y|luma|luminance|peak|lambda_peak|pol|polarization|polfrac) ;;
     *)
-      echo "error: --disk-grmhd-debug must be one of off, rho, b2, jnu, inu, teff, g, y, peak" >&2
+      echo "error: --disk-grmhd-debug must be one of off, rho, b2, jnu, inu, teff, g, y, peak, pol" >&2
       exit 2
       ;;
   esac
@@ -1620,6 +1623,7 @@ if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
     gfactor) DISK_GRMHD_DEBUG="g" ;;
     luma|luminance) DISK_GRMHD_DEBUG="y" ;;
     lambda_peak) DISK_GRMHD_DEBUG="peak" ;;
+    polarization|polfrac) DISK_GRMHD_DEBUG="pol" ;;
   esac
 fi
 
