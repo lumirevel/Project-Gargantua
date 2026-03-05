@@ -1,0 +1,144 @@
+{
+  "cases": [
+    {
+      "args": [
+        "--no-build",
+        "--pipeline",
+        "gpu-only",
+        "--width",
+        "256",
+        "--height",
+        "256",
+        "--ssaa",
+        "1",
+        "--disk-mode",
+        "thin",
+        "--disk-model",
+        "perlin",
+        "--look",
+        "balanced",
+        "--dither",
+        "0"
+      ],
+      "deterministic": true,
+      "golden": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/golden/fast_gpu_det.png",
+      "name": "fast_gpu_det",
+      "output_ext": "png",
+      "run1": {
+        "sha256": "ff86211be3272df9d201342d9caaa595cffd48f3cbda8a876e01072c12d2f7b0",
+        "size_bytes": 7647,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/fast_gpu_det.run1.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/fast_gpu_det.run1.stdout.log",
+        "wall_sec": 1.2521194579999992
+      },
+      "run2": {
+        "sha256": "ff86211be3272df9d201342d9caaa595cffd48f3cbda8a876e01072c12d2f7b0",
+        "size_bytes": 7647,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/fast_gpu_det.run2.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/fast_gpu_det.run2.stdout.log",
+        "wall_sec": 1.229355708
+      }
+    },
+    {
+      "args": [
+        "--no-build",
+        "--pipeline",
+        "gpu-only",
+        "--width",
+        "1200",
+        "--height",
+        "1200",
+        "--ssaa",
+        "1",
+        "--disk-mode",
+        "thin",
+        "--disk-model",
+        "perlin",
+        "--look",
+        "balanced",
+        "--dither",
+        "0"
+      ],
+      "deterministic": true,
+      "golden": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/golden/medium_gpu_perf.png",
+      "name": "medium_gpu_perf",
+      "output_ext": "png",
+      "perf_anchor": {
+        "max_allowed_factor": 1.03,
+        "mean_sec": 9.651881924799998,
+        "measured_runs": 5,
+        "std_sec": 0.0879702070160523,
+        "times_sec": [
+          9.746817249999992,
+          9.754637040999995,
+          9.585901415999999,
+          9.530821541999998,
+          9.641232375000001
+        ],
+        "warmup_runs": 1
+      },
+      "run1": {
+        "sha256": "79f5ea7eb2d26bdbdda114e8b96fe72bbbd04d7729cc3322059a71e6384d141b",
+        "size_bytes": 128107,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run1.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run1.stdout.log",
+        "wall_sec": 9.725189958999998
+      },
+      "run2": {
+        "sha256": "79f5ea7eb2d26bdbdda114e8b96fe72bbbd04d7729cc3322059a71e6384d141b",
+        "size_bytes": 128107,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run2.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run2.stdout.log",
+        "wall_sec": 9.742827792
+      }
+    },
+    {
+      "args": [
+        "--no-build",
+        "--pipeline",
+        "gpu-only",
+        "--width",
+        "320",
+        "--height",
+        "320",
+        "--ssaa",
+        "1",
+        "--disk-mode",
+        "grmhd",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed",
+        "42",
+        "--visible-mode",
+        "on"
+      ],
+      "deterministic": true,
+      "golden": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/golden/visible_gpu.png",
+      "name": "visible_gpu",
+      "output_ext": "png",
+      "run1": {
+        "sha256": "9d2f692d58ad5ac1c2b8a66cbbc42e7eb42e8fc4f9dcab5ea56a3dc5480522bf",
+        "size_bytes": 47530,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run1.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run1.stdout.log",
+        "wall_sec": 12.121568124999996
+      },
+      "run2": {
+        "sha256": "9d2f692d58ad5ac1c2b8a66cbbc42e7eb42e8fc4f9dcab5ea56a3dc5480522bf",
+        "size_bytes": 47530,
+        "stderr": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run2.stderr.log",
+        "stdout": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run2.stdout.log",
+        "wall_sec": 4.587353292000003
+      }
+    }
+  ],
+  "created_at": "2026-03-06T00:14:54",
+  "manifest": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/manifest.json",
+  "repo_root": "/Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole",
+  "thresholds": {
+    "nondeterministic": {
+      "max_abs_diff": 2,
+      "max_size_delta_ratio": 0.01,
+      "min_psnr_db": 60
+    }
+  }
+}

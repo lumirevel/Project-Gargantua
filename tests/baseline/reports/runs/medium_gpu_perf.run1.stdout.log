@@ -1,0 +1,25 @@
+
+== Pipeline ==
+  metric           schwarzschild
+  pipeline_mode    gpu-only
+  gpu_strategy     in-memory
+  collisions_mode  auto
+  collisions_policy temp
+  compose          gpu
+  ssaa             1
+  output_size      1200x1200
+  render_size      1200x1200
+  tile_size        full-frame
+  eta_output       errors
+  eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
+  collisions_out   /tmp/blackhole_discard.LKR69W (temporary)
+  image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run1.png
+
+== Build ==
+  status           skipped (--no-build)
+
+== Stage 1/1 - Swift ==
+
+== Outputs ==
+  image            /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.run1.png
+  cleanup          temporary collisions removed

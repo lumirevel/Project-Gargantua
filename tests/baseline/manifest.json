@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "notes": "Phase 0 baseline manifest for Swift+Metal refactor parity checks",
+  "cases": [
+    {
+      "name": "fast_gpu_det",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "thin",
+        "--disk-model", "perlin",
+        "--look", "balanced",
+        "--dither", "0"
+      ]
+    },
+    {
+      "name": "medium_gpu_perf",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "1200",
+        "--height", "1200",
+        "--ssaa", "1",
+        "--disk-mode", "thin",
+        "--disk-model", "perlin",
+        "--look", "balanced",
+        "--dither", "0"
+      ],
+      "perf_anchor": true,
+      "perf_warmup_runs": 1,
+      "perf_measured_runs": 5,
+      "perf_regression_factor": 1.03
+    },
+    {
+      "name": "visible_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "320",
+        "--height", "320",
+        "--ssaa", "1",
+        "--disk-mode", "grmhd",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed", "42",
+        "--visible-mode", "on"
+      ]
+    }
+  ],
+  "thresholds": {
+    "nondeterministic": {
+      "max_abs_diff": 2,
+      "min_psnr_db": 60,
+      "max_size_delta_ratio": 0.01
+    }
+  }
+}

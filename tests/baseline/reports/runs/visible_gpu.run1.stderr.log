@@ -1,0 +1,5 @@
+[eta] mode=runtime-linear prior=00.5s
+[eta-phase] group=trace done 1/1 (tiles) elapsed=00.1s task=trace tile=1/1
+[eta-phase] group=light done 1/1 (tiles) elapsed=00.0s task=linear lumhist tile=1/1
+[eta-phase] group=compose done 1/1 (tiles) elapsed=00.3s task=compose linear tile=1/1
+[eta] done elapsed 07.7s pred 07.8s err  0.1% task=compose linear tile=1/1
