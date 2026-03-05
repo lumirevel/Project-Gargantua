@@ -2,6 +2,10 @@ import Foundation
 
 struct LogicalParams {
     var rawArguments: [String]
+    var runRegression: Bool
+    var printPackedLayout: Bool
+    var dumpPackedParamsPath: String
+
     var camera = CameraParams()
     var disk = DiskParams()
     var volume = VolumeParams()

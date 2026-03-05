@@ -1,9 +1,20 @@
 import Foundation
 
+struct BuiltParams {
+    var rawArguments: [String]
+    var runRegression: Bool
+    var printPackedLayout: Bool
+    var dumpPackedParamsPath: String
+}
+
 enum ParamsBuilder {
     @inline(__always)
-    static func build(from logical: LogicalParams) -> LogicalParams {
-        // Phase 1 keeps runtime behavior in AppMain and uses this as a stable seam for future extraction.
-        logical
+    static func build(from logical: LogicalParams) -> BuiltParams {
+        BuiltParams(
+            rawArguments: logical.rawArguments,
+            runRegression: logical.runRegression,
+            printPackedLayout: logical.printPackedLayout,
+            dumpPackedParamsPath: logical.dumpPackedParamsPath
+        )
     }
 }
