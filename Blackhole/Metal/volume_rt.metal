@@ -989,9 +989,17 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
                                            constant Params& P,
                                            thread CollisionInfo& info)
 {
+    bool expressiveVisible = (grmhd_visible_mode_enabled() && P.visiblePad0 != 0u);
     bool grmhdVisibleSurfaceHit = (grmhd_visible_mode_enabled() && volumeA.surfaceHit != 0u);
+    bool grmhdVisibleExpressiveFallback =
+        (FC_PHYSICS_MODE == 3u &&
+         expressiveVisible &&
+         volumeA.maxRho > 0.0 &&
+         volumeA.maxB2 > 0.0);
     if (!(volumeMode &&
-          (grmhdVisibleSurfaceHit || ((FC_PHYSICS_MODE == 3u) && volumeA.I > 0.0) || ((FC_PHYSICS_MODE != 3u) && volumeA.w > 0.0)))) {
+          (grmhdVisibleSurfaceHit ||
+           ((FC_PHYSICS_MODE == 3u) && (volumeA.I > 0.0 || grmhdVisibleExpressiveFallback)) ||
+           ((FC_PHYSICS_MODE != 3u) && volumeA.w > 0.0)))) {
         return false;
     }
 
@@ -1012,12 +1020,30 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
     }
 
     float scalarI = (FC_PHYSICS_MODE == 3u) ? max(volumeA.I, 0.0) : clamp(volAmp, 0.0, 1.0);
+    if (FC_PHYSICS_MODE == 3u && expressiveVisible && !(scalarI > 0.0)) {
+        float rhoRef = max(volumeA.maxRho, 1e-20);
+        float b2Ref = max(volumeA.maxB2, 1e-20);
+        float emissScale = max(P.diskGrmhdEmissionScale, 1e-6);
+        // Expressive fallback proxy: keep strictly positive signal when
+        // physically-mapped visible emissivity underflows to zero.
+        scalarI = max(
+            scalarI,
+            5.0e-18 * emissScale
+            * (pow(rhoRef, 0.70) + 0.35 * pow(b2Ref, 0.35))
+        );
+    }
     float brightnessT = pow(max(volumeA.temp4 * invW, 1e-20), 0.25);
     if (grmhdVisibleSurfaceHit) {
         brightnessT = max(pow(max(volumeA.temp4, 1e-20), 0.25), 1.0);
     } else if (FC_PHYSICS_MODE == 3u && (!haveWeightedMoments || !(volumeA.temp4 > 0.0))) {
         float nu = max(P.diskNuObsHz, 1e6);
         brightnessT = max((scalarI * P.c * P.c) / max(2.0 * P.k * nu * nu, 1e-30), 1.0);
+        if (expressiveVisible) {
+            float rhoRef = max(volumeA.maxRho, 1e-20);
+            float b2Ref = max(volumeA.maxB2, 1e-20);
+            float teProxy = 4800.0 * pow(rhoRef, 0.16) * pow(b2Ref, 0.08);
+            brightnessT = max(brightnessT, clamp(teProxy, 2500.0, 24000.0));
+        }
     }
 
     float gMean = haveWeightedMoments ? (volumeA.g * invW) : 1.0;

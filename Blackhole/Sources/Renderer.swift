@@ -1099,7 +1099,7 @@ enum Renderer {
             "grmhd config vol0=\(diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved), vol1=\(diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved), nuObsHz=\(diskNuObsHzArg), rhoScale=\(diskGrmhdDensityScaleArg), bScale=\(diskGrmhdBScaleArg), jScale=\(diskGrmhdEmissionScaleArg), alphaScale=\(diskGrmhdAbsorptionScaleArg), velScale=\(diskGrmhdVelScaleArg), polarized=\(diskPolarizedRTEnabled), polFrac=\(diskPolarizationFracArg), faradayRot=\(diskFaradayRotScaleArg), faradayConv=\(diskFaradayConvScaleArg), debug=\(diskGrmhdDebugName)"
         )
         print(
-            "visible config enabled=\(visibleModeEnabled), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
+            "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
         )
     }
 
@@ -1227,7 +1227,7 @@ var params = PackedParams(
         visibleMode: (diskPhysicsModeID == 3 && visibleModeEnabled) ? 1 : 0,
         visibleSamples: UInt32(visibleSamplesArg),
         visibleTeffModel: visibleTeffModelID,
-        visiblePad0: 0,
+        visiblePad0: (diskPhysicsModeID == 3 && visibleModeEnabled && visibleExpressiveMode) ? 1 : 0,
         visibleTeffT0: Float(visibleTeffT0Arg),
         visibleTeffR0: Float(visibleTeffR0Meters),
         visibleTeffP: Float(visibleTeffPArg),
