@@ -18,7 +18,7 @@ This document defines behavior-preserving refactor gates for the Swift + Metal r
 
 ### Capture Baseline
 ```bash
-python3 scripts/baseline_capture.py
+python3 Blackhole/scripts/baseline_capture.py
 ```
 
 Artifacts generated:
@@ -28,7 +28,7 @@ Artifacts generated:
 
 ### Verify Current Build Against Baseline
 ```bash
-python3 scripts/baseline_verify.py --json-out tests/baseline/reports/verify_report.json
+python3 Blackhole/scripts/baseline_verify.py --json-out tests/baseline/reports/verify_report.json
 ```
 
 Pass rules:

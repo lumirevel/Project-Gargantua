@@ -501,7 +501,7 @@ def main() -> None:
     parser.add_argument("--binary-arch", choices=["auto", "none", "arm64", "x86_64"], default="auto")
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     out_dir = Path(args.out_dir).resolve()
     if args.clean_out and out_dir.exists():
         shutil.rmtree(out_dir)
@@ -517,7 +517,7 @@ def main() -> None:
     if not run_pipeline.exists():
         raise FileNotFoundError(f"run_pipeline not found: {run_pipeline}")
 
-    trace_script = root / "scripts" / "trace_ray_compare.py"
+    trace_script = root / "Blackhole" / "scripts" / "trace_ray_compare.py"
     if not trace_script.exists():
         raise FileNotFoundError(f"trace script not found: {trace_script}")
 

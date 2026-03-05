@@ -85,12 +85,12 @@ def main() -> None:
     ap.add_argument("--json-out", default="")
     args = ap.parse_args()
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     manifest_path = (root / args.manifest).resolve()
     baseline_report_path = (root / args.baseline_report).resolve()
     work_dir = (root / args.work_dir).resolve()
     run_script = (root / "run_pipeline.sh").resolve()
-    compare_script = (root / "scripts" / "compare_images.py").resolve()
+    compare_script = (root / "Blackhole" / "scripts" / "compare_images.py").resolve()
 
     manifest = _load_json(manifest_path)
     baseline = _load_json(baseline_report_path)

@@ -159,9 +159,9 @@ def build_pipeline_cmd(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Automated stage-3 A/B quality report (no-atlas vs atlas)")
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     parser.add_argument("--out-dir", default="/tmp/stage3_ab", help="output directory")
-    parser.add_argument("--run-pipeline", default=str(root / "Blackhole" / "run_pipeline.sh"))
+    parser.add_argument("--run-pipeline", default=str(root / "run_pipeline.sh"))
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=640)
     parser.add_argument("--ssaa", type=int, default=1)
@@ -201,8 +201,8 @@ def main() -> None:
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     run_pipeline = Path(args.run_pipeline).expanduser().resolve()
-    export_bridge = root / "scripts" / "export_stage3_bridge.py"
-    build_atlas = root / "scripts" / "build_disk_atlas.py"
+    export_bridge = root / "Blackhole" / "scripts" / "export_stage3_bridge.py"
+    build_atlas = root / "Blackhole" / "scripts" / "build_disk_atlas.py"
 
     baseline_ppm = out_dir / "baseline_no_atlas.ppm"
     baseline_bin = out_dir / "baseline_no_atlas.bin"

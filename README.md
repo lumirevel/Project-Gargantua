@@ -7,9 +7,9 @@
 - `Blackhole/run_pipeline.sh`: main pipeline script (build + render + postprocess)
 - `Blackhole/render_collisions.py`: Python postprocess (HDR + tone map + PNG/PPM)
 - `run_pipeline.sh`: root wrapper that calls `Blackhole/run_pipeline.sh`
-- `scripts/trace_ray_compare.py`: single-ray Schwarzschild vs Kerr trajectory comparison
-- `scripts/select_lensed_pixels.py`: Schwarzschild collisions에서 상/하 대표 픽셀 자동 선택
-- `scripts/analyze_kerr_gap.py`: 렌더/픽셀선정/레이추적/그래프/리포트 일괄 진단
+- `Blackhole/scripts/trace_ray_compare.py`: single-ray Schwarzschild vs Kerr trajectory comparison
+- `Blackhole/scripts/select_lensed_pixels.py`: Schwarzschild collisions에서 상/하 대표 픽셀 자동 선택
+- `Blackhole/scripts/analyze_kerr_gap.py`: 렌더/픽셀선정/레이추적/그래프/리포트 일괄 진단
 
 ## One-Command Render
 
@@ -73,7 +73,7 @@ Stage-3 bridge note:
 ## Single-Ray Comparison
 
 ```bash
-python3 scripts/trace_ray_compare.py --preset interstellar --spin 0 --pixel-x 760 --pixel-y 640 --csv /tmp/ray_compare.csv
+python3 Blackhole/scripts/trace_ray_compare.py --preset interstellar --spin 0 --pixel-x 760 --pixel-y 640 --csv /tmp/ray_compare.csv
 ```
 
 This prints per-ray hit/step stats and writes:
@@ -84,7 +84,7 @@ This prints per-ray hit/step stats and writes:
 ## Kerr Gap Diagnosis
 
 ```bash
-python3 scripts/analyze_kerr_gap.py --out-dir /tmp/kerr_diagnosis
+python3 Blackhole/scripts/analyze_kerr_gap.py --out-dir /tmp/kerr_diagnosis
 ```
 
 Generated outputs:
@@ -98,12 +98,12 @@ Generated outputs:
 ## Stage-3 Bridge Export
 
 ```bash
-python3 scripts/export_stage3_bridge.py --input collisions.bin --meta collisions.bin.json --output collisions.stage3.npz
+python3 Blackhole/scripts/export_stage3_bridge.py --input collisions.bin --meta collisions.bin.json --output collisions.stage3.npz
 ```
 
 Optional CSV:
 ```bash
-python3 scripts/export_stage3_bridge.py --input collisions.bin --csv collisions.stage3.csv
+python3 Blackhole/scripts/export_stage3_bridge.py --input collisions.bin --csv collisions.stage3.csv
 ```
 
 ## Stage-3 Disk Atlas (Accuracy Mode)
@@ -120,13 +120,13 @@ Disk model selector:
 
 Build atlas from bridge samples:
 ```bash
-python3 scripts/build_disk_atlas.py --input collisions.stage3.npz --output disk_atlas.bin --width 1024 --height 512 --r-max 9.0 --r-warp 0.65 --density-source density
+python3 Blackhole/scripts/build_disk_atlas.py --input collisions.stage3.npz --output disk_atlas.bin --width 1024 --height 512 --r-max 9.0 --r-warp 0.65 --density-source density
 ```
 
 Build atlas directly from an offline GRMHD snapshot (stage-1 bridge):
 ```bash
 python3 -m pip install h5py
-python3 scripts/build_grmhd_atlas.py --input snapshot.h5 --output disk_atlas.bin --width 1024 --height 512 --r-min 1.0 --r-max 9.0 --r-warp 0.65 --density-log
+python3 Blackhole/scripts/build_grmhd_atlas.py --input snapshot.h5 --output disk_atlas.bin --width 1024 --height 512 --r-min 1.0 --r-max 9.0 --r-warp 0.65 --density-log
 ```
 
 Run in one command from HDF5 (pipeline auto-bridge):
@@ -163,7 +163,7 @@ Stage-3 direct flow bridge (precision path, atlas bypass):
 
 Direct GRMHD scalar-RT volumes (vol0/vol1):
 ```bash
-python3 scripts/build_grmhd_volumes.py --input snapshot.h5 --vol0 grmhd_vol0.bin --vol1 grmhd_vol1.bin --meta grmhd_meta.json
+python3 Blackhole/scripts/build_grmhd_volumes.py --input snapshot.h5 --vol0 grmhd_vol0.bin --vol1 grmhd_vol1.bin --meta grmhd_meta.json
 ./run_pipeline.sh --pipeline gpu-only --disk-mode grmhd --disk-vol0 grmhd_vol0.bin --disk-vol1 grmhd_vol1.bin --disk-meta grmhd_meta.json --output blackhole_grmhd_rt.png
 ```
 
@@ -192,7 +192,7 @@ For seeded initial-condition perturbation on HDF5 (phenomenological reproducible
 
 ## Fishbone-Moncrief IC (Kerr-Schild)
 
-`scripts/build_sample_hdf5.py`는 Kerr-Schild 좌표계에서 Fishbone-Moncrief 평형 토러스를 생성합니다.
+`Blackhole/scripts/build_sample_hdf5.py`는 Kerr-Schild 좌표계에서 Fishbone-Moncrief 평형 토러스를 생성합니다.
 
 핵심 식:
 
@@ -346,7 +346,7 @@ Radial mapping:
 Run no-atlas baseline vs atlas in one command and generate quality report:
 
 ```bash
-python3 scripts/compare_stage3_ab.py --out-dir /tmp/stage3_ab --no-build --width 640 --height 640 --preset interstellar --metric kerr --spin 0.92 --atlas-r-warp 0.65
+python3 Blackhole/scripts/compare_stage3_ab.py --out-dir /tmp/stage3_ab --no-build --width 640 --height 640 --preset interstellar --metric kerr --spin 0.92 --atlas-r-warp 0.65
 ```
 
 Pipeline shortcut (recommended):

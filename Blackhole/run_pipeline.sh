@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR/Blackhole/scripts"
 PROJECT_PATH="$ROOT_DIR/Blackhole.xcodeproj"
 SCHEME="Blackhole"
 CONFIGURATION="Release"
@@ -131,7 +132,7 @@ PY_ARGS=()
 PY_MODE=0
 LOOK_SET=0
 PRESET_VALUE=""
-ETA_SCRIPT="$ROOT_DIR/scripts/pipeline_eta.py"
+ETA_SCRIPT="$SCRIPT_DIR/pipeline_eta.py"
 ETA_HISTORY_OLD="$ROOT_DIR/.pipeline_eta_history.json"
 ETA_HISTORY="${BH_ETA_HISTORY:-$ROOT_DIR/pipeline_eta_history.json}"
 ETA_RELAY="${BH_ETA_RELAY:-errors}"
@@ -379,7 +380,7 @@ ensure_h5py_python() {
 apply_hdf5_ic_perturb() {
   local input_path="$1"
   local output_path="$2"
-  local script_path="$ROOT_DIR/scripts/perturb_hdf5_initial_conditions.py"
+  local script_path="$SCRIPT_DIR/perturb_hdf5_initial_conditions.py"
 
   if [[ ! -f "$script_path" ]]; then
     echo "error: HDF5 IC perturb script not found: $script_path" >&2
@@ -559,7 +560,7 @@ Output controls:
 
 Special mode:
 - stage3-ab (or --stage3-ab): run stage-3 A/B automation in one shot
-  - forwards remaining args to scripts/compare_stage3_ab.py
+  - forwards remaining args to Blackhole/scripts/compare_stage3_ab.py
   - example: ./run_pipeline.sh stage3-ab --no-build --width 640 --height 640 --preset interstellar --metric kerr --spin 0.92 --atlas-r-warp 0.65
 
 Example:
@@ -579,7 +580,7 @@ if [[ "$#" -gt 0 ]]; then
 fi
 
 if [[ "$STAGE3_AB_MODE" -eq 1 ]]; then
-  COMPARE_STAGE3_SCRIPT="$ROOT_DIR/scripts/compare_stage3_ab.py"
+  COMPARE_STAGE3_SCRIPT="$SCRIPT_DIR/compare_stage3_ab.py"
   if [[ ! -f "$COMPARE_STAGE3_SCRIPT" ]]; then
     echo "error: stage3-ab helper script not found: $COMPARE_STAGE3_SCRIPT" >&2
     exit 2
@@ -1834,7 +1835,7 @@ if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
     exit 2
   fi
   ensure_h5py_python
-  HDF5_SAMPLE_SCRIPT="$ROOT_DIR/scripts/build_sample_hdf5.py"
+  HDF5_SAMPLE_SCRIPT="$SCRIPT_DIR/build_sample_hdf5.py"
   if [[ ! -f "$HDF5_SAMPLE_SCRIPT" ]]; then
     echo "error: HDF5 sample script not found: $HDF5_SAMPLE_SCRIPT" >&2
     exit 2
@@ -1897,7 +1898,7 @@ if [[ "$DISK_PLUTO_MODE" -eq 1 ]]; then
   fi
   if [[ -z "$DISK_HDF5_PATH" || ! -f "$DISK_HDF5_PATH" ]]; then
     ensure_h5py_python
-    HDF5_SAMPLE_SCRIPT="$ROOT_DIR/scripts/build_sample_hdf5.py"
+    HDF5_SAMPLE_SCRIPT="$SCRIPT_DIR/build_sample_hdf5.py"
     if [[ ! -f "$HDF5_SAMPLE_SCRIPT" ]]; then
       echo "error: failed to resolve PLUTO HDF5 snapshot, and sample script is missing: $HDF5_SAMPLE_SCRIPT" >&2
       echo "hint: pass --disk-pluto-path <snapshot.h5> or set BH_PLUTO_HDF5." >&2
@@ -2025,7 +2026,7 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
   fi
 
   if [[ "$is_grmhd_mode" -eq 1 ]]; then
-    GRMHD_VOLUME_SCRIPT="$ROOT_DIR/scripts/build_grmhd_volumes.py"
+    GRMHD_VOLUME_SCRIPT="$SCRIPT_DIR/build_grmhd_volumes.py"
     if [[ ! -f "$GRMHD_VOLUME_SCRIPT" ]]; then
       echo "error: GRMHD volume script not found: $GRMHD_VOLUME_SCRIPT" >&2
       exit 2
@@ -2109,7 +2110,7 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
       exit 2
     fi
   else
-    HDF5_VOLUME_SCRIPT="$ROOT_DIR/scripts/build_hdf5_volume.py"
+    HDF5_VOLUME_SCRIPT="$SCRIPT_DIR/build_hdf5_volume.py"
     if [[ ! -f "$HDF5_VOLUME_SCRIPT" ]]; then
       echo "error: HDF5 volume script not found: $HDF5_VOLUME_SCRIPT" >&2
       exit 2
@@ -2216,7 +2217,7 @@ if [[ "$USE_HDF5_FLOW_BRIDGE" -eq 1 ]]; then
       ;;
   esac
 
-  HDF5_FLOW_SCRIPT="$ROOT_DIR/scripts/build_hdf5_flow_profile.py"
+  HDF5_FLOW_SCRIPT="$SCRIPT_DIR/build_hdf5_flow_profile.py"
   if [[ ! -f "$HDF5_FLOW_SCRIPT" ]]; then
     echo "error: HDF5 flow profile script not found: $HDF5_FLOW_SCRIPT" >&2
     exit 2
@@ -2341,7 +2342,7 @@ PY
 fi
 
 if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" -eq 0 ]]; then
-  HDF5_BUILD_SCRIPT="$ROOT_DIR/scripts/build_grmhd_atlas.py"
+  HDF5_BUILD_SCRIPT="$SCRIPT_DIR/build_grmhd_atlas.py"
   if [[ ! -f "$HDF5_BUILD_SCRIPT" ]]; then
     echo "error: HDF5 bridge script not found: $HDF5_BUILD_SCRIPT" >&2
     exit 2
@@ -2944,7 +2945,7 @@ if [[ "$COMPOSE_BACKEND" == "gpu" && ! -f "$IMAGE_OUT" ]]; then
 fi
 
 if [[ -n "$VERIFY_REF" ]]; then
-  VERIFY_SCRIPT="$ROOT_DIR/scripts/compare_images.py"
+  VERIFY_SCRIPT="$SCRIPT_DIR/compare_images.py"
   if [[ ! -f "$VERIFY_SCRIPT" ]]; then
     echo "error: verify script not found: $VERIFY_SCRIPT" >&2
     exit 2
@@ -2977,7 +2978,7 @@ if [[ -n "$VERIFY_REF" ]]; then
 fi
 
 if [[ -n "$STOKES_OUT" ]]; then
-  STOKES_SCRIPT="$ROOT_DIR/scripts/compute_stokes_from_collisions.py"
+  STOKES_SCRIPT="$SCRIPT_DIR/compute_stokes_from_collisions.py"
   if [[ ! -f "$STOKES_SCRIPT" ]]; then
     echo "error: stokes script not found: $STOKES_SCRIPT" >&2
     exit 2

@@ -20,7 +20,7 @@ struct RegressionRunner {
         let oneCase = parseValue(after: "--regression-case", in: args, default: "all")
 
         let repoRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let verifyScript = repoRoot.appendingPathComponent("scripts/baseline_verify.py").path
+        let verifyScript = repoRoot.appendingPathComponent("Blackhole/scripts/baseline_verify.py").path
         let jsonOut = URL(fileURLWithPath: outDir).appendingPathComponent("verify_report.json").path
         try FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 

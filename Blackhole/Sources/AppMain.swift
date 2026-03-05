@@ -2692,7 +2692,7 @@ if !dumpPackedParamsPath.isEmpty {
             } else {
                 let tmpPPM = imageOutPath + ".tmp.ppm"
                 try writePPM(path: tmpPPM, width: outWidth, height: outHeight, rgb: rgb)
-                let pyConverter = FileManager.default.currentDirectoryPath + "/scripts/ppm_to_png.py"
+                let pyConverter = FileManager.default.currentDirectoryPath + "/Blackhole/scripts/ppm_to_png.py"
                 var rc: Int32 = -1
                 if FileManager.default.fileExists(atPath: pyConverter) {
                     rc = runProcess("/usr/bin/python3", [pyConverter, "--input", tmpPPM, "--output", imageOutPath])
@@ -2848,7 +2848,7 @@ if !dumpPackedParamsPath.isEmpty {
         } else {
             let tmpPPM = imageOutPath + ".tmp.ppm"
             try writePPM(path: tmpPPM, width: outWidth, height: outHeight, rgb: rgb)
-            let pyConverter = FileManager.default.currentDirectoryPath + "/scripts/ppm_to_png.py"
+            let pyConverter = FileManager.default.currentDirectoryPath + "/Blackhole/scripts/ppm_to_png.py"
             var rc: Int32 = -1
             if FileManager.default.fileExists(atPath: pyConverter) {
                 rc = runProcess("/usr/bin/python3", [pyConverter, "--input", tmpPPM, "--output", imageOutPath])
@@ -3502,7 +3502,7 @@ if !dumpPackedParamsPath.isEmpty {
         } else {
             let tmpPPM = imageOutPath + ".tmp.ppm"
             try writePPM(path: tmpPPM, width: outWidth, height: outHeight, rgb: rgb)
-            let pyConverter = FileManager.default.currentDirectoryPath + "/scripts/ppm_to_png.py"
+            let pyConverter = FileManager.default.currentDirectoryPath + "/Blackhole/scripts/ppm_to_png.py"
             var rc: Int32 = -1
             if FileManager.default.fileExists(atPath: pyConverter) {
                 rc = runProcess("/usr/bin/python3", [pyConverter, "--input", tmpPPM, "--output", imageOutPath])

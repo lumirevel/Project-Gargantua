@@ -151,13 +151,13 @@ def main() -> None:
     ap.add_argument("--skip-build-probe", action="store_true")
     args = ap.parse_args()
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     manifest_path = (root / args.manifest).resolve()
     report_path = (root / args.report).resolve()
     golden_dir = (root / args.golden_dir).resolve()
     work_dir = (root / args.work_dir).resolve()
     run_script = (root / "run_pipeline.sh").resolve()
-    compare_script = (root / "scripts" / "compare_images.py").resolve()
+    compare_script = (root / "Blackhole" / "scripts" / "compare_images.py").resolve()
 
     manifest = _load_json(manifest_path)
     cases: list[dict[str, Any]] = manifest.get("cases", [])
