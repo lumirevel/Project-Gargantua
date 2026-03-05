@@ -106,6 +106,37 @@ static inline float disk_nt_flux_correction(float rM, float rMsM, float a) {
     return clamp(corr, 0.0, 8.0);
 }
 
+static inline float thin_teff(float r_norm, constant Params& P) {
+    const float sigmaSB = 5.670374419e-8;
+    const float kappaEs = 0.04;
+
+    float rr = max(r_norm, 1.0 + 1e-6);
+    float rsSafe = max(P.rs, 1e-6);
+    float rInNorm = max(disk_inner_radius_m(P) / rsSafe, 1.0 + 1e-6);
+    if (!(rr > rInNorm)) return 0.0;
+
+    float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
+    float mdotNorm = max(P.diskMdotEdd, 1e-5);
+    float pref = (3.0 / 8.0) * (mdotNorm / eta) * (P.c * P.c * P.c) / max(kappaEs * rsSafe, 1e-20);
+    float boundary = max(1.0 - sqrt(rInNorm / rr), 0.0);
+    float flux = pref * pow(rr, -3.0) * boundary;
+
+    float massLen = max(0.5 * rsSafe, 1e-12);
+    float rM = rr * rsSafe / massLen;
+    float rMsM = rInNorm * rsSafe / massLen;
+    float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+    float rel = disk_nt_flux_correction(rM, rMsM, a);
+    if (rel > 0.0) flux *= rel;
+
+    float t4 = flux / sigmaSB;
+    if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
+    return max(pow(t4, 0.25), 1.0);
+}
+
+static inline float thin_tcol(float r_norm, constant Params& P) {
+    return max(P.diskColorFactor, 1.0) * thin_teff(r_norm, P);
+}
+
 static inline float disk_effective_temperature(float rEmitM, float rInnerM, constant Params& P) {
     const float sigmaSB = 5.670374419e-8;
     const float kappaEs = 0.04;
@@ -121,6 +152,11 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
         float boundary = max(1.0 - sqrt(rrIn / rr), 0.0);
         float flux = pref * pow(rr, -3.0) * boundary;
         if (FC_PHYSICS_MODE == 2u) {
+            // Thin NT profile opt-in path (keeps legacy precision behavior when
+            // precision texture is enabled).
+            if (!(P.diskPrecisionTexture > 1e-6)) {
+                return thin_tcol(rr, P);
+            }
             float massLen = 0.5 * rsSafe;
             float rM = rEmitM / max(massLen, 1e-12);
             float rMsM = rInnerM / max(massLen, 1e-12);

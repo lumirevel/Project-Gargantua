@@ -467,6 +467,7 @@ enum Renderer {
         diskPhysicsModeID = profile.id
         diskPhysicsModeArg = profile.canonical
     }
+    let diskPhysicsThinProfile = (!diskPhysicsProfileRaw.isEmpty && diskPhysicsModeArg == "thin")
     let diskMdotEddArg = max(1e-5, doubleArgAny(["--mdot-edd", "--disk-mdot-edd"], default: 0.1))
     let diskRadiativeEfficiencyArg = min(max(doubleArgAny(["--eta", "--disk-radiative-efficiency"], default: 0.1), 0.01), 0.42)
     let hasDiskVolumeArg = cliArguments.contains("--disk-volume")
@@ -492,9 +493,10 @@ enum Renderer {
     let diskPlungeFloorArg = min(1.0, max(0.0, doubleArg("--disk-plunge-floor", default: diskPlungeFloorDefault)))
     let diskThickScaleArg = max(1.0, doubleArgAny(["--thick-scale", "--disk-thick-scale"], default: diskThickScaleDefault))
     let diskColorFactorArg = max(1.0, doubleArgAny(["--fcol", "--disk-color-factor"], default: (diskPhysicsModeID == 2 ? 1.7 : 1.0)))
-    let diskReturningRadRawArg = max(0.0, min(1.0, doubleArg("--disk-returning-rad", default: (diskPhysicsModeID == 2 ? 0.35 : 0.0))))
-    let diskPrecisionTextureRawArg = max(0.0, min(1.0, doubleArg("--disk-precision-texture", default: (diskPhysicsModeID == 2 ? 0.58 : 0.0))))
-    let diskPrecisionCloudsName = stringArg("--disk-precision-clouds", default: (diskPhysicsModeID == 2 ? "on" : "off")).lowercased()
+    let precisionDefaultsEnabled = (diskPhysicsModeID == 2 && !diskPhysicsThinProfile)
+    let diskReturningRadRawArg = max(0.0, min(1.0, doubleArg("--disk-returning-rad", default: (precisionDefaultsEnabled ? 0.35 : 0.0))))
+    let diskPrecisionTextureRawArg = max(0.0, min(1.0, doubleArg("--disk-precision-texture", default: (precisionDefaultsEnabled ? 0.58 : 0.0))))
+    let diskPrecisionCloudsName = stringArg("--disk-precision-clouds", default: (precisionDefaultsEnabled ? "on" : "off")).lowercased()
     let diskPrecisionCloudsEnabled: Bool
     switch diskPrecisionCloudsName {
     case "on", "true", "1", "yes":
@@ -504,13 +506,13 @@ enum Renderer {
     default:
         fail("invalid --disk-precision-clouds \(diskPrecisionCloudsName). use on|off")
     }
-    let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.58 : 0.88) : 0.0))))
-    let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArgAny(["--cloud-tau", "--disk-cloud-optical-depth"], default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 1.10 : 2.0) : 0.0))))
-    let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.42 : 0.18) : 0.0))))
-    let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.62 : 0.90) : 0.0))))
-    let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", default: (diskPhysicsModeID == 2 ? 2 : 1))))
+    let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (precisionDefaultsEnabled ? (hasDiskVolumeArg ? 0.58 : 0.88) : 0.0))))
+    let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArgAny(["--cloud-tau", "--disk-cloud-optical-depth"], default: (precisionDefaultsEnabled ? (hasDiskVolumeArg ? 1.10 : 2.0) : 0.0))))
+    let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (precisionDefaultsEnabled ? (hasDiskVolumeArg ? 0.42 : 0.18) : 0.0))))
+    let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (precisionDefaultsEnabled ? (hasDiskVolumeArg ? 0.62 : 0.90) : 0.0))))
+    let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", default: (precisionDefaultsEnabled ? 2 : 1))))
     let diskRTStepsRawArg = max(0, min(32, intArgAny(["--rt-steps", "--disk-rt-steps"], default: 0)))
-    let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.52 : 0.62) : 0.0))))
+    let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (precisionDefaultsEnabled ? (hasDiskVolumeArg ? 0.52 : 0.62) : 0.0))))
     let diskReturningRadArg = (diskPhysicsModeID == 2) ? diskReturningRadRawArg : 0.0
     var diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
     let thickCloudExplicit = (diskPhysicsModeID == 1) &&
