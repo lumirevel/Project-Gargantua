@@ -456,7 +456,7 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgb *= retFactor;
     }
-    if (FC_PHYSICS_MODE == 2u) {
+    if (FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) {
         if (C.analysisMode == 1u) return rgb;
         return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
     }
@@ -1109,7 +1109,7 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgbBase *= retFactor;
     }
-    if (FC_PHYSICS_MODE == 2u && C.analysisMode == 2u) {
+    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         outLinear[gid] = float4(rgb, cloudRaw);
         return;
@@ -1137,7 +1137,7 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgbBase *= retFactor;
     }
-    if (FC_PHYSICS_MODE == 2u && C.analysisMode == 2u) {
+    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         outLinear[gid] = float4(rgb, cloudRaw);
         return;

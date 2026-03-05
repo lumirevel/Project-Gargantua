@@ -294,6 +294,30 @@ canonical_disk_mode() {
   esac
 }
 
+# Map optional profile override to legacy internal disk mode groups used by the
+# shell pipeline decisions (flow/atlas/volume bridge), while preserving the raw
+# profile token for Swift.
+canonical_disk_physics_mode() {
+  local mode="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    legacy|off|default)
+      printf 'thin'
+      ;;
+    thin|thinnt|nt|novikov-thorne|novikov_thorne|precision)
+      printf 'precision'
+      ;;
+    thick|plasma|riaf-thick)
+      printf 'thick'
+      ;;
+    eht|eht-riaf|riaf|grmhd|rt|volume-rt|cinematic)
+      printf 'grmhd'
+      ;;
+    *)
+      printf '%s' "$mode"
+      ;;
+  esac
+}
+
 python_executable_exists() {
   local py="$1"
   if [[ "$py" == */* ]]; then
@@ -484,9 +508,10 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
+  - profile override: --disk-physics {legacy|thin|thick|eht}
   - auto: precision alias with diskH-adaptive thin/thick defaults
 - Disk representation selector: --disk-repr {2d|3d}
 - Disk source selector: --disk-source {flow|perlin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
@@ -1345,16 +1370,17 @@ while [[ "$#" -gt 0 ]]; do
       need_value "$arg" "$@"
       val="$1"
       shift
-      DISK_PHYSICS_MODE_VALUE="$(canonical_disk_mode "$val")"
+      DISK_PHYSICS_PROFILE_VALUE="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+      DISK_PHYSICS_MODE_VALUE="$(canonical_disk_physics_mode "$DISK_PHYSICS_PROFILE_VALUE")"
       case "$DISK_PHYSICS_MODE_VALUE" in
         thin|thick|precision|grmhd) ;;
         *)
-          echo "error: --disk-physics must be one of thin, thick, precision, grmhd" >&2
+          echo "error: --disk-physics must be one of legacy, thin, thick, eht (legacy aliases: precision, grmhd)" >&2
           exit 2
           ;;
       esac
       DISK_MODE_ARG_PRESENT=1
-      SWIFT_ARGS+=("$arg" "$DISK_PHYSICS_MODE_VALUE")
+      SWIFT_ARGS+=("$arg" "$DISK_PHYSICS_PROFILE_VALUE")
       ;;
     --disk-mode)
       need_value "$arg" "$@"
@@ -1531,7 +1557,7 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
       exit 2
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-kappa|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--camera-model|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-kappa|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--camera-model|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare|--mdot-edd|--eta|--fcol|--thick-scale|--cloud-tau|--nu-obs-hz|--rt-steps|--visible-policy)
       need_value "$arg" "$@"
       val="$1"
       shift

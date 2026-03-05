@@ -84,6 +84,7 @@ struct RenderMeta: Codable {
     var visibleMdot: Double
     var visibleRInRs: Double
     var visiblePhotosphereRhoThreshold: Double
+    var visiblePolicy: String
     var visibleEmissionModel: String
     var visibleSynchAlpha: Double
     var exposureMode: String
@@ -530,16 +531,19 @@ enum Renderer {
         ? diskCloudShadowStrengthRawArg
         : (thickCloudExplicit ? max(diskCloudShadowStrengthRawArg, 0.55) : 0.0)
     let diskReturnBouncesArg = (diskPhysicsModeID == 2) ? diskReturnBouncesRawArg : 1
-    let diskRTStepsArg = (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? diskRTStepsRawArg : 0
-    let diskScatteringAlbedoArg = (diskPhysicsModeID == 2) ? diskScatteringAlbedoRawArg : 0.0
+    let diskRTStepsArg = (diskPhysicsModeID == 1 || diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? diskRTStepsRawArg : 0
+    let diskScatteringAlbedoArg = (diskPhysicsModeID == 2 || thickCloudExplicit) ? diskScatteringAlbedoRawArg : 0.0
     if diskPhysicsModeID != 2 && diskReturningRadRawArg > 1e-8 {
         FileHandle.standardError.write(Data("warn: --disk-returning-rad is only active in precision mode\n".utf8))
     }
-    if diskPhysicsModeID != 2 && (diskCloudCoverageRawArg > 1e-8 || diskCloudOpticalDepthRawArg > 1e-8 || diskCloudPorosityRawArg > 1e-8 || diskCloudShadowStrengthRawArg > 1e-8) {
-        FileHandle.standardError.write(Data("warn: precision cloud args are only active in precision mode\n".utf8))
+    if diskPhysicsModeID != 2 && !thickCloudExplicit &&
+        (diskCloudCoverageRawArg > 1e-8 || diskCloudOpticalDepthRawArg > 1e-8 || diskCloudPorosityRawArg > 1e-8 || diskCloudShadowStrengthRawArg > 1e-8) {
+        FileHandle.standardError.write(Data("warn: cloud args are active in precision mode, or thick mode when --cloud-tau is set\n".utf8))
     }
-    if diskPhysicsModeID != 2 && (diskReturnBouncesRawArg != 1 || diskRTStepsRawArg > 0 || diskScatteringAlbedoRawArg > 1e-8) {
-        FileHandle.standardError.write(Data("warn: --disk-return-bounces, --disk-rt-steps and --disk-scattering-albedo are only active in precision mode\n".utf8))
+    if diskPhysicsModeID != 2 &&
+        !(diskPhysicsModeID == 1 && thickCloudExplicit) &&
+        (diskReturnBouncesRawArg != 1 || diskRTStepsRawArg > 0 || diskScatteringAlbedoRawArg > 1e-8) {
+        FileHandle.standardError.write(Data("warn: --disk-return-bounces is precision-only; --rt-steps/--disk-scattering-albedo are active in precision or thick-with-cloud-tau\n".utf8))
     }
     let diskModelArg = stringArg("--disk-model", default: "auto").lowercased()
     let diskAtlasPathArg = stringArg("--disk-atlas", default: "")
@@ -645,8 +649,18 @@ enum Renderer {
     let visibleMdotArg = max(0.0, doubleArg("--mdot", default: 1.0e15))
     let visibleRInRsArg = max(0.0, doubleArg("--r-in", default: 0.0))
     let photosphereRhoThresholdArg = max(0.0, doubleArg("--photosphere-rho-threshold", default: 0.0))
+    let visiblePolicyName = stringArg("--visible-policy", default: "physical").lowercased()
+    let visibleExpressiveMode: Bool
+    switch visiblePolicyName {
+    case "physical":
+        visibleExpressiveMode = false
+    case "expressive", "cinematic":
+        visibleExpressiveMode = true
+    default:
+        fail("invalid --visible-policy \(visiblePolicyName). use one of: physical, expressive")
+    }
     let visibleEmissionModelName = stringArg("--visible-emission-model", default: "blackbody").lowercased()
-    let visibleEmissionModelID: UInt32
+    var visibleEmissionModelID: UInt32
     switch visibleEmissionModelName {
     case "blackbody", "thermal":
         visibleEmissionModelID = 0
@@ -655,7 +669,16 @@ enum Renderer {
     default:
         fail("invalid --visible-emission-model \(visibleEmissionModelName). use one of: blackbody, synchrotron")
     }
-    let visibleSynchAlphaArg = min(max(doubleArg("--visible-synch-alpha", default: 0.85), 0.0), 4.0)
+    var visibleSynchAlphaArg = min(max(doubleArg("--visible-synch-alpha", default: 0.85), 0.0), 4.0)
+    if diskPhysicsModeID == 3 && visibleModeEnabled && visibleExpressiveMode {
+        FileHandle.standardError.write(Data("info: --visible-policy expressive maps nu_obs emissivity to visible palette for readability\n".utf8))
+        if !cliArguments.contains("--visible-emission-model") {
+            visibleEmissionModelID = 1 // expressive: map nu_obs-driven intensity to visible palette.
+        }
+        if !cliArguments.contains("--visible-synch-alpha") {
+            visibleSynchAlphaArg = 0.85
+        }
+    }
     let visibleKappaArg = max(0.0, doubleArg("--visible-kappa", default: 0.0))
     let coolAbsorptionName = stringArg("--disk-cool-absorption", default: ((diskPhysicsModeID == 3 && visibleModeEnabled) ? "on" : "off")).lowercased()
     let coolAbsorptionEnabled: Bool
@@ -3141,6 +3164,7 @@ if !dumpPackedParamsPath.isEmpty {
         visibleMdot: visibleMdotArg,
         visibleRInRs: visibleRInRsArg,
         visiblePhotosphereRhoThreshold: photosphereRhoThresholdResolved,
+        visiblePolicy: visiblePolicyName,
         visibleEmissionModel: visibleEmissionModelName,
         visibleSynchAlpha: visibleSynchAlphaArg,
         exposureMode: exposureModeName,
