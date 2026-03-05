@@ -30,11 +30,29 @@ func intArg(_ name: String, default defaultValue: Int) -> Int {
     return Int(cliArguments[idx + 1]) ?? defaultValue
 }
 
+func intArgAny(_ names: [String], default defaultValue: Int) -> Int {
+    for name in names {
+        if let idx = cliArguments.firstIndex(of: name), idx + 1 < cliArguments.count {
+            return Int(cliArguments[idx + 1]) ?? defaultValue
+        }
+    }
+    return defaultValue
+}
+
 func doubleArg(_ name: String, default defaultValue: Double) -> Double {
     guard let idx = cliArguments.firstIndex(of: name), idx + 1 < cliArguments.count else {
         return defaultValue
     }
     return Double(cliArguments[idx + 1]) ?? defaultValue
+}
+
+func doubleArgAny(_ names: [String], default defaultValue: Double) -> Double {
+    for name in names {
+        if let idx = cliArguments.firstIndex(of: name), idx + 1 < cliArguments.count {
+            return Double(cliArguments[idx + 1]) ?? defaultValue
+        }
+    }
+    return defaultValue
 }
 
 func stringArg(_ name: String, default defaultValue: String) -> String {
@@ -54,6 +72,24 @@ func parseDiskMode(_ raw: String) -> (id: UInt32, canonical: String)? {
         return (2, "precision")
     case "grmhd", "rt", "volume-rt":
         return (3, "grmhd")
+    default:
+        return nil
+    }
+}
+
+// Optional modern physics profile override.
+// NOTE: for backward compatibility, internal mode IDs remain:
+// 0=legacy(thin), 1=thick, 2=thinNT/precision, 3=eht(grmhd).
+func parseDiskPhysicsProfile(_ raw: String) -> (id: UInt32, canonical: String)? {
+    switch raw.lowercased() {
+    case "legacy", "off", "default":
+        return (0, "legacy")
+    case "thin", "thinnt", "nt", "novikov-thorne", "novikov_thorne", "precision":
+        return (2, "thin")
+    case "thick", "plasma", "riaf-thick":
+        return (1, "thick")
+    case "eht", "eht-riaf", "riaf", "grmhd":
+        return (3, "eht")
     default:
         return nil
     }

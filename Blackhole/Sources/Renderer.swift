@@ -418,22 +418,9 @@ enum Renderer {
     let diskTurbulenceOuterArg = max(0.0, doubleArg("--disk-turbulence-outer", default: diskTurbulenceArg))
     let diskFlowStepArg = max(0.03, doubleArg("--disk-flow-step", default: 0.22))
     let diskFlowStepsArg = max(2, min(24, intArg("--disk-flow-steps", default: 8)))
-    let diskMdotEddArg = max(1e-5, doubleArg("--disk-mdot-edd", default: 0.1))
-    let diskRadiativeEfficiencyArg = min(max(doubleArg("--disk-radiative-efficiency", default: 0.1), 0.01), 0.42)
     let diskModeRaw = stringArg("--disk-mode", default: "").lowercased()
-    let diskPhysicsRaw = stringArg("--disk-physics", default: "").lowercased()
+    let diskPhysicsProfileRaw = stringArg("--disk-physics", default: "").lowercased()
     let diskPhysicsLegacyRaw = stringArg("--disk-physics-mode", default: "").lowercased()
-    if !diskModeRaw.isEmpty && !diskPhysicsRaw.isEmpty {
-        guard let modeA = parseDiskMode(diskModeRaw) else {
-            fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
-        }
-        guard let modeB = parseDiskMode(diskPhysicsRaw) else {
-            fail("invalid --disk-physics \(diskPhysicsRaw). use one of: thin, thick, precision, grmhd")
-        }
-        if modeA.id != modeB.id {
-            fail("conflicting disk mode: --disk-mode \(diskModeRaw) vs --disk-physics \(diskPhysicsRaw)")
-        }
-    }
     if !diskModeRaw.isEmpty && !diskPhysicsLegacyRaw.isEmpty {
         guard let modeA = parseDiskMode(diskModeRaw) else {
             fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
@@ -448,10 +435,6 @@ enum Renderer {
     }
     let diskModeResolvedRaw: String = {
         if !diskModeRaw.isEmpty { return diskModeRaw }
-        if !diskPhysicsRaw.isEmpty {
-            FileHandle.standardError.write(Data("warn: --disk-physics is deprecated; prefer --disk-mode\n".utf8))
-            return diskPhysicsRaw
-        }
         if !diskPhysicsLegacyRaw.isEmpty {
             FileHandle.standardError.write(Data("warn: --disk-physics-mode is deprecated; prefer --disk-mode\n".utf8))
         }
@@ -462,9 +445,6 @@ enum Renderer {
         if !diskModeRaw.isEmpty {
             fail("invalid --disk-mode \(diskModeRaw). use one of: thin, thick, precision, grmhd, auto")
         }
-        if !diskPhysicsRaw.isEmpty {
-            fail("invalid --disk-physics \(diskPhysicsRaw). use one of: thin, thick, precision, grmhd")
-        }
         fail("invalid --disk-physics-mode \(diskPhysicsLegacyRaw). use one of: thin, thick, precision, grmhd, auto")
     }
     let accretionModel = AccretionModels.default
@@ -473,8 +453,22 @@ enum Renderer {
         parsedModeName: diskModeParsed.canonical,
         rawMode: diskModeResolvedRaw
     )
-    let diskPhysicsModeID: UInt32 = resolvedMode.id
-    let diskPhysicsModeArg: String = resolvedMode.name
+    var diskPhysicsModeID: UInt32 = resolvedMode.id
+    var diskPhysicsModeArg: String = resolvedMode.name
+    if !diskPhysicsProfileRaw.isEmpty {
+        guard let profile = parseDiskPhysicsProfile(diskPhysicsProfileRaw) else {
+            fail("invalid --disk-physics \(diskPhysicsProfileRaw). use one of: legacy, thin, thick, eht")
+        }
+        if profile.id != diskPhysicsModeID {
+            FileHandle.standardError.write(
+                Data("info: --disk-physics \(profile.canonical) overrides --disk-mode \(diskModeResolvedRaw)\n".utf8)
+            )
+        }
+        diskPhysicsModeID = profile.id
+        diskPhysicsModeArg = profile.canonical
+    }
+    let diskMdotEddArg = max(1e-5, doubleArgAny(["--mdot-edd", "--disk-mdot-edd"], default: 0.1))
+    let diskRadiativeEfficiencyArg = min(max(doubleArgAny(["--eta", "--disk-radiative-efficiency"], default: 0.1), 0.01), 0.42)
     let hasDiskVolumeArg = cliArguments.contains("--disk-volume")
         || cliArguments.contains("--disk-vol0")
         || cliArguments.contains("--disk-vol1")
@@ -496,8 +490,8 @@ enum Renderer {
         )
     }
     let diskPlungeFloorArg = min(1.0, max(0.0, doubleArg("--disk-plunge-floor", default: diskPlungeFloorDefault)))
-    let diskThickScaleArg = max(1.0, doubleArg("--disk-thick-scale", default: diskThickScaleDefault))
-    let diskColorFactorArg = max(1.0, doubleArg("--disk-color-factor", default: (diskPhysicsModeID == 2 ? 1.7 : 1.0)))
+    let diskThickScaleArg = max(1.0, doubleArgAny(["--thick-scale", "--disk-thick-scale"], default: diskThickScaleDefault))
+    let diskColorFactorArg = max(1.0, doubleArgAny(["--fcol", "--disk-color-factor"], default: (diskPhysicsModeID == 2 ? 1.7 : 1.0)))
     let diskReturningRadRawArg = max(0.0, min(1.0, doubleArg("--disk-returning-rad", default: (diskPhysicsModeID == 2 ? 0.35 : 0.0))))
     let diskPrecisionTextureRawArg = max(0.0, min(1.0, doubleArg("--disk-precision-texture", default: (diskPhysicsModeID == 2 ? 0.58 : 0.0))))
     let diskPrecisionCloudsName = stringArg("--disk-precision-clouds", default: (diskPhysicsModeID == 2 ? "on" : "off")).lowercased()
@@ -511,20 +505,30 @@ enum Renderer {
         fail("invalid --disk-precision-clouds \(diskPrecisionCloudsName). use on|off")
     }
     let diskCloudCoverageRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.58 : 0.88) : 0.0))))
-    let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArg("--disk-cloud-optical-depth", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 1.10 : 2.0) : 0.0))))
+    let diskCloudOpticalDepthRawArg = max(0.0, min(12.0, doubleArgAny(["--cloud-tau", "--disk-cloud-optical-depth"], default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 1.10 : 2.0) : 0.0))))
     let diskCloudPorosityRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-porosity", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.42 : 0.18) : 0.0))))
     let diskCloudShadowStrengthRawArg = max(0.0, min(1.0, doubleArg("--disk-cloud-shadow-strength", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.62 : 0.90) : 0.0))))
     let diskReturnBouncesRawArg = max(1, min(4, intArg("--disk-return-bounces", default: (diskPhysicsModeID == 2 ? 2 : 1))))
-    let diskRTStepsRawArg = max(0, min(32, intArg("--disk-rt-steps", default: 0)))
+    let diskRTStepsRawArg = max(0, min(32, intArgAny(["--rt-steps", "--disk-rt-steps"], default: 0)))
     let diskScatteringAlbedoRawArg = max(0.0, min(1.0, doubleArg("--disk-scattering-albedo", default: (diskPhysicsModeID == 2 ? (hasDiskVolumeArg ? 0.52 : 0.62) : 0.0))))
     let diskReturningRadArg = (diskPhysicsModeID == 2) ? diskReturningRadRawArg : 0.0
     var diskPrecisionTextureArg = (diskPhysicsModeID == 2) ? diskPrecisionTextureRawArg : 0.0
-    let diskCloudCoverageArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudCoverageRawArg : 0.0
-    let diskCloudOpticalDepthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudOpticalDepthRawArg : 0.0
-    let diskCloudPorosityArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudPorosityRawArg : 0.0
-    let diskCloudShadowStrengthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled) ? diskCloudShadowStrengthRawArg : 0.0
+    let thickCloudExplicit = (diskPhysicsModeID == 1) &&
+        (cliArguments.contains("--cloud-tau") || cliArguments.contains("--disk-cloud-optical-depth"))
+    let diskCloudCoverageArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled)
+        ? diskCloudCoverageRawArg
+        : (thickCloudExplicit ? max(diskCloudCoverageRawArg, 0.55) : 0.0)
+    let diskCloudOpticalDepthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled)
+        ? diskCloudOpticalDepthRawArg
+        : (thickCloudExplicit ? diskCloudOpticalDepthRawArg : 0.0)
+    let diskCloudPorosityArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled)
+        ? diskCloudPorosityRawArg
+        : (thickCloudExplicit ? max(diskCloudPorosityRawArg, 0.20) : 0.0)
+    let diskCloudShadowStrengthArg = (diskPhysicsModeID == 2 && diskPrecisionCloudsEnabled)
+        ? diskCloudShadowStrengthRawArg
+        : (thickCloudExplicit ? max(diskCloudShadowStrengthRawArg, 0.55) : 0.0)
     let diskReturnBouncesArg = (diskPhysicsModeID == 2) ? diskReturnBouncesRawArg : 1
-    let diskRTStepsArg = (diskPhysicsModeID == 2) ? diskRTStepsRawArg : 0
+    let diskRTStepsArg = (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? diskRTStepsRawArg : 0
     let diskScatteringAlbedoArg = (diskPhysicsModeID == 2) ? diskScatteringAlbedoRawArg : 0.0
     if diskPhysicsModeID != 2 && diskReturningRadRawArg > 1e-8 {
         FileHandle.standardError.write(Data("warn: --disk-returning-rad is only active in precision mode\n".utf8))
@@ -555,7 +559,7 @@ enum Renderer {
     let diskVolumePhiOverrideArg = max(0, intArg("--disk-volume-phi", default: 0))
     let diskVolumeZOverrideArg = max(0, intArg("--disk-volume-z", default: 0))
     let diskVolumeTauScaleRawArg = max(0.0, doubleArg("--disk-volume-tau-scale", default: hasDiskVolumeArg ? 0.85 : 1.0))
-    let diskNuObsHzArg = max(1e6, doubleArg("--disk-nu-obs-hz", default: 230.0e9))
+    let diskNuObsHzArg = max(1e6, doubleArgAny(["--nu-obs-hz", "--disk-nu-obs-hz"], default: 230.0e9))
     let diskGrmhdDensityScaleArg = max(0.0, doubleArg("--disk-grmhd-density-scale", default: 1.0))
     let diskGrmhdBScaleArg = max(0.0, doubleArg("--disk-grmhd-b-scale", default: 1.0))
     let diskGrmhdEmissionScaleArg = max(0.0, doubleArg("--disk-grmhd-emission-scale", default: 1.0))
