@@ -2,14 +2,54 @@
 
 ## Current Layout
 
-- `Blackhole/main.swift`: Swift entry point (GPU collision render)
-- `Blackhole/integral.metal`: Metal shader
-- `Blackhole/run_pipeline.sh`: main pipeline script (build + render + postprocess)
-- `Blackhole/render_collisions.py`: Python postprocess (HDR + tone map + PNG/PPM)
-- `run_pipeline.sh`: root wrapper that calls `Blackhole/run_pipeline.sh`
-- `Blackhole/scripts/trace_ray_compare.py`: single-ray Schwarzschild vs Kerr trajectory comparison
-- `Blackhole/scripts/select_lensed_pixels.py`: Schwarzschild collisions에서 상/하 대표 픽셀 자동 선택
-- `Blackhole/scripts/analyze_kerr_gap.py`: 렌더/픽셀선정/레이추적/그래프/리포트 일괄 진단
+Swift host:
+- `Blackhole/main.swift`: thin entrypoint only
+- `Blackhole/Sources/AppMain.swift`: app coordinator
+- `Blackhole/Sources/CLI.swift`: flag parsing helpers
+- `Blackhole/Sources/ParamsBuilder.swift`: resolved config + `PackedParams` construction
+- `Blackhole/Sources/AccretionModel.swift`: disk-mode policy boundary
+- `Blackhole/Sources/Renderer.swift`: orchestration only
+- `Blackhole/Sources/RenderSetup.swift`: Metal device/library/pipeline setup
+- `Blackhole/Sources/RenderExecution.swift`: trace/light/compose execution path
+- `Blackhole/Sources/RenderOutputs.swift`: image + metadata writing
+- `Blackhole/Sources/Resources.swift`: atlas/volume IO helpers
+- `Blackhole/Sources/PackedParams.swift`: Swift/Metal ABI mirror + validation helpers
+
+Metal side:
+- `Blackhole/Metal/integral.metal`: include aggregator, kernel entry names stay stable
+- `Blackhole/Metal/gr_math.metal`
+- `Blackhole/Metal/disk_models.metal`
+- `Blackhole/Metal/volume_rt.metal`
+- `Blackhole/Metal/spectrum_visible.metal`
+- `Blackhole/Metal/post_compose.metal`
+
+Automation / regression:
+- `Blackhole/run_pipeline.sh`: main build + run wrapper
+- `run_pipeline.sh`: root wrapper that delegates to `Blackhole/run_pipeline.sh`
+- `tests/baseline/manifest.json`: default regression/perf anchor
+- `tests/baseline/extended_manifest.json`: extended branch coverage
+- `docs/architecture.md`: runtime/config/ABI overview
+
+Physics extension points:
+- new disk-policy defaults/validation: `Blackhole/Sources/AccretionModel.swift`
+- new Metal routing: `Blackhole/Metal/disk_models.metal`, `Blackhole/Metal/volume_rt.metal`
+
+## Architecture Summary
+
+Runtime flow:
+1. `main.swift` -> `AppMain.run(arguments:)`
+2. `CLI.parse` -> `ParamsBuilder.build`
+3. `Renderer.render(config:params:)`
+4. `RenderSetup.prepare(...)`
+5. `RenderExecution.execute(...)`
+6. `RenderOutputs` writes image + metadata
+
+ABI boundary:
+- `PackedParams` mirrors Metal `Params`
+- debug checks:
+  - `--print-packed-layout`
+  - `--dump-packed-params <path>`
+  - `--validate-packed-abi`
 
 ## One-Command Render
 

@@ -18,6 +18,7 @@ enum CLI {
             rawArguments: arguments,
             runRegression: arguments.contains("--regression-run"),
             printPackedLayout: arguments.contains("--print-packed-layout"),
+            validatePackedABI: arguments.contains("--validate-packed-abi"),
             dumpPackedParamsPath: dumpPath
         )
     }

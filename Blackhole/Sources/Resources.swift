@@ -1,6 +1,33 @@
 import Foundation
 import Metal
 
+struct DiskAtlasMeta: Codable {
+    var width: Int
+    var height: Int
+    var format: String?
+    var channels: [String]?
+    var rNormMin: Double?
+    var rNormMax: Double?
+    var rNormWarp: Double?
+}
+
+struct DiskVolumeMeta: Codable {
+    var r: Int?
+    var phi: Int?
+    var z: Int?
+    var nr: Int?
+    var nphi: Int?
+    var nz: Int?
+    var width: Int?
+    var height: Int?
+    var depth: Int?
+    var format: String?
+    var channels: [String]?
+    var rNormMin: Double?
+    var rNormMax: Double?
+    var zNormMax: Double?
+}
+
 enum Resources {
     static func ensureParentDirectory(_ path: String) throws {
         let url = URL(fileURLWithPath: path)

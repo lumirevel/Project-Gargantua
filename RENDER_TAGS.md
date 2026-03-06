@@ -1,149 +1,141 @@
 # Blackhole Render Tags
 
-## Goal
-- `main.swift` and `testGPU.py` share settings through metadata (`<output>.json`).
-- Default output is `dense_pruned_v1`: no precision loss (`float32` kept), only unused fields/padding removed.
+## Purpose
+This document maps the current runtime flags and metadata outputs to the refactored Swift + Metal pipeline.
 
-## Accuracy Policy
-- `dense_v1`: full raw struct dump (largest file).
-- `dense_pruned_v1` (default): keeps per-pixel `hit`, `T`, `v_disk(3)`, `direct_world(3)`, `noise` in `float32`.
-- `sparse_v1`: hit-only records (smallest, but non-uniform indexing).
+Current flow:
+- `main.swift` -> `AppMain`
+- `CLI.swift` / `ParamsBuilder.swift` resolve flags
+- `Renderer` orchestrates setup + execution + outputs
+- `PackedParams` is the ABI boundary into Metal
 
-`dense_pruned_v1` is the recommended mode when you want exact numeric behavior without huge padding/unused data.
-
-## `main.swift` Tags
+## Core Runtime Flags
 - `--preset balanced|interstellar|eht`
-  - base camera/disk preset.
-- `--width <int>` image width.
-- `--height <int>` image height.
-- `--tileHeight <int>` GPU tile rows per dispatch.
-- `--camX <float>` camera x in units of `rs`.
-- `--camZ <float>` camera z in units of `rs`.
-- `--fov <float>` field of view in degrees.
-- `--rcp <float>` disk outer radius multiplier (`re = rcp * rs`).
-- `--diskH <float>` disk half-thickness factor (`he = diskH * rs`).
-- `--maxSteps <int>` geodesic integration steps.
-- `--h <float>` RK4 step size (default `0.01`).
-- `--format pruned|dense|sparse`
-  - `pruned` -> `dense_pruned_v1` (default)
-  - `dense` -> `dense_v1`
-  - `sparse` -> `sparse_v1`
+- `--width <int>`
+- `--height <int>`
 - `--metric schwarzschild|kerr`
-  - `kerr` = Kerr exact (Boyer-Lindquist geodesic).
-  - `schwarzschild` = original Schwarzschild solver path.
-  - `kerr --spin 0` runs the Kerr solver at zero spin (used for parity checks vs Schwarzschild).
 - `--spin <float>`
-  - Kerr dimensionless spin `a*` in `[0, 0.998]`.
-- `--disk-time <float>`
-  - streamline particle phase/time for disk advection.
-- `--disk-orbital-boost <float>`
-  - scales Keplerian angular flow in disk density model.
-- `--disk-radial-drift <float>`
-  - inward radial drift strength of disk flow.
-- `--disk-turbulence <float>`
-  - divergence-free turbulence strength for disk clumping.
-- `--disk-flow-step <float>`
-  - streamline backtrace step size for disk density evaluation.
-- `--disk-flow-steps <int>`
-  - streamline backtrace step count (higher = slower, more accurate).
+- `--output <path>`
+- `--image-out <path>`
+- `--compose-gpu`
+- `--gpu-full-compose`
+- `--linear32-intermediate`
+- `--discard-collisions`
+- `--downsample 1|2|4`
+- `--tile-size <int>`
+- `--trace-inflight <int>`
+
+## Disk Policy Flags
+Mode selectors:
+- `--disk-mode thin|thick|precision|grmhd|auto`
+- `--disk-physics legacy|thin|thick|eht`
+- `--disk-model flow|procedural|perlin|perlin-classic|perlin-ec7|atlas|auto`
+
+Disk dynamics:
+- `--disk-time`
+- `--disk-orbital-boost`
+- `--disk-radial-drift`
+- `--disk-turbulence`
+- `--disk-flow-step`
+- `--disk-flow-steps`
+
+Disk policy/detail:
+- `--mdot-edd`
+- `--eta`
+- `--fcol`
+- `--disk-plunge-floor`
+- `--thick-scale`
+- `--disk-returning-rad`
+- `--disk-precision-texture`
+- `--disk-precision-clouds on|off`
+- `--disk-cloud-coverage`
+- `--cloud-tau` / `--disk-cloud-optical-depth`
+- `--disk-cloud-porosity`
+- `--disk-cloud-shadow-strength`
+- `--disk-return-bounces`
+- `--rt-steps`
+- `--disk-scattering-albedo`
+
+## Atlas / Volume Inputs
+Atlas:
 - `--disk-atlas <path>`
-  - stage-3 disk atlas binary (`float4`) path.
 - `--disk-atlas-width <int>`
-  - atlas width override if `<atlas>.json` is missing.
 - `--disk-atlas-height <int>`
-  - atlas height override if `<atlas>.json` is missing.
-- `--disk-atlas-temp-scale <float>`
-  - global multiplier for atlas temperature channel.
-- `--disk-atlas-density-blend <float>`
-  - blend factor between procedural density and atlas density.
-- `--disk-atlas-vr-scale <float>`
-  - scale for atlas radial-velocity ratio.
-- `--disk-atlas-vphi-scale <float>`
-  - scale for atlas azimuthal velocity factor.
-- `--output <path>` collisions output path.
+- `--disk-atlas-temp-scale`
+- `--disk-atlas-density-blend`
+- `--disk-atlas-vr-scale`
+- `--disk-atlas-vphi-scale`
+- `--disk-atlas-r-min`
+- `--disk-atlas-r-max`
+- `--disk-atlas-r-warp`
 
-Legacy:
-- `--dense` is kept as alias for `--format dense`.
+Volume:
+- `--disk-volume <path>`
+- `--disk-vol0 <path>`
+- `--disk-vol1 <path>`
+- `--disk-meta <path>`
+- `--disk-volume-r`, `--disk-volume-phi`, `--disk-volume-z`
+- `--disk-volume-tau-scale`
+- `--nu-obs-hz`
+- `--disk-grmhd-density-scale`
+- `--disk-grmhd-b-scale`
+- `--disk-grmhd-emission-scale`
+- `--disk-grmhd-absorption-scale`
+- `--disk-grmhd-vel-scale`
+- `--disk-grmhd-debug off|rho|b2|jnu|inu|teff|g|y|peak|pol`
 
-Outputs:
-- collisions file: `<output>`
-- metadata JSON: `<output>.json`
+## Visible / Camera / Background
+Visible:
+- `--visible-mode on|off`
+- `--visible-policy physical|expressive`
+- `--visible-emission-model blackbody|synchrotron`
+- `--visible-samples <int>`
+- `--teff-model parametric|thin-disk|nt`
+- `--teff-T0`, `--teff-r0`, `--teff-p`
+- `--bh-mass`, `--mdot`, `--r-in`
+- `--photosphere-rho-threshold`
+- `--visible-synch-alpha`
+- `--visible-kappa`
 
-Bridge fields for stage-3 handoff (`dense_pruned_v6`):
-- collision record tail stores:
-  - `emit_r_norm` (`r / rs`),
-  - `emit_phi` (`atan2(y, x)`),
-  - `emit_z_norm` (`z / rs`).
-- metadata includes:
-  - `bridgeCoordinateFrame`
-  - `bridgeFields`
+Camera/background:
+- `--camera-model legacy|scientific|cinematic`
+- `--camera-psf-sigma`
+- `--camera-read-noise`
+- `--camera-shot-noise`
+- `--camera-flare`
+- `--background off|stars`
+- `--bg-star-density`
+- `--bg-star-strength`
+- `--bg-nebula-strength`
 
-Disk atlas format:
-- binary: row-major `height x width x 4` `float32`
-- channels:
-  - `0`: temperature scale
-  - `1`: density
-  - `2`: radial velocity ratio
-  - `3`: azimuthal velocity scale
+## Ray Bundle / SSAA
+- `--ssaa <int>`: high-resolution render then downsample
+- `--ray-bundle off|on|jacobian`: per-pixel sub-ray bundle path
+- `--ray-bundle-jacobian on|off`: explicit override for legacy compatibility
+- `--ray-bundle-jacobian-strength <float>`
+- `--ray-bundle-footprint-clamp <float>`
 
-## `testGPU.py` Tags
-- `--input <path>` collisions file path.
-- `--meta <path>` optional metadata override.
-  - if omitted, auto-loads `<input>.json`.
-- `--output <path>` output PPM path.
-- `--width`, `--height`
-  - optional if metadata exists.
-- `--rcp <float>`
-  - optional if metadata exists.
-- `--look balanced|interstellar|eht`
-  - tone/color look transform.
-- `--spectral-step <float>`
-  - spectral integration step in nm (smaller = slower, smoother).
-- `--chunk <int>`
-  - processing chunk size.
-- `--exposure <float>`
-  - `<0`: auto exposure, `>0`: manual exposure multiplier.
-- `--dither <float>`
-  - ordered dithering strength.
-- `--inner-edge-mult <float>`
-  - ISCO/inner-edge shaping factor.
+## Metadata Output
+Collision metadata is written to `<output>.json` or `<linear32-out>.json` and currently includes:
+- camera and geodesic controls
+- disk mode / disk model / atlas / volume descriptors
+- visible-mode parameters
+- compose/camera/background settings
+- output resolution and effective exposure
+- `collisionStride`
+- `bridgeCoordinateFrame`
+- `bridgeFields`
 
-Format detection:
-- prefers metadata `format`.
-- auto-detect fallback by file size supports:
-  - `dense_v1`
-  - `dense_pruned_v1`
-  - `sparse_v1`
+## ABI / Regression Utilities
+- `--print-packed-layout`
+- `--dump-packed-params <path>`
+- `--validate-packed-abi`
+- `--regression-run <manifest.json>`
+- `--regression-out <dir>`
+- `--regression-case <name|all>`
 
-## Recommended Runs
-
-### Interstellar-like
-```bash
-# 1) GPU simulation
-<run-main> --preset interstellar --metric kerr --spin 0.92 --format pruned --width 1200 --height 1200 \
-  --output /Users/kimryeong-gyo/PycharmProjects/blackhole/collisions_interstellar.bin
-
-# 2) Post-process
-python3 /Users/kimryeong-gyo/PycharmProjects/blackhole/testGPU.py \
-  --input /Users/kimryeong-gyo/PycharmProjects/blackhole/collisions_interstellar.bin \
-  --look interstellar \
-  --output /Users/kimryeong-gyo/PycharmProjects/blackhole/interstellar.ppm
-```
-
-### EHT-like
-```bash
-# 1) GPU simulation
-<run-main> --preset eht --metric kerr --spin 0.94 --format pruned --width 1200 --height 1200 \
-  --output /Users/kimryeong-gyo/PycharmProjects/blackhole/collisions_eht.bin
-
-# 2) Post-process
-python3 /Users/kimryeong-gyo/PycharmProjects/blackhole/testGPU.py \
-  --input /Users/kimryeong-gyo/PycharmProjects/blackhole/collisions_eht.bin \
-  --look eht \
-  --output /Users/kimryeong-gyo/PycharmProjects/blackhole/eht.ppm
-```
-
-## Troubleshooting
-- If you see `warning: collisions.bin noise is all zero`, your input was generated by an older kernel or noise path was not active.
-- If side-entry still looks missing, re-run `main.swift` after rebuilding with the latest `integral.metal`.
-- Kerr exact mode is slower than Schwarzschild because it solves full Kerr null geodesic equations in BL coordinates.
+## Regression Coverage
+- `tests/baseline/manifest.json`
+  - legacy/default hash protection + perf anchor
+- `tests/baseline/extended_manifest.json`
+  - precision / thick / atlas / volume / ray-bundle / expressive-visible branches

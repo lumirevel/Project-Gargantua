@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "notes": "Extended regression coverage for refactor phase 2 architecture boundaries",
+  "cases": [
+    {
+      "name": "precision_thin_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "precision",
+        "--look", "balanced",
+        "--dither", "0"
+      ]
+    },
+    {
+      "name": "thick_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "thick",
+        "--look", "balanced",
+        "--dither", "0"
+      ]
+    },
+    {
+      "name": "atlas_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "thin",
+        "--disk-model", "atlas",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed", "42",
+        "--look", "balanced",
+        "--dither", "0"
+      ]
+    },
+    {
+      "name": "volume_grmhd_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "grmhd",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed", "42",
+        "--look", "balanced",
+        "--dither", "0"
+      ]
+    },
+    {
+      "name": "ray_bundle_jacobian_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "grmhd",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed", "42",
+        "--visible-mode", "on",
+        "--ray-bundle", "jacobian",
+        "--exposure-mode", "fixed",
+        "--exposure-ev", "0"
+      ]
+    },
+    {
+      "name": "visible_expressive_gpu",
+      "determinism": "auto",
+      "output_ext": "png",
+      "args": [
+        "--no-build",
+        "--pipeline", "gpu-only",
+        "--width", "256",
+        "--height", "256",
+        "--ssaa", "1",
+        "--disk-mode", "grmhd",
+        "--disk-hdf5-sample",
+        "--disk-hdf5-sample-seed", "42",
+        "--visible-mode", "on",
+        "--visible-policy", "expressive"
+      ]
+    }
+  ],
+  "thresholds": {
+    "nondeterministic": {
+      "max_abs_diff": 2,
+      "min_psnr_db": 60,
+      "max_size_delta_ratio": 0.01
+    }
+  }
+}

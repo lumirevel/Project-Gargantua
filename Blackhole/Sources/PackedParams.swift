@@ -203,10 +203,64 @@ func printPackedParamsLayout() {
     print("CollisionInfo.layout size=\(MemoryLayout<CollisionInfo>.size) stride=\(MemoryLayout<CollisionInfo>.stride) align=\(MemoryLayout<CollisionInfo>.alignment)")
     print("CollisionLite32.layout size=\(MemoryLayout<CollisionLite32>.size) stride=\(MemoryLayout<CollisionLite32>.stride) align=\(MemoryLayout<CollisionLite32>.alignment)")
     print("ComposeParams.layout size=\(MemoryLayout<ComposeParams>.size) stride=\(MemoryLayout<ComposeParams>.stride) align=\(MemoryLayout<ComposeParams>.alignment)")
+    let offsets = packedParamsCriticalOffsets()
+    for key in offsets.keys.sorted() {
+        if let value = offsets[key] {
+            print("PackedParams.offset \(key)=\(value)")
+        }
+    }
 }
 
 func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
     let url = URL(fileURLWithPath: path)
     let data = withUnsafeBytes(of: &params) { Data($0) }
     try data.write(to: url)
+}
+
+func validatePackedParamsABIOrThrow() throws {
+    let expectedSize = 548
+    let expectedStride = 560
+    let expectedAlignment = 16
+    let expectedOffsets: [String: Int] = [
+        "camPos": 32,
+        "rs": 100,
+        "metric": 140,
+        "diskPhysicsMode": 276,
+        "diskVolumeMode": 332,
+        "visibleMode": 436,
+        "coolAbsorptionMode": 508,
+    ]
+    guard MemoryLayout<PackedParams>.size == expectedSize else {
+        throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
+    }
+    guard MemoryLayout<PackedParams>.stride == expectedStride else {
+        throw NSError(domain: "Blackhole", code: 102, userInfo: [NSLocalizedDescriptionKey: "PackedParams stride changed: \(MemoryLayout<PackedParams>.stride) != \(expectedStride)"])
+    }
+    guard MemoryLayout<PackedParams>.alignment == expectedAlignment else {
+        throw NSError(domain: "Blackhole", code: 103, userInfo: [NSLocalizedDescriptionKey: "PackedParams alignment changed: \(MemoryLayout<PackedParams>.alignment) != \(expectedAlignment)"])
+    }
+    let actualOffsets = packedParamsCriticalOffsets()
+    for (name, expected) in expectedOffsets {
+        guard actualOffsets[name] == expected else {
+            throw NSError(domain: "Blackhole", code: 104, userInfo: [NSLocalizedDescriptionKey: "PackedParams offset \(name) changed: \(String(describing: actualOffsets[name])) != \(expected)"])
+        }
+    }
+    guard MemoryLayout<CollisionInfo>.stride == 64 else {
+        throw NSError(domain: "Blackhole", code: 105, userInfo: [NSLocalizedDescriptionKey: "CollisionInfo stride changed: \(MemoryLayout<CollisionInfo>.stride)"])
+    }
+    guard MemoryLayout<CollisionLite32>.stride == 32 else {
+        throw NSError(domain: "Blackhole", code: 106, userInfo: [NSLocalizedDescriptionKey: "CollisionLite32 stride changed: \(MemoryLayout<CollisionLite32>.stride)"])
+    }
+}
+
+private func packedParamsCriticalOffsets() -> [String: Int] {
+    [
+        "camPos": MemoryLayout<PackedParams>.offset(of: \PackedParams.camPos) ?? -1,
+        "rs": MemoryLayout<PackedParams>.offset(of: \PackedParams.rs) ?? -1,
+        "metric": MemoryLayout<PackedParams>.offset(of: \PackedParams.metric) ?? -1,
+        "diskPhysicsMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskPhysicsMode) ?? -1,
+        "diskVolumeMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskVolumeMode) ?? -1,
+        "visibleMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleMode) ?? -1,
+        "coolAbsorptionMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.coolAbsorptionMode) ?? -1,
+    ]
 }

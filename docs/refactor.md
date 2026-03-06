@@ -31,10 +31,23 @@ Artifacts generated:
 python3 Blackhole/scripts/baseline_verify.py --json-out tests/baseline/reports/verify_report.json
 ```
 
+### Verify Extended Coverage
+```bash
+python3 Blackhole/scripts/baseline_verify.py \
+  --manifest tests/baseline/extended_manifest.json \
+  --baseline-report tests/baseline/reports/extended_baseline_report.json \
+  --json-out tests/baseline/reports/extended_verify_report.json
+```
+
 Pass rules:
 - Deterministic outputs: exact SHA-256 match.
 - Non-deterministic outputs: `max_abs_diff <= 2`, `PSNR >= 60 dB`, size delta within ±1%.
 - Performance gate (`medium_gpu_perf`): mean wall-time must be within +3% of baseline mean (`warmup=1`, `measured=5`).
+
+ABI guard:
+```bash
+/tmp/BlackholeDD_refactor_phase2/Build/Products/Release/Blackhole --validate-packed-abi
+```
 
 ## Phase 1: Swift Modularization
 
@@ -70,4 +83,15 @@ Future accretion models are prepared behind a stable Swift interface:
 
 - `Blackhole/Sources/AccretionModel.swift`
 
-Current runtime remains mapped to `DefaultAccretionModel`, which preserves legacy mode resolution/output.
+Current runtime now resolves disk-policy defaults through model-specific policy objects while preserving legacy output.
+
+## Coverage Notes
+- `manifest.json`
+  - protects the default GPU-only path, perf anchor, and visible GRMHD baseline
+- `extended_manifest.json`
+  - exercises precision/thin surface behavior
+  - thick disk routing
+  - atlas-driven disk ingestion
+  - volume-enabled precision path
+  - ray-bundle/jacobian path
+  - expressive visible policy

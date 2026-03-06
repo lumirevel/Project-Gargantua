@@ -13,7 +13,19 @@ enum AppMain {
             printPackedParamsLayout()
             return
         }
+        if built.validatePackedABI {
+            try validatePackedParamsABIOrThrow()
+            print("PackedParams ABI validation passed")
+            return
+        }
 
-        try Renderer.render(arguments: built.rawArguments)
+        guard let resolvedConfig = built.resolvedConfig, var packedParams = built.packedParams else {
+            fail("missing resolved render configuration")
+        }
+        if !built.dumpPackedParamsPath.isEmpty {
+            try dumpPackedParams(&packedParams, to: built.dumpPackedParamsPath)
+            print("dumped packed params to: \(built.dumpPackedParamsPath)")
+        }
+        try Renderer.render(config: resolvedConfig, params: packedParams)
     }
 }

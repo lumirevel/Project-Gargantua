@@ -4,6 +4,7 @@ struct LogicalParams {
     var rawArguments: [String]
     var runRegression: Bool
     var printPackedLayout: Bool
+    var validatePackedABI: Bool
     var dumpPackedParamsPath: String
 
     var camera = CameraParams()
