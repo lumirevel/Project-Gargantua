@@ -726,15 +726,25 @@ enum Renderer {
     }
     let rayBundleName = stringArg("--ray-bundle", default: "off").lowercased()
     let rayBundleEnabled: Bool
+    let rayBundleJacobianRequestedByMode: Bool
     switch rayBundleName {
     case "on", "true", "1", "yes":
         rayBundleEnabled = true
+        rayBundleJacobianRequestedByMode = false
+    case "jacobian", "jac", "bundle+jacobian":
+        rayBundleEnabled = true
+        rayBundleJacobianRequestedByMode = true
     case "off", "false", "0", "no":
         rayBundleEnabled = false
+        rayBundleJacobianRequestedByMode = false
     default:
-        fail("invalid --ray-bundle \(rayBundleName). use on|off")
+        fail("invalid --ray-bundle \(rayBundleName). use off|on|jacobian")
     }
-    let rayBundleJacobianName = stringArg("--ray-bundle-jacobian", default: "off").lowercased()
+    let hasRayBundleJacobianArg = cliArguments.contains("--ray-bundle-jacobian")
+    let rayBundleJacobianName = stringArg(
+        "--ray-bundle-jacobian",
+        default: rayBundleJacobianRequestedByMode ? "on" : "off"
+    ).lowercased()
     let rayBundleJacobianEnabled: Bool
     switch rayBundleJacobianName {
     case "on", "true", "1", "yes":
@@ -743,6 +753,11 @@ enum Renderer {
         rayBundleJacobianEnabled = false
     default:
         fail("invalid --ray-bundle-jacobian \(rayBundleJacobianName). use on|off")
+    }
+    if rayBundleJacobianRequestedByMode && hasRayBundleJacobianArg && !rayBundleJacobianEnabled {
+        FileHandle.standardError.write(
+            Data("warn: --ray-bundle jacobian was overridden by explicit --ray-bundle-jacobian off\n".utf8)
+        )
     }
     let rayBundleJacobianStrengthArg = max(0.0, doubleArg("--ray-bundle-jacobian-strength", default: 1.0))
     let rayBundleFootprintClampArg = min(max(doubleArg("--ray-bundle-footprint-clamp", default: 6.0), 0.0), 20.0)
@@ -973,14 +988,17 @@ enum Renderer {
     if diskPhysicsModeID != 3 && (!diskVol0PathArg.isEmpty || !diskVol1PathArg.isEmpty) {
         FileHandle.standardError.write(Data("warn: --disk-vol0/--disk-vol1 are only active in grmhd mode\n".utf8))
     }
-    let diskVolumeTauScaleArg = (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? diskVolumeTauScaleRawArg : 0.0
+    let diskVolumeTauScaleArg = ((diskPhysicsModeID == 1 && thickCloudExplicit) || diskPhysicsModeID == 2 || diskPhysicsModeID == 3)
+        ? diskVolumeTauScaleRawArg
+        : 0.0
     let diskVolumeFormatArg: UInt32 = (diskPhysicsModeID == 3) ? 1 : 0
     let diskVolumeLegacyEnabled = (diskPhysicsModeID == 2) && !diskVolumePathArg.isEmpty
     let diskVolumeGRMHDEnabled = (diskPhysicsModeID == 3)
+    let diskVolumeThickEnabled = (diskPhysicsModeID == 1) && thickCloudExplicit
     if diskVolumeGRMHDEnabled && (diskVol0PathArg.isEmpty || diskVol1PathArg.isEmpty) {
         fail("grmhd mode requires --disk-vol0 <path> and --disk-vol1 <path>")
     }
-    let diskVolumeEnabled = diskVolumeLegacyEnabled || diskVolumeGRMHDEnabled
+    let diskVolumeEnabled = diskVolumeLegacyEnabled || diskVolumeGRMHDEnabled || diskVolumeThickEnabled
 
     let diskVolume0Data: Data
     let diskVolume1Data: Data

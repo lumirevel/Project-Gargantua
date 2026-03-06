@@ -48,20 +48,25 @@ static inline float disk_emit_min_radius_m(constant Params& P) {
 }
 
 static inline float disk_half_thickness_m(float rEmitM, constant Params& P) {
-    if (FC_PHYSICS_MODE != 1u && FC_PHYSICS_MODE != 2u) return P.he;
+    if (FC_PHYSICS_MODE == 0u) return P.he;
     float rr = rEmitM / max(P.rs, 1e-6);
     // Thicker around inner/mid disk, taper near horizon and far outer edge.
     float innerRamp = smoothstep(0.9, 1.6, rr);
     float outerRamp = 1.0 - smoothstep(4.0, 9.0, rr);
     float band = clamp(innerRamp * outerRamp, 0.0, 1.0);
     float thickMul = 1.0 + (max(P.diskThickScale, 1.0) - 1.0) * band;
+    if (FC_PHYSICS_MODE == 1u) {
+        // Thick mode: diskThickScale should dominate geometry explicitly.
+        return max(P.he * thickMul, P.he);
+    }
     if (FC_PHYSICS_MODE == 2u) {
         // Precision mode uses a continuous thin->thick blend keyed by geometric H/rs.
         float hOverRs = clamp(P.he / max(P.rs, 1e-6), 0.0, 0.5);
         float geomBlend = smoothstep(0.015, 0.11, hOverRs);
         thickMul = mix(1.0, thickMul, geomBlend);
+        return max(P.he * thickMul, P.he);
     }
-    return max(P.he * thickMul, P.he);
+    return P.he;
 }
 
 static inline float disk_nt_flux_shape(float rM, float rMsM, float a) {
@@ -137,11 +142,26 @@ static inline float thin_tcol(float r_norm, constant Params& P) {
     return max(P.diskColorFactor, 1.0) * thin_teff(r_norm, P);
 }
 
-static inline float disk_effective_temperature(float rEmitM, float rInnerM, constant Params& P) {
+static inline float disk_teff_legacy(float rEmitM, float rInnerM, constant Params& P) {
     const float sigmaSB = 5.670374419e-8;
     const float kappaEs = 0.04;
-    // Evaluate F(r) in dimensionless r/rs form to avoid float overflow.
-    // F = (3/8) * (mdotEdd/eta) * c^3/(kappa_es * rs) * rr^-3 * (1 - sqrt(rr_in/rr))
+    float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
+    float mdotNorm = max(P.diskMdotEdd, 1e-5);
+    float rsSafe = max(P.rs, 1e-6);
+    float rr = max(rEmitM / rsSafe, 1.0 + 1e-6);
+    float rrIn = max(rInnerM / rsSafe, 1.0);
+    float pref = (3.0 / 8.0) * (mdotNorm / eta) * (P.c * P.c * P.c) / max(kappaEs * rsSafe, 1e-20);
+    if (!(rr > rrIn)) return 0.0;
+    float boundary = max(1.0 - sqrt(rrIn / rr), 0.0);
+    float flux = pref * pow(rr, -3.0) * boundary;
+    float t4 = flux / sigmaSB;
+    if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
+    return pow(t4, 0.25);
+}
+
+static inline float disk_teff_thin_nt(float rEmitM, float rInnerM, constant Params& P) {
+    const float sigmaSB = 5.670374419e-8;
+    const float kappaEs = 0.04;
     float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
     float mdotNorm = max(P.diskMdotEdd, 1e-5);
     float rsSafe = max(P.rs, 1e-6);
@@ -149,58 +169,69 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
     float rrIn = max(rInnerM / rsSafe, 1.0);
     float pref = (3.0 / 8.0) * (mdotNorm / eta) * (P.c * P.c * P.c) / max(kappaEs * rsSafe, 1e-20);
     if (rr > rrIn) {
+        // Thin NT profile opt-in path (keeps legacy precision behavior when
+        // precision texture is enabled).
+        if (!(P.diskPrecisionTexture > 1e-6)) {
+            return thin_tcol(rr, P);
+        }
         float boundary = max(1.0 - sqrt(rrIn / rr), 0.0);
         float flux = pref * pow(rr, -3.0) * boundary;
-        if (FC_PHYSICS_MODE == 2u) {
-            // Thin NT profile opt-in path (keeps legacy precision behavior when
-            // precision texture is enabled).
-            if (!(P.diskPrecisionTexture > 1e-6)) {
-                return thin_tcol(rr, P);
-            }
-            float massLen = 0.5 * rsSafe;
-            float rM = rEmitM / max(massLen, 1e-12);
-            float rMsM = rInnerM / max(massLen, 1e-12);
-            float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
-            float rel = disk_nt_flux_correction(rM, rMsM, a);
-            flux *= rel;
-        }
+        float massLen = 0.5 * rsSafe;
+        float rM = rEmitM / max(massLen, 1e-12);
+        float rMsM = rInnerM / max(massLen, 1e-12);
+        float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+        float rel = disk_nt_flux_correction(rM, rMsM, a);
+        flux *= rel;
         float t4 = flux / sigmaSB;
         if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
         float tEff = pow(t4, 0.25);
-        if (FC_PHYSICS_MODE == 2u) {
-            float fCol = max(P.diskColorFactor, 1.0);
-            return tEff * fCol;
-        }
-        return tEff;
-    }
-    if (FC_PHYSICS_MODE == 2u) {
-        float plungeFloor = clamp(P.diskPlungeFloor, 0.0, 1.0);
-        if (!(plungeFloor > 1e-6)) return 0.0;
-
-        // Precision mode: allow weak plunging emission continuation inside ISCO.
-        // This keeps NT-like behavior outside ISCO while avoiding an artificial hard void.
-        float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
-        float rrH = max(rH / rsSafe, 0.2);
-        float rrAnchor = rrIn * 1.02;
-        float boundaryAnchor = max(1.0 - sqrt(rrIn / rrAnchor), 0.0);
-        float fluxAnchor = pref * pow(rrAnchor, -3.0) * boundaryAnchor;
-        float tAnchor = pow(max(fluxAnchor / sigmaSB, 1e-20), 0.25);
-        if (!isfinite(tAnchor)) tAnchor = 0.0;
-
-        float x = clamp((rr - rrH) / max(rrIn - rrH, 1e-6), 0.0, 1.0);
-        float xSoft = smoothstep(0.0, 1.0, x);
-        float captureProfile = pow(max(xSoft, 1e-4), 2.8);
-        float floorProfile = pow(max(xSoft, 1e-4), 1.1);
-        float plungeMix = plungeFloor * floorProfile + (1.0 - plungeFloor) * captureProfile;
-        float advectiveCool = pow(max(rr / max(rrIn, 1e-4), 1e-4), 1.35);
-        float captureFade = smoothstep(0.20, 0.90, xSoft);
-
         float fCol = max(P.diskColorFactor, 1.0);
-        float tPlunge = max(tAnchor * plungeMix * advectiveCool * captureFade * fCol, 0.0);
-        return isfinite(tPlunge) ? tPlunge : 0.0;
+        return tEff * fCol;
     }
 
-    if (FC_PHYSICS_MODE != 1u) return 0.0;
+    float plungeFloor = clamp(P.diskPlungeFloor, 0.0, 1.0);
+    if (!(plungeFloor > 1e-6)) return 0.0;
+
+    // Precision mode: allow weak plunging emission continuation inside ISCO.
+    // This keeps NT-like behavior outside ISCO while avoiding an artificial hard void.
+    float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
+    float rrH = max(rH / rsSafe, 0.2);
+    float rrAnchor = rrIn * 1.02;
+    float boundaryAnchor = max(1.0 - sqrt(rrIn / rrAnchor), 0.0);
+    float fluxAnchor = pref * pow(rrAnchor, -3.0) * boundaryAnchor;
+    float tAnchor = pow(max(fluxAnchor / sigmaSB, 1e-20), 0.25);
+    if (!isfinite(tAnchor)) tAnchor = 0.0;
+
+    float x = clamp((rr - rrH) / max(rrIn - rrH, 1e-6), 0.0, 1.0);
+    float xSoft = smoothstep(0.0, 1.0, x);
+    float captureProfile = pow(max(xSoft, 1e-4), 2.8);
+    float floorProfile = pow(max(xSoft, 1e-4), 1.1);
+    float plungeMix = plungeFloor * floorProfile + (1.0 - plungeFloor) * captureProfile;
+    float advectiveCool = pow(max(rr / max(rrIn, 1e-4), 1e-4), 1.35);
+    float captureFade = smoothstep(0.20, 0.90, xSoft);
+
+    float fCol = max(P.diskColorFactor, 1.0);
+    float tPlunge = max(tAnchor * plungeMix * advectiveCool * captureFade * fCol, 0.0);
+    return isfinite(tPlunge) ? tPlunge : 0.0;
+}
+
+static inline float disk_teff_thick(float rEmitM, float rInnerM, constant Params& P) {
+    const float sigmaSB = 5.670374419e-8;
+    const float kappaEs = 0.04;
+    float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
+    float mdotNorm = max(P.diskMdotEdd, 1e-5);
+    float rsSafe = max(P.rs, 1e-6);
+    float rr = max(rEmitM / rsSafe, 1.0 + 1e-6);
+    float rrIn = max(rInnerM / rsSafe, 1.0);
+    float pref = (3.0 / 8.0) * (mdotNorm / eta) * (P.c * P.c * P.c) / max(kappaEs * rsSafe, 1e-20);
+
+    if (rr > rrIn) {
+        float boundary = max(1.0 - sqrt(rrIn / rr), 0.0);
+        float flux = pref * pow(rr, -3.0) * boundary;
+        float t4 = flux / sigmaSB;
+        if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
+        return pow(t4, 0.25);
+    }
 
     // Thick mode: finite but smooth plunging emissivity continuation inside ISCO.
     float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
@@ -222,6 +253,18 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
     float captureFade = smoothstep(0.15, 0.80, xSoft);
     float thickT = max(tAnchor * plungeMix * advectiveCool * captureFade, 0.0);
     return isfinite(thickT) ? thickT : 0.0;
+}
+
+static inline float disk_effective_temperature(float rEmitM, float rInnerM, constant Params& P) {
+    // Choke-point #1: explicit disk physics routing for temperature model.
+    // 0=legacy, 1=thick, 2=thinNT/precision, 3=eht(legacy-safe fallback here).
+    if (FC_PHYSICS_MODE == 2u) {
+        return disk_teff_thin_nt(rEmitM, rInnerM, P);
+    }
+    if (FC_PHYSICS_MODE == 1u) {
+        return disk_teff_thick(rEmitM, rInnerM, P);
+    }
+    return disk_teff_legacy(rEmitM, rInnerM, P);
 }
 
 static inline float disk_visible_teff(float rEmitM, constant Params& P) {
@@ -395,7 +438,17 @@ static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     float rMin = disk_emit_min_radius_m(P);
     float rMax = P.re;
     float halfH = disk_half_thickness_m(dxy, P);
-    if (P.diskVolumeMode != 0u && (FC_PHYSICS_MODE == 2u || FC_PHYSICS_MODE == 3u)) {
+    // Choke-point #2: explicit mode routing for where volume effects are permitted.
+    bool useVolumeBounds = false;
+    if (P.diskVolumeMode != 0u) {
+        if (FC_PHYSICS_MODE == 3u || FC_PHYSICS_MODE == 2u) {
+            useVolumeBounds = true;
+        } else if (FC_PHYSICS_MODE == 1u) {
+            float tauCtrl = max(P.diskCloudOpticalDepth, 0.0) * max(P.diskVolumeTauScale, 0.0);
+            useVolumeBounds = (tauCtrl > 1e-8);
+        }
+    }
+    if (useVolumeBounds) {
         float rs = max(P.rs, 1e-6);
         float volHalfH = max(P.diskVolumeZNormMax * rs, 1e-6);
         float volRMin = max(P.diskVolumeRNormMin * rs, rMin);

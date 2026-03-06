@@ -56,6 +56,17 @@ static inline void volume_accum_init(thread VolumeAccum& A) {
     A.surfaceHit = 0u;
 }
 
+static inline bool disk_volume_mode_enabled_fc(constant Params& P) {
+    if (P.diskVolumeMode == 0u) return false;
+    if (FC_PHYSICS_MODE == 3u) return true;
+    if (FC_PHYSICS_MODE == 2u) return true;
+    if (FC_PHYSICS_MODE == 1u) {
+        float tauCtrl = max(P.diskCloudOpticalDepth, 0.0) * max(P.diskVolumeTauScale, 0.0);
+        return (tauCtrl > 1e-8);
+    }
+    return false;
+}
+
 static inline float disk_grmhd_approx_gfactor(float r,
                                               float phi,
                                               float3 obsDir,
@@ -299,7 +310,7 @@ static inline void volume_integrate_segment(float3 p0,
                                             float pr0,
                                             float pr1)
 {
-    if (P.diskVolumeMode == 0u) return;
+    if (!disk_volume_mode_enabled_fc(P)) return;
     // Optional photosphere shortcut for visible mode.
     // Keep it disabled by default so GRMHD uses volumetric RT integration.
     bool visibleSurfaceMode = (FC_PHYSICS_MODE == 3u &&
@@ -355,7 +366,124 @@ static inline void volume_integrate_segment(float3 p0,
             continue;
         }
 
-        if (P.diskVolumeFormat == 1u) {
+        if (FC_PHYSICS_MODE == 1u) {
+            float tauCtrl = max(P.diskCloudOpticalDepth, 0.0) * max(P.diskVolumeTauScale, 0.0);
+            if (!(tauCtrl > 1e-8)) continue;
+
+            float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+            float porosity = clamp(P.diskCloudPorosity, 0.0, 1.0);
+            float shadow = clamp(P.diskCloudShadowStrength, 0.0, 1.0);
+            float halfH = max(disk_half_thickness_m(r, P), 0.05 * max(P.rs, 1e-6));
+            float zeta = pos.z / max(halfH, 1e-6);
+            float vertical = exp(-zeta * zeta);
+            float rMinEmit = max(disk_emit_min_radius_m(P), 1.0001 * P.rs);
+            float radial = pow(max(r / max(rMinEmit, 1e-6), 1.0), -0.9);
+            float cloudNoise = 0.5 + 0.5 * disk_cloud_noise(r, phi, pos.z, P.c * P.diskFlowTime + 0.11 * r, P);
+            float porousMask = smoothstep(0.35, 0.95, cloudNoise);
+            float fill = mix(1.0, porousMask, porosity);
+            float densityEff = tauCtrl
+                             * vertical
+                             * radial
+                             * mix(0.35, 1.05, coverage)
+                             * fill;
+            float innerX = clamp((r - diskInner) / max(0.45 * diskInner, 1e-6), 0.0, 1.0);
+            float innerGate = smoothstep(0.0, 1.0, innerX);
+            densityEff *= mix(0.25, 1.0, innerGate);
+            if (!(densityEff > 1e-6)) continue;
+
+            float vrRatio = -0.10 * (0.5 + 0.5 * (1.0 - innerGate));
+            float vphiScale = mix(0.55, 1.0, innerGate);
+            float g = 1.0;
+            if (FC_METRIC == 0) {
+                float massLen = 0.5 * P.rs;
+                float rM = r / max(massLen, 1e-12);
+                float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+                float betaRCoord = vrRatio * betaRef;
+                float betaPhiCoord = -vphiScale * betaRef;
+                if (r < diskInner * (1.0 - 1e-4)) {
+                    float rMsM = diskInner / max(massLen, 1e-12);
+                    float betaR = 0.0;
+                    float betaPhi = 0.0;
+                    if (disk_schwarzschild_plunge_local_beta(rM, rMsM, betaR, betaPhi)) {
+                        betaRCoord = betaR;
+                        betaPhiCoord = betaPhi;
+                    }
+                }
+                float4 rayDeriv = mix(rayV0, rayV1, t);
+                float rObs = max(length(P.camPos), 1.0001 * P.rs);
+                g = disk_schwarzschild_direct_gfactor(r,
+                                                      rObs,
+                                                      rayDeriv,
+                                                      betaRCoord,
+                                                      betaPhiCoord,
+                                                      P);
+            } else {
+                float massLen = 0.5 * P.rs;
+                float rM = r / max(massLen, 1e-12);
+                float a = clamp(P.spin, -0.999, 0.999);
+                float diskInnerM = diskInner / max(massLen, 1e-12);
+                float omega = (1.0 / max(pow_1p5(rM) + a, 1e-8)) * vphiScale;
+                float drdt = vrRatio * sqrt(1.0 / max(rM, 1.0));
+                if (rM < diskInnerM * (1.0 - 1e-4)) {
+                    float plungeOmega = omega;
+                    float plungeDrdt = drdt;
+                    float plungeVrRatio = vrRatio;
+                    if (disk_kerr_plunge_kinematics(rM, diskInnerM, a, plungeOmega, plungeDrdt, plungeVrRatio)) {
+                        omega = plungeOmega;
+                        drdt = plungeDrdt;
+                    }
+                }
+                float prRay = mix(pr0, pr1, t);
+                KerrCovMetric diskCov = kerr_cov_metric(rM, 0.5 * M_PI, a);
+                float uDen = -(diskCov.gtt
+                             + 2.0 * omega * diskCov.gtphi
+                             + omega * omega * diskCov.gphiphi
+                             + diskCov.grr * drdt * drdt);
+                if (!(uDen > 1e-12)) {
+                    drdt = 0.0;
+                    uDen = -(diskCov.gtt
+                           + 2.0 * omega * diskCov.gtphi
+                           + omega * omega * diskCov.gphiphi);
+                }
+                float u_t = 1.0 / sqrt(max(uDen, 1e-12));
+                float E_emit = u_t * (1.0 - omega * LzConst - drdt * prRay);
+                if (!(E_emit > 1e-8)) {
+                    E_emit = u_t * max(1.0 - omega * LzConst, 1e-8);
+                }
+                g = clamp(1.0 / max(E_emit, 1e-8), 1e-4, 1e4);
+            }
+            if (!isfinite(g)) g = 1.0;
+
+            float T = disk_effective_temperature(r, diskInner, P);
+            float emiss = densityEff
+                        * mix(0.75, 1.85, coverage)
+                        * pow(max(T / 5500.0, 1e-4), 2.1);
+            float dTau = min(densityEff * (1.0 + 0.8 * shadow) * ds / max(P.rs, 1e-6), 2.8);
+            float trans = exp(-A.tau);
+            float contrib = trans * emiss * ds;
+            if (contrib > 0.0) {
+                A.w += contrib;
+                A.temp4 += contrib * pow(max(T, 1.0), 4.0);
+                A.g += contrib * g;
+                A.r += contrib * r;
+                A.vr += contrib * vrRatio;
+                A.noise += contrib * cloudNoise;
+                A.x += contrib * pos.x;
+                A.y += contrib * pos.y;
+                A.z += contrib * pos.z;
+                A.ox += contrib * obs.x;
+                A.oy += contrib * obs.y;
+                A.oz += contrib * obs.z;
+                A.samples += 1u;
+                A.I += contrib;
+            }
+            A.tau += dTau;
+            if (!(A.tau < 24.0)) break;
+            continue;
+        }
+
+        // Choke-point #3: explicit mode-3 GRMHD emissivity routing.
+        if (FC_PHYSICS_MODE == 3u && P.diskVolumeFormat == 1u) {
             float4 vol0 = disk_sample_vol0(rNorm, phi, zNorm, P, diskVol0Tex);
             float4 vol1 = disk_sample_vol1(rNorm, phi, zNorm, P, diskVol1Tex);
 
@@ -528,6 +656,7 @@ static inline void volume_integrate_segment(float3 p0,
             if (useVisibleMultispectral) {
                 const float3 lamNm = float3(650.0, 550.0, 450.0);
                 const float3 lamM = lamNm * 1e-9;
+                bool expressiveVisible = (P.visiblePad0 != 0u);
                 float3 iPrevNu = A.IVisNu;
                 float3 qPrevNu = A.QVisNu;
                 float3 uPrevNu = A.UVisNu;
@@ -557,13 +686,49 @@ static inline void volume_integrate_segment(float3 p0,
                 float p0 = clamp(P.diskPolarizationFrac, 0.0, 0.9) * sinPitch;
                 float cos2psi = cos(2.0 * psi);
                 float sin2psi = sin(2.0 * psi);
+                float nuObsRef = max(P.diskNuObsHz, 1e6);
+                float nuComovRef = max(nuObsRef / max(g, 1e-8), 1e3);
+                float jComRef = 0.0;
+                float aComRef = 0.0;
+                float visibleAlpha = clamp(P.visibleEmissionAlpha, 0.0, 4.0);
+                float dIRef = 0.0;
+                if (expressiveVisible) {
+                    // Expressive visible mode:
+                    // derive RGB-band I_nu from a physically-traced reference I_nu at nu_obs,
+                    // then map to visible via a spectral slope instead of forcing synthetic hits.
+                    disk_grmhd_synch_coeffs(rho, thetae, bVec, nuComovRef, P, jComRef, aComRef);
+                    float aCoolRef = max(P.diskGrmhdAbsorptionScale, 0.0)
+                                   * disk_cool_absorber_alpha(rho, thetae, bVec, nuComovRef, P);
+                    aComRef += aCoolRef;
+
+                    float jObsRef = (jComRef * g * g) * aniso;
+                    float aObsRef = aComRef / max(g, 1e-8);
+                    float iPrevRef = A.I;
+                    if (aObsRef > 1e-12) {
+                        float dTauRef = min(aObsRef * ds, 40.0);
+                        float transRef = exp(-dTauRef);
+                        float srcRef = jObsRef / max(aObsRef, 1e-30);
+                        A.I = iPrevRef * transRef + srcRef * (1.0 - transRef);
+                        A.tau += dTauRef;
+                    } else {
+                        A.I = iPrevRef + jObsRef * ds;
+                    }
+                    dIRef = max(A.I - iPrevRef, 0.0);
+                    maxJObs = max(maxJObs, jObsRef);
+                }
 
                 for (uint k = 0u; k < 3u; ++k) {
                     float nuObs = P.c / max(lamM[k], 1e-30);
-                    float nuComov = max(nuObs / max(g, 1e-8), 1e3);
                     float jCom = 0.0;
                     float aCom = 0.0;
-                    disk_visible_rt_coeffs(r, rho, thetae, bVec, nuComov, P, jCom, aCom);
+                    float nuComov = max(nuObs / max(g, 1e-8), 1e3);
+                    if (expressiveVisible) {
+                        float ratio = max(nuObs / max(nuObsRef, 1e6), 1e-8);
+                        jCom = jComRef * pow(ratio, -visibleAlpha);
+                        aCom = aComRef;
+                    } else {
+                        disk_visible_rt_coeffs(r, rho, thetae, bVec, nuComov, P, jCom, aCom);
+                    }
 
                     float jObs = (jCom * g * g) * aniso;
                     float aObs = aCom / max(g, 1e-8);
@@ -619,10 +784,12 @@ static inline void volume_integrate_segment(float3 p0,
                 A.maxJ = max(A.maxJ, maxJObs);
 
                 float3 dINu = max(A.IVisNu - iPrevNu, float3(0.0));
-                dI = dot(dINu, float3(0.30, 0.40, 0.30));
-
-                A.I = dot(A.IVisNu, float3(0.30, 0.40, 0.30));
-                A.tau = max(max(A.tauVis.x, A.tauVis.y), A.tauVis.z);
+                float dIVis = dot(dINu, float3(0.30, 0.40, 0.30));
+                dI = expressiveVisible ? dIRef : dIVis;
+                if (!expressiveVisible) {
+                    A.I = dot(A.IVisNu, float3(0.30, 0.40, 0.30));
+                    A.tau = max(max(A.tauVis.x, A.tauVis.y), A.tauVis.z);
+                }
                 if (polarized) {
                     // Keep Q/U/V bounded by I to avoid numeric blow-up.
                     A.QVisNu = clamp(A.QVisNu, -A.IVisNu, A.IVisNu);
@@ -991,14 +1158,9 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
 {
     bool expressiveVisible = (grmhd_visible_mode_enabled() && P.visiblePad0 != 0u);
     bool grmhdVisibleSurfaceHit = (grmhd_visible_mode_enabled() && volumeA.surfaceHit != 0u);
-    bool grmhdVisibleExpressiveFallback =
-        (FC_PHYSICS_MODE == 3u &&
-         expressiveVisible &&
-         volumeA.maxRho > 0.0 &&
-         volumeA.maxB2 > 0.0);
     if (!(volumeMode &&
           (grmhdVisibleSurfaceHit ||
-           ((FC_PHYSICS_MODE == 3u) && (volumeA.I > 0.0 || grmhdVisibleExpressiveFallback)) ||
+           ((FC_PHYSICS_MODE == 3u) && volumeA.I > 0.0) ||
            ((FC_PHYSICS_MODE != 3u) && volumeA.w > 0.0)))) {
         return false;
     }
@@ -1020,17 +1182,9 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
     }
 
     float scalarI = (FC_PHYSICS_MODE == 3u) ? max(volumeA.I, 0.0) : clamp(volAmp, 0.0, 1.0);
-    if (FC_PHYSICS_MODE == 3u && expressiveVisible && !(scalarI > 0.0)) {
-        float rhoRef = max(volumeA.maxRho, 1e-20);
-        float b2Ref = max(volumeA.maxB2, 1e-20);
-        float emissScale = max(P.diskGrmhdEmissionScale, 1e-6);
-        // Expressive fallback proxy: keep strictly positive signal when
-        // physically-mapped visible emissivity underflows to zero.
-        scalarI = max(
-            scalarI,
-            5.0e-18 * emissScale
-            * (pow(rhoRef, 0.70) + 0.35 * pow(b2Ref, 0.35))
-        );
+    if (FC_PHYSICS_MODE == 3u) {
+        float iVisWeighted = dot(max(volumeA.IVisNu, float3(0.0)), float3(0.30, 0.40, 0.30));
+        scalarI = max(scalarI, iVisWeighted);
     }
     float brightnessT = pow(max(volumeA.temp4 * invW, 1e-20), 0.25);
     if (grmhdVisibleSurfaceHit) {
@@ -1049,7 +1203,8 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
     float gMean = haveWeightedMoments ? (volumeA.g * invW) : 1.0;
     float vrMean = haveWeightedMoments ? (volumeA.vr * invW) : 0.0;
     float noiseMean = haveWeightedMoments ? (volumeA.noise * invW) : 0.0;
-    float iVisTot = max(dot(volumeA.IVisNu, float3(1.0)), 1e-30);
+    float iVisTotRaw = dot(volumeA.IVisNu, float3(1.0));
+    float iVisTot = max(iVisTotRaw, 1e-30);
     float qVisTot = dot(volumeA.QVisNu, float3(1.0));
     float uVisTot = dot(volumeA.UVisNu, float3(1.0));
     float vVisTot = dot(volumeA.VVisNu, float3(1.0));
@@ -1082,6 +1237,13 @@ static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
         info.emit_r_norm = max(volumeA.IVisNu.x, 0.0);
         info.emit_phi = max(volumeA.IVisNu.y, 0.0);
         info.emit_z_norm = max(volumeA.IVisNu.z, 0.0);
+        if (P.rayBundleJacobian != 0u) {
+            // Bundle Jacobian needs the actual emissive centroid for volumetric visible mode.
+            // Stash it in otherwise-unused payload components so post compose remains unchanged.
+            info.ct = pos.x;
+            info._pad0 = pos.y;
+            info.direct_world.w = pos.z;
+        }
     } else {
         info.noise = clamp(noiseMean, 0.0, 1.0);
         info.emit_r_norm = rEmit / max(P.rs, 1e-6);
@@ -1129,7 +1291,7 @@ static inline bool trace_single_ray(constant Params& P,
         float diskInner = disk_inner_radius_m(P);
         float diskEmitMin = disk_emit_min_radius_m(P);
         float rObs = max(length(P.camPos), 1.0001 * P.rs);
-        bool volumeMode = (P.diskVolumeMode != 0u && (FC_PHYSICS_MODE == 2u || FC_PHYSICS_MODE == 3u));
+        bool volumeMode = disk_volume_mode_enabled_fc(P);
         VolumeAccum volumeA;
         volume_accum_init(volumeA);
         float3 volumeObsDir = -normalize(dir);
@@ -1294,7 +1456,7 @@ static inline bool trace_single_ray(constant Params& P,
         float diskInner = disk_inner_radius_m(P);
         float diskInnerM = diskInner / max(massLen, 1e-12);
         float diskEmitMin = disk_emit_min_radius_m(P);
-        bool volumeMode = (P.diskVolumeMode != 0u && (FC_PHYSICS_MODE == 2u || FC_PHYSICS_MODE == 3u));
+        bool volumeMode = disk_volume_mode_enabled_fc(P);
         VolumeAccum volumeA;
         volume_accum_init(volumeA);
         float3 volumeObsDir = -normalize(dir);
@@ -2074,6 +2236,93 @@ static inline float ray_bundle_compute_jacobian_weight(constant Params& P,
     return ray_bundle_lockstep_weight_kerr(P, x, y, diffOffset);
 }
 
+static inline bool ray_bundle_emit_pos_from_collision(constant Params& P,
+                                                      thread const CollisionInfo& rec,
+                                                      thread float3& emitPos) {
+    bool useVolumetricEmitPos = (FC_PHYSICS_MODE == 3u &&
+                                 FC_VISIBLE_MODE != 0u &&
+                                 P.visiblePhotosphereRhoThreshold <= 0.0 &&
+                                 P.rayBundleJacobian != 0u);
+    if (rec.hit == 0u || !(ray_bundle_can_use_emit_pos(P) || useVolumetricEmitPos)) return false;
+    if (useVolumetricEmitPos) {
+        emitPos = float3(rec.ct, rec._pad0, rec.direct_world.w);
+        float rEmit = length(emitPos.xy);
+        if (!(rEmit > 0.0) || !isfinite(rEmit) ||
+            !isfinite(emitPos.x) || !isfinite(emitPos.y) || !isfinite(emitPos.z)) {
+            return false;
+        }
+        return true;
+    }
+    float rEmit = rec.emit_r_norm * P.rs;
+    float phiEmit = rec.emit_phi;
+    float zEmit = rec.emit_z_norm * P.rs;
+    if (!(rEmit > 0.0) || !isfinite(rEmit) || !isfinite(phiEmit) || !isfinite(zEmit)) return false;
+    emitPos = float3(rEmit * cos(phiEmit), rEmit * sin(phiEmit), zEmit);
+    if (!(isfinite(emitPos.x) && isfinite(emitPos.y) && isfinite(emitPos.z))) return false;
+    return true;
+}
+
+static inline bool ray_bundle_compute_emitpos_bundle_weight(constant Params& P,
+                                                            thread const CollisionInfo sampleInfos[4],
+                                                            thread const uint sampleHits[4],
+                                                            thread float& outWeight) {
+    bool useVolumetricEmitPos = (FC_PHYSICS_MODE == 3u &&
+                                 FC_VISIBLE_MODE != 0u &&
+                                 P.visiblePhotosphereRhoThreshold <= 0.0 &&
+                                 P.rayBundleJacobian != 0u);
+    if (P.rayBundleJacobian == 0u || !(ray_bundle_can_use_emit_pos(P) || useVolumetricEmitPos)) return false;
+    float3 emitPos[4];
+    for (uint i = 0u; i < 4u; ++i) {
+        if (sampleHits[i] == 0u) return false;
+        if (!ray_bundle_emit_pos_from_collision(P, sampleInfos[i], emitPos[i])) return false;
+    }
+
+    // The 4 bundle rays already sample the actual emissive surface. Use that quadrilateral
+    // directly instead of re-estimating a separate thin-disk crossing Jacobian.
+    float3 eX = 0.5 * ((emitPos[1] - emitPos[0]) + (emitPos[3] - emitPos[2]));
+    float3 eY = 0.5 * ((emitPos[2] - emitPos[0]) + (emitPos[3] - emitPos[1]));
+    float footprintArea = length(cross(eX, eY));
+    if (!(footprintArea > 1e-30) || !isfinite(footprintArea)) return false;
+
+    float rMean = 0.25 * (
+        length(emitPos[0].xy) +
+        length(emitPos[1].xy) +
+        length(emitPos[2].xy) +
+        length(emitPos[3].xy)
+    );
+    float bundleSpan = 0.5;
+    float ang = max(bundleSpan / max(P.d, 1e-6), 1e-8);
+    float referenceArea = max((rMean * ang) * (rMean * ang), 1e-24);
+    float magnification = footprintArea / referenceArea;
+    outWeight = ray_bundle_apply_magnification_controls(P, magnification);
+    return isfinite(outWeight) && (outWeight > 0.0);
+}
+
+static inline bool ray_bundle_compute_center_diff_weight(constant Params& P,
+                                                         thread const CollisionInfo& centerInfo,
+                                                         thread const CollisionInfo& dxInfo,
+                                                         thread const CollisionInfo& dyInfo,
+                                                         float diffSpan,
+                                                         thread float& outWeight) {
+    if (P.rayBundleJacobian == 0u) return false;
+    float3 emitCenter, emitDx, emitDy;
+    if (!ray_bundle_emit_pos_from_collision(P, centerInfo, emitCenter)) return false;
+    if (!ray_bundle_emit_pos_from_collision(P, dxInfo, emitDx)) return false;
+    if (!ray_bundle_emit_pos_from_collision(P, dyInfo, emitDy)) return false;
+
+    float3 eX = emitDx - emitCenter;
+    float3 eY = emitDy - emitCenter;
+    float footprintArea = length(cross(eX, eY));
+    if (!(footprintArea > 1e-30) || !isfinite(footprintArea)) return false;
+
+    float rMean = max(length(emitCenter.xy), 1e-6);
+    float ang = max(diffSpan / max(P.d, 1e-6), 1e-8);
+    float referenceArea = max((rMean * ang) * (rMean * ang), 1e-24);
+    float magnification = footprintArea / referenceArea;
+    outWeight = ray_bundle_apply_magnification_controls(P, magnification);
+    return isfinite(outWeight) && (outWeight > 0.0);
+}
+
 // Forward declarations used by in-kernel visible-spectrum SSAA averaging.
 static inline void comp_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar);
 static inline float comp_visible_iNu_emit(float nuEm, float te, constant Params& P);
@@ -2230,10 +2479,25 @@ static inline void renderBH_core_bundle(constant Params& P,
     CollisionInfo firstHitInfo;
     init_collision_info(firstHitInfo);
     bool haveFirstHitInfo = false;
+    CollisionInfo sampleInfos[4];
+    uint sampleHits[4] = {0u, 0u, 0u, 0u};
+    for (uint s = 0u; s < sampleCount; ++s) {
+        init_collision_info(sampleInfos[s]);
+    }
 
     CollisionInfo centerInfo;
     init_collision_info(centerInfo);
     bool centerHit = trace_single_ray(P, baseX, baseY, diskAtlasTex, diskVol0Tex, diskVol1Tex, centerInfo) && (centerInfo.hit != 0u);
+    CollisionInfo diffXInfo;
+    CollisionInfo diffYInfo;
+    init_collision_info(diffXInfo);
+    init_collision_info(diffYInfo);
+    bool diffXHit = false;
+    bool diffYHit = false;
+    if (P.rayBundleJacobian != 0u) {
+        diffXHit = trace_single_ray(P, baseX + 0.5, baseY, diskAtlasTex, diskVol0Tex, diskVol1Tex, diffXInfo) && (diffXInfo.hit != 0u);
+        diffYHit = trace_single_ray(P, baseX, baseY + 0.5, diskAtlasTex, diskVol0Tex, diskVol1Tex, diffYInfo) && (diffYInfo.hit != 0u);
+    }
 
     for (uint s = 0u; s < sampleCount; ++s) {
         float2 j = ssaaJitter[s];
@@ -2241,8 +2505,30 @@ static inline void renderBH_core_bundle(constant Params& P,
         float y = baseY + j.y;
 
         CollisionInfo subInfo;
+        init_collision_info(subInfo);
         bool hit = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, subInfo);
         if (!hit || subInfo.hit == 0u) continue;
+        sampleInfos[s] = subInfo;
+        sampleHits[s] = 1u;
+    }
+
+    float bundleJacW = 1.0;
+    bool haveBundleJacW = false;
+    if (P.rayBundleJacobian != 0u) {
+        if (centerHit && diffXHit && diffYHit) {
+            haveBundleJacW = ray_bundle_compute_center_diff_weight(P, centerInfo, diffXInfo, diffYInfo, 0.5, bundleJacW);
+        }
+        if (!haveBundleJacW) {
+            haveBundleJacW = ray_bundle_compute_emitpos_bundle_weight(P, sampleInfos, sampleHits, bundleJacW);
+        }
+    }
+
+    for (uint s = 0u; s < sampleCount; ++s) {
+        if (sampleHits[s] == 0u) continue;
+        float2 j = ssaaJitter[s];
+        float x = baseX + j.x;
+        float y = baseY + j.y;
+        CollisionInfo subInfo = sampleInfos[s];
         if (!haveFirstHitInfo) {
             firstHitInfo = subInfo;
             haveFirstHitInfo = true;
@@ -2250,7 +2536,9 @@ static inline void renderBH_core_bundle(constant Params& P,
 
         float jacW = 1.0;
         if (P.rayBundleJacobian != 0u) {
-            jacW = ray_bundle_compute_jacobian_weight(P, x, y, diffOffset, subInfo);
+            jacW = haveBundleJacW
+                ? bundleJacW
+                : ray_bundle_compute_jacobian_weight(P, x, y, diffOffset, subInfo);
         }
 
         float tSafe = clamp(subInfo.T, 0.0, 1e9);
@@ -2327,6 +2615,11 @@ static inline void renderBH_core_bundle(constant Params& P,
         out.emit_r_norm = max(sumEmitR, 0.0);
         out.emit_phi = max(sumEmitPhi, 0.0);
         out.emit_z_norm = max(sumEmitZ, 0.0);
+    }
+    if (P.rayBundleJacobian != 0u) {
+        // Preserve the computed bundle Jacobian weight for collision-debug inspection.
+        // Post compose only uses direct_world.xyz, so w is safe as an internal diagnostic.
+        out.direct_world.w = bundleJacW;
     }
 
     outInfo[idx] = out;
