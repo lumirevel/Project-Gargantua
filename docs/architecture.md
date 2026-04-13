@@ -17,15 +17,25 @@
    - loads atlas/volume textures
    - builds function-constant-specialized pipeline states through `MetalPipelines`
 5. `Blackhole/Sources/RenderExecution.swift`
-   - trace / light / compose dispatch order
-   - tile scheduling, in-flight buffers, encoder lifecycle, synchronization
+   - high-level render execution orchestration
+   - owns compose/prepass sequencing, while lower execution helpers are extracted out
    - no CLI parsing or disk-policy interpretation
-6. `Blackhole/Sources/RenderOutputs.swift`
+6. `Blackhole/Sources/RenderTracePhase.swift`
+   - trace dispatch loop
+   - in-flight slot submission
+   - per-tile trace completion handling
+   - trace-stage histogram seed collection for hdr32-file paths
+7. `Blackhole/Sources/RenderResourcePolicy.swift`
+   - execution-time memory/intermediate-policy boundary
+   - decides collision64 vs lite32 vs hdr32-direct eligibility
+   - centralizes working-set-driven fallback policy
+8. `Blackhole/Sources/RenderOutputs.swift`
    - image writing
    - metadata JSON creation/writing
-7. `Blackhole/Sources/Resources.swift`
+9. `Blackhole/Sources/Resources.swift`
    - raw file IO helpers
    - atlas / volume metadata decoding and texture upload helpers
+   - frame resource allocation for trace/intermediate buffers
 
 ## Config Flow
 1. `CLI.swift`

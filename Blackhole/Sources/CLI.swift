@@ -31,6 +31,10 @@ func intArg(_ name: String, default defaultValue: Int) -> Int {
     return Int(cliArguments[idx + 1]) ?? defaultValue
 }
 
+func flagArgAny(_ names: [String]) -> Bool {
+    names.contains { cliArguments.contains($0) }
+}
+
 func intArgAny(_ names: [String], default defaultValue: Int) -> Int {
     for name in names {
         if let idx = cliArguments.firstIndex(of: name), idx + 1 < cliArguments.count {
@@ -61,6 +65,15 @@ func stringArg(_ name: String, default defaultValue: String) -> String {
         return defaultValue
     }
     return cliArguments[idx + 1]
+}
+
+func stringArgAny(_ names: [String], default defaultValue: String) -> String {
+    for name in names {
+        if let idx = cliArguments.firstIndex(of: name), idx + 1 < cliArguments.count {
+            return cliArguments[idx + 1]
+        }
+    }
+    return defaultValue
 }
 
 func parseDiskMode(_ raw: String) -> (id: UInt32, canonical: String)? {

@@ -508,7 +508,7 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
@@ -520,7 +520,7 @@ Routing rules:
   - 3d + {flow|hdf5|pluto}: precision/grmhd volumetric path
 - Precision texture controls: --disk-returning-rad <0..1> --disk-return-bounces <1..4> --disk-rt-steps <0..32> --disk-scattering-albedo <0..1> --disk-precision-texture <0..1>
 - Precision cloud controls: --disk-precision-clouds {on|off} --disk-cloud-coverage <0..1> --disk-cloud-optical-depth <0..12> --disk-cloud-porosity <0..1> --disk-cloud-shadow-strength <0..1>
-- Precision physics requires GPU compose path (--pipeline gpu-only).
+- Precision physics uses the GPU runtime path automatically.
 - Atlas auto path: in non-precision mode, when --disk-model atlas is set and --disk-atlas is omitted, auto-search order is BH_DISK_ATLAS, ./disk_atlas.bin, /tmp/stage3_ab/disk_atlas.bin
 - Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
   - look options: balanced(default), interstellar, eht, agx/filmic, hdr
@@ -548,20 +548,16 @@ Routing rules:
 - Python override: BH_PYTHON=<python> (default: auto-detect; PLUTO/HDF5 paths require h5py)
 - Pipeline quality: --ssaa {1|2|4} (2=2x2, 4=4x4 supersampling)
 - Swift memory: --tile-size <pixels> (optional, e.g. 512/1024)
-- Pipeline mode:
-  - --pipeline {cpu-mixed|gpu-only}
-  - shortcut: --cpu-mixed / --gpu-only
-- Collisions mode:
-  - --collisions {debug|auto|linear32|none}
-  - debug: keep collisions.bin (+meta), debug/inspection mode
-  - auto: choose none first, switch to linear32 if memory risk is detected (default)
-  - linear32: always streamed float32 intermediate chunks
-  - none: no intermediate collision files (low-quality/quick mode)
-  - compatibility: --temp-collisions => linear32, --keep-collisions => debug
-- Compatibility aliases (deprecated):
-  - mode: --mode {debug|fast}, --debug, --fast (maps to collisions mode)
-  - pipeline: --match-cpu / --gpu-native / --gpu-pure / --gpu-hybrid / --compose {gpu|python}
-- Default collisions mode is auto (none -> linear32 fallback on memory pressure).
+- Runtime path:
+  - GPU compose is always used.
+  - Intermediate buffers are managed automatically in memory by the Swift/Metal runtime.
+  - High-resolution runs may fall back to tiled GPU buffers automatically; no file spill is used in the normal path.
+- Debug outputs:
+  - --debug: keep collisions.bin (+meta) for inspection/analysis
+  - --collisions-out <path>: optional explicit path for debug collision output; implies --debug
+- Deprecated compatibility aliases are still accepted and ignored where possible:
+  - --pipeline, --cpu-mixed, --gpu-only, --compose, --collisions, --hdr-intermediate, --hdr-out, --temp-collisions, --keep-collisions, --discard-collisions, --fast
+- Default runtime keeps collision intermediates temporary/in-memory; use --debug to persist them.
 - Intermediate artifacts are auto-managed by default (temporary files are created and cleaned automatically).
 - Explicit output paths keep artifacts only when explicitly requested (e.g. --collisions-out, --disk-hdf5-out, --disk-hdf5-sample-out).
 - Unknown options go to Swift by default.
@@ -656,6 +652,13 @@ while [[ "$#" -gt 0 ]]; do
     --image-out|--png-out|--py-output)
       need_value "$arg" "$@"
       IMAGE_OUT="$1"
+      shift
+      continue
+      ;;
+    --hdr-out)
+      need_value "$arg" "$@"
+      LINEAR32_OUT="$1"
+      echo "warn: --hdr-out is deprecated and ignored; hdr32 file intermediates are no longer part of the normal runtime path." >&2
       shift
       continue
       ;;
@@ -1147,9 +1150,11 @@ while [[ "$#" -gt 0 ]]; do
       case "$MODE" in
         debug)
           COLLISIONS_MODE="debug"
+          echo "warn: --mode debug is deprecated; use --debug." >&2
           ;;
         fast)
           COLLISIONS_MODE="auto"
+          echo "warn: --mode fast is deprecated and now has no effect; GPU runtime is the default." >&2
           ;;
         *)
           echo "error: --mode must be one of debug, fast" >&2
@@ -1166,44 +1171,59 @@ while [[ "$#" -gt 0 ]]; do
         debug)
           COLLISIONS_MODE="debug"
           MODE="debug"
+          echo "warn: --collisions debug is deprecated; use --debug." >&2
           ;;
         auto)
           COLLISIONS_MODE="auto"
           MODE="fast"
+          echo "warn: --collisions auto is deprecated and ignored; the runtime now manages intermediates automatically." >&2
           ;;
         linear32)
-          COLLISIONS_MODE="linear32"
+          COLLISIONS_MODE="auto"
           MODE="fast"
+          echo "warn: --collisions linear32 is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
+          ;;
+        hdr)
+          COLLISIONS_MODE="auto"
+          MODE="fast"
+          echo "warn: --collisions hdr is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
           ;;
         none)
-          COLLISIONS_MODE="none"
+          COLLISIONS_MODE="auto"
           MODE="fast"
+          echo "warn: --collisions none is deprecated and ignored; the runtime now manages temporary intermediates automatically." >&2
           ;;
         keep)
           # Backward compatibility alias
           COLLISIONS_MODE="debug"
           MODE="debug"
+          echo "warn: --collisions keep is deprecated; use --debug." >&2
           ;;
         temp)
           # Backward compatibility alias
-          COLLISIONS_MODE="linear32"
+          COLLISIONS_MODE="auto"
           MODE="fast"
+          echo "warn: --collisions temp is deprecated and ignored; the runtime now manages temporary intermediates automatically." >&2
           ;;
         *)
-          echo "error: --collisions must be one of debug, auto, linear32, none" >&2
+          echo "error: --collisions must be one of debug, auto, linear32, hdr, none" >&2
           exit 2
           ;;
       esac
       continue
       ;;
+    --hdr-intermediate)
+      echo "warn: --hdr-intermediate is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
+      continue
+      ;;
     --temp-collisions)
-      COLLISIONS_MODE="linear32"
-      MODE="fast"
+      echo "warn: --temp-collisions is deprecated and ignored; the runtime now manages temporary intermediates automatically." >&2
       continue
       ;;
     --keep-collisions)
       COLLISIONS_MODE="debug"
       MODE="debug"
+      echo "warn: --keep-collisions is deprecated; use --debug." >&2
       continue
       ;;
     --compose)
@@ -1212,7 +1232,7 @@ while [[ "$#" -gt 0 ]]; do
       shift
       case "$LEGACY_COMPOSE_OVERRIDE" in
         gpu|python)
-          echo "warn: --compose is deprecated and will be mapped to --pipeline." >&2
+          echo "warn: --compose is deprecated and ignored; GPU compose is always used." >&2
           ;;
         *)
           echo "error: --compose must be one of gpu, python" >&2
@@ -1222,8 +1242,9 @@ while [[ "$#" -gt 0 ]]; do
       continue
       ;;
     --cpu-mixed)
-      PIPELINE_MODE="cpu-mixed"
+      PIPELINE_MODE="gpu-only"
       PIPELINE_ARG_PRESENT=1
+      echo "warn: --cpu-mixed is deprecated and ignored; GPU runtime is always used." >&2
       continue
       ;;
     --gpu-only)
@@ -1238,7 +1259,8 @@ while [[ "$#" -gt 0 ]]; do
       PIPELINE_ARG_PRESENT=1
       case "$pipeline_mode" in
         cpu-mixed)
-          PIPELINE_MODE="cpu-mixed"
+          PIPELINE_MODE="gpu-only"
+          echo "warn: --pipeline cpu-mixed is deprecated and ignored; GPU runtime is always used." >&2
           ;;
         gpu-only)
           PIPELINE_MODE="gpu-only"
@@ -1251,15 +1273,17 @@ while [[ "$#" -gt 0 ]]; do
       continue
       ;;
     --match-cpu)
-      # Kept for backward compatibility: map to cpu-mixed terminology.
-      PIPELINE_MODE="cpu-mixed"
+      # Kept for backward compatibility: silently preserve GPU runtime.
+      PIPELINE_MODE="gpu-only"
       PIPELINE_ARG_PRESENT=1
+      echo "warn: --match-cpu is deprecated and ignored; GPU runtime is always used." >&2
       continue
       ;;
     --gpu-native)
-      # Kept for backward compatibility: map to cpu-mixed terminology.
-      PIPELINE_MODE="cpu-mixed"
+      # Kept for backward compatibility: silently preserve GPU runtime.
+      PIPELINE_MODE="gpu-only"
       PIPELINE_ARG_PRESENT=1
+      echo "warn: --gpu-native is deprecated and ignored; GPU runtime is always used." >&2
       continue
       ;;
     --gpu-pure)
@@ -1269,14 +1293,16 @@ while [[ "$#" -gt 0 ]]; do
       continue
       ;;
     --gpu-hybrid)
-      # Kept for backward compatibility: map to cpu-mixed terminology.
-      PIPELINE_MODE="cpu-mixed"
+      # Kept for backward compatibility: silently preserve GPU runtime.
+      PIPELINE_MODE="gpu-only"
       PIPELINE_ARG_PRESENT=1
+      echo "warn: --gpu-hybrid is deprecated and ignored; GPU runtime is always used." >&2
       continue
       ;;
     --fast)
       MODE="fast"
       COLLISIONS_MODE="auto"
+      echo "warn: --fast is deprecated and ignored; GPU runtime is the default." >&2
       continue
       ;;
     --debug)
@@ -2507,48 +2533,21 @@ elif [[ "$DISK_ATLAS_SET" -eq 0 ]]; then
   esac
 fi
 
-# Canonical routing: compose backend is implied by pipeline mode.
-if [[ -n "$LEGACY_COMPOSE_OVERRIDE" ]]; then
-  if [[ "$LEGACY_COMPOSE_OVERRIDE" == "python" ]]; then
-    PIPELINE_MODE="cpu-mixed"
-  elif [[ "$LEGACY_COMPOSE_OVERRIDE" == "gpu" && "$PIPELINE_MODE" == "cpu-mixed" ]]; then
-    echo "warn: --compose gpu is ignored in cpu-mixed mode (cpu-mixed now composes via python)." >&2
-  fi
-fi
-
-# Collisions mode may constrain pipeline route.
-if [[ "$PIPELINE_MODE" == "cpu-mixed" && ( "$COLLISIONS_MODE" == "auto" || "$COLLISIONS_MODE" == "linear32" || "$COLLISIONS_MODE" == "none" ) ]]; then
-  echo "warn: --collisions $COLLISIONS_MODE requires gpu-only. switching pipeline to gpu-only." >&2
-  PIPELINE_MODE="gpu-only"
-fi
-
-case "$PIPELINE_MODE" in
-  cpu-mixed)
-    COMPOSE_BACKEND="python"
-    MATCH_CPU=1
-    GPU_FULL_COMPOSE=0
-    GPU_STREAM_LINEAR32=0
-    ;;
-  gpu-only)
-    COMPOSE_BACKEND="gpu"
-    MATCH_CPU=0
-    GPU_FULL_COMPOSE=1
-    GPU_STREAM_LINEAR32=0
-    ;;
-  *)
-    echo "error: internal invalid pipeline mode: $PIPELINE_MODE" >&2
-    exit 2
-    ;;
-esac
-
-if [[ "$COMPOSE_BACKEND" == "python" && ( "$DISK_PHYSICS_MODE_VALUE" == "precision" || "$DISK_PHYSICS_MODE_VALUE" == "analysis" || "$DISK_PHYSICS_MODE_VALUE" == "pt" || "$DISK_PHYSICS_MODE_VALUE" == "grmhd" ) ]]; then
-  echo "error: precision/grmhd disk physics requires gpu-only compose path." >&2
-  echo "hint: rerun with --pipeline gpu-only (or --gpu-only)." >&2
-  exit 2
-fi
+# Canonical runtime routing: compose stays on GPU and intermediate buffering is automatic.
+PIPELINE_MODE="gpu-only"
+COMPOSE_BACKEND="gpu"
+MATCH_CPU=0
+GPU_FULL_COMPOSE=1
+GPU_STREAM_LINEAR32=0
 
 if [[ -n "$STOKES_OUT" && "$COLLISIONS_MODE" != "debug" ]]; then
-  echo "info: enabling --collisions debug for Stokes diagnostics output." >&2
+  echo "info: enabling --debug for Stokes diagnostics output." >&2
+  COLLISIONS_MODE="debug"
+  MODE="debug"
+fi
+
+if [[ "$COLLISIONS_OUT_EXPLICIT" -eq 1 && "$COLLISIONS_MODE" != "debug" ]]; then
+  echo "info: enabling --debug because --collisions-out was requested." >&2
   COLLISIONS_MODE="debug"
   MODE="debug"
 fi
@@ -2578,16 +2577,6 @@ case "$COLLISIONS_MODE" in
     GPU_STREAM_LINEAR32=0
     ;;
   auto)
-    COLLISIONS_POLICY="temp"
-    GPU_FULL_COMPOSE=1
-    GPU_STREAM_LINEAR32=0
-    ;;
-  linear32)
-    COLLISIONS_POLICY="keep"
-    GPU_FULL_COMPOSE=0
-    GPU_STREAM_LINEAR32=1
-    ;;
-  none)
     COLLISIONS_POLICY="temp"
     GPU_FULL_COMPOSE=1
     GPU_STREAM_LINEAR32=0
@@ -2671,7 +2660,7 @@ else
   TILE_INFO="full-frame"
 fi
 
-if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 && "$GPU_FULL_COMPOSE" -eq 1 && "$COLLISIONS_MODE" == "auto" ]]; then
+if [[ "$COLLISIONS_MODE" == "auto" ]]; then
   PIXELS=$((RENDER_WIDTH * RENDER_HEIGHT))
   COLLISION_BYTES=$((PIXELS * 64))
   NEED_LINEAR=1
@@ -2689,11 +2678,7 @@ if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 && "$GPU_FULL_COMPOSE" -
     if (( EST_TOTAL_BYTES > SAFE_BUDGET_BYTES )); then
       EST_GIB="$(to_gib "$EST_TOTAL_BYTES")"
       MEM_GIB="$(to_gib "$PHYS_MEM_BYTES")"
-      echo "warn: gpu-only estimated memory ${EST_GIB} GiB exceeds safe budget on this machine (${MEM_GIB} GiB physical)." >&2
-      echo "warn: auto mode switched to streamed linear32 due to memory budget." >&2
-      MATCH_CPU=0
-      GPU_FULL_COMPOSE=0
-      GPU_STREAM_LINEAR32=1
+      echo "info: wrapper estimated ${EST_GIB} GiB working set on a ${MEM_GIB} GiB machine; keeping gpu-full-compose and delegating memory fallback to the Swift/Metal runtime." >&2
     fi
   fi
 fi
@@ -2708,21 +2693,9 @@ fi
 
 TEMP_COLLISIONS=""
 if [[ "$COLLISIONS_POLICY" == "temp" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; then
-  if [[ ( "$COLLISIONS_MODE" == "none" || "$COLLISIONS_MODE" == "auto" ) && "$COMPOSE_BACKEND" == "gpu" && "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    # Even discard-mode uses a unique temporary path so no stale fixed /tmp file remains.
-    TEMP_COLLISIONS="$(mktemp /tmp/blackhole_discard.XXXXXX)"
-    COLLISIONS_OUT="$TEMP_COLLISIONS"
-  else
-    TEMP_COLLISIONS="$(mktemp /tmp/blackhole_collisions.XXXXXX)"
-    COLLISIONS_OUT="$TEMP_COLLISIONS"
-  fi
-fi
-if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-  if [[ "$COLLISIONS_POLICY" == "keep" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; then
-    LINEAR32_OUT="${IMAGE_BASE}.linear32f32"
-  else
-    LINEAR32_OUT="${COLLISIONS_OUT}.linear32f32"
-  fi
+  # Even discard-mode uses a unique temporary path so no stale fixed /tmp file remains.
+  TEMP_COLLISIONS="$(mktemp /tmp/blackhole_discard.XXXXXX)"
+  COLLISIONS_OUT="$TEMP_COLLISIONS"
 fi
 
 log_section "Pipeline"
@@ -2733,18 +2706,8 @@ else
   PIPELINE_MODE_LABEL="cpu-mixed"
 fi
 log_item "pipeline_mode" "$PIPELINE_MODE_LABEL"
-if [[ "$MATCH_CPU" -eq 0 ]]; then
-  if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    log_item "gpu_strategy" "in-memory"
-  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-    log_item "gpu_strategy" "streamed-linear32"
-  else
-    log_item "gpu_strategy" "disk-collision"
-  fi
-fi
-log_item "collisions_mode" "$COLLISIONS_MODE"
-log_item "collisions_policy" "$COLLISIONS_POLICY"
-log_item "compose" "$COMPOSE_BACKEND"
+log_item "gpu_strategy" "gpu-full-compose"
+log_item "debug_outputs" "$([[ "$COLLISIONS_MODE" == "debug" ]] && printf 'on' || printf 'off')"
 log_item "ssaa" "$SSAA"
 log_item "output_size" "${TARGET_WIDTH}x${TARGET_HEIGHT}"
 log_item "render_size" "${RENDER_WIDTH}x${RENDER_HEIGHT}"
@@ -2795,20 +2758,8 @@ fi
 if [[ "$DISK_PLUTO_MODE" -eq 1 ]]; then
   log_item "pluto_hdf5" "$DISK_HDF5_PATH"
 fi
-if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-  if [[ -n "$TEMP_COLLISIONS" ]]; then
-    log_item "collisions_out" "$COLLISIONS_OUT (temporary, unused)"
-    log_item "linear32_out" "$LINEAR32_OUT (temporary)"
-  else
-    log_item "collisions_out" "$COLLISIONS_OUT (unused)"
-    log_item "linear32_out" "$LINEAR32_OUT"
-  fi
-else
-  if [[ -n "$TEMP_COLLISIONS" ]]; then
-    log_item "collisions_out" "$COLLISIONS_OUT (temporary)"
-  else
-    log_item "collisions_out" "$COLLISIONS_OUT"
-  fi
+if [[ "$COLLISIONS_MODE" == "debug" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
+  log_item "collisions_out" "$COLLISIONS_OUT"
 fi
 log_item "image_out" "$IMAGE_OUT"
 if [[ -n "$VERIFY_REF" ]]; then
@@ -2870,48 +2821,21 @@ if [[ -n "${BH_FORCE_ARCH:-}" ]]; then
   echo "binary runner arch: $BH_FORCE_ARCH"
 fi
 
-if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
-  GPU_COMPOSE_ARGS=(--compose-gpu --image-out "$IMAGE_OUT")
-  if [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    GPU_COMPOSE_ARGS+=(--gpu-full-compose)
-    if [[ "$COLLISIONS_MODE" == "none" || "$COLLISIONS_MODE" == "auto" || -n "$TEMP_COLLISIONS" ]]; then
-      GPU_COMPOSE_ARGS+=(--discard-collisions)
-    fi
-  elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-    GPU_COMPOSE_ARGS+=(--linear32-intermediate --linear32-out "$LINEAR32_OUT" --discard-collisions)
-  fi
-  if ((${#SWIFT_ARGS[@]})); then
-    SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}" "${SWIFT_ARGS[@]}")
-  else
-    SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}")
-  fi
+GPU_COMPOSE_ARGS=(--image-out "$IMAGE_OUT")
+if [[ "$COLLISIONS_MODE" == "debug" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
+  GPU_COMPOSE_ARGS+=(--debug)
+fi
+if ((${#SWIFT_ARGS[@]})); then
+  SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}" "${SWIFT_ARGS[@]}")
 else
-  if ((${#SWIFT_ARGS[@]})); then
-    SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${SWIFT_ARGS[@]}")
-  else
-    SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT")
-  fi
+  SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}")
 fi
 
 ETA_VARIANT_SWIFT="swift-trace"
-if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
-  if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-    ETA_VARIANT_SWIFT="swift-gpu-linear32"
-  elif [[ "$GPU_FULL_COMPOSE" -eq 1 ]]; then
-    ETA_VARIANT_SWIFT="swift-gpu-inmem"
-  else
-    ETA_VARIANT_SWIFT="swift-gpu"
-  fi
-fi
+ETA_VARIANT_SWIFT="swift-gpu-full-compose"
 ETA_VARIANT_PY="python-compose"
 
-if [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 0 ]]; then
-  log_section "Stage 1/1 - Swift"
-elif [[ "$COMPOSE_BACKEND" == "gpu" && "$MATCH_CPU" -eq 1 ]]; then
-  log_section "Stage 1/2 - Swift"
-else
-  log_section "Stage 1/2 - Swift"
-fi
+log_section "Stage 1/1 - Swift"
 if [[ -f "$ETA_SCRIPT" ]]; then
   "$PYTHON_BIN" "$ETA_SCRIPT" \
     --history "$ETA_HISTORY" \
@@ -2967,7 +2891,7 @@ fi
 
 if [[ "$COMPOSE_BACKEND" == "gpu" && ! -f "$IMAGE_OUT" ]]; then
   echo "error: GPU compose did not produce image: $IMAGE_OUT" >&2
-  echo "hint: rebuild the Swift binary with the latest source, or use --compose python" >&2
+  echo "hint: rebuild the Swift binary with the latest source." >&2
   exit 1
 fi
 
@@ -3051,26 +2975,14 @@ fi
 if [[ -n "$STOKES_PNG" ]]; then
   log_item "stokes_png" "$STOKES_PNG"
 fi
-if [[ "$COLLISIONS_MODE" == "none" ]]; then
-  :
-elif [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-  if [[ "$COLLISIONS_POLICY" == "keep" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
-    log_item "linear32" "$LINEAR32_OUT"
-    log_item "meta" "$LINEAR32_OUT.json"
-  fi
-elif [[ "$COLLISIONS_POLICY" == "keep" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
+if [[ "$COLLISIONS_POLICY" == "keep" || "$COLLISIONS_OUT_EXPLICIT" -eq 1 ]]; then
   log_item "collisions" "$COLLISIONS_OUT"
   log_item "meta" "$COLLISIONS_OUT.json"
 fi
 
 if [[ -n "$TEMP_COLLISIONS" ]]; then
   rm -f "$TEMP_COLLISIONS" "$TEMP_COLLISIONS.json"
-  if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
-    rm -f "$LINEAR32_OUT" "$LINEAR32_OUT.json"
-    log_item "cleanup" "temporary linear32/collision artifacts removed"
-  else
-    log_item "cleanup" "temporary collisions removed"
-  fi
+  log_item "cleanup" "temporary collisions removed"
 fi
 
 if [[ -n "$TEMP_HDF5_ATLAS" ]]; then

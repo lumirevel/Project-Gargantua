@@ -38,6 +38,28 @@ struct ComposeParams {
     uint  preserveHighlightColor; // 1=reduce highlight desaturation to keep visible chroma
 };
 
+struct ComposeSolveParams {
+    float cloudQuantileLow;
+    float cloudQuantileHigh;
+    float lumQuantile;
+    float targetWhite;
+    float pFloor;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+};
+
+struct ComposeSolveResult {
+    float cloudQ10;
+    float cloudQ90;
+    float p50;
+    float p995;
+    float exposure;
+    float _pad0;
+    uint  cloudSamples;
+    uint  lumSamples;
+};
+
 constant ushort BAYER8_LUT[64] = {
      0,48,12,60, 3,51,15,63,
     32,16,44,28,35,19,47,31,
@@ -56,7 +78,6 @@ static inline float3 comp_xyz_to_rgb(float3 xyz) {
     r.z =  0.0557 * xyz.x + -0.2040 * xyz.y +  1.0570 * xyz.z;
     return max(r, 0.0);
 }
-
 
 static inline float comp_aces(float x) {
     const float a = 2.51;
@@ -216,7 +237,6 @@ static inline void comp_visible_xyz_from_spectrum(float T_emit,
     float dLamM = dLamNm * 1e-9;
     float g3 = g * g * g;
     float peakIlam = 0.0;
-
     for (uint i = 0u; i < 128u; ++i) {
         if (i >= n) break;
         float lamNm = lamMin + dLamNm * float(i);

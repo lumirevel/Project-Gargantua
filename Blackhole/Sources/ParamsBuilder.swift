@@ -87,13 +87,44 @@ enum ParamsBuilder {
     let rcp = doubleArg("--rcp", default: baseRcp)
     let diskHFactor = doubleArg("--diskH", default: baseDiskH)
     let maxStepsArg = intArg("--maxSteps", default: baseMaxSteps)
-    let outPath = stringArg("--output", default: "collisions.bin")
-    let composeGPU = cliArguments.contains("--compose-gpu")
-    let gpuFullCompose = cliArguments.contains("--gpu-full-compose")
-    let discardCollisionOutput = cliArguments.contains("--discard-collisions")
-    let linear32Intermediate = cliArguments.contains("--linear32-intermediate")
-    let linear32OutPath = stringArg("--linear32-out", default: outPath + ".linear32f32")
-    let imageOutPath = stringArg("--image-out", default: "")
+    let rawOutputPath = stringArg("--output", default: "blackhole_gpu.png")
+    let explicitImageOutPath = stringArg("--image-out", default: "")
+    let outputLooksLikeCollision = rawOutputPath.lowercased().hasSuffix(".bin")
+    let composeGPU = true
+    let gpuFullCompose = true
+    let debugCollisionOutput = flagArgAny(["--debug"])
+    let discardCollisionOutput = !debugCollisionOutput
+    let linear32Intermediate = false
+    let linear32OutPath = stringArgAny(["--linear32-out", "--hdr-out"], default: rawOutputPath + ".linear32f32")
+    let outPath: String = {
+        if !explicitImageOutPath.isEmpty {
+            return rawOutputPath
+        }
+        if outputLooksLikeCollision {
+            return rawOutputPath
+        }
+        if let dot = rawOutputPath.lastIndex(of: ".") {
+            return String(rawOutputPath[..<dot]) + ".collisions.bin"
+        }
+        return rawOutputPath + ".collisions.bin"
+    }()
+    let imageOutPath: String = {
+        if !explicitImageOutPath.isEmpty {
+            return explicitImageOutPath
+        }
+        if outputLooksLikeCollision {
+            let trimmed = String(rawOutputPath.dropLast(4))
+            return trimmed.isEmpty ? "blackhole_gpu.png" : trimmed + ".png"
+        }
+        return rawOutputPath
+    }()
+    if flagArgAny(["--compose-gpu", "--gpu-compose", "--gpu-full-compose", "--compose-in-memory", "--discard-collisions", "--skip-collision-dump", "--linear32-intermediate", "--hdr-intermediate", "--trace-hdr-direct"]) {
+        FileHandle.standardError.write(Data("warn: compose/intermediate runtime flags are deprecated and ignored; GPU full-compose with automatic memory management is now the default.\n".utf8))
+    }
+    let traceHDRDirectMode = stringArgAny(["--trace-hdr-direct", "--trace-linear-hdr"], default: "auto").lowercased()
+    if !["auto", "on", "off"].contains(traceHDRDirectMode) {
+        fail("invalid --trace-hdr-direct \(traceHDRDirectMode). use auto|on|off")
+    }
     let downsampleArg = max(1, intArg("--downsample", default: 1))
     if !(downsampleArg == 1 || downsampleArg == 2 || downsampleArg == 4) {
         FileHandle.standardError.write(Data("error: --downsample must be one of 1, 2, 4\n".utf8))
@@ -826,26 +857,10 @@ enum ParamsBuilder {
     }
 
     if composeGPU {
-        if imageOutPath.isEmpty {
-            FileHandle.standardError.write(Data("error: --compose-gpu requires --image-out <path>\n".utf8))
-            exit(2)
-        }
         if (width % downsampleArg) != 0 || (height % downsampleArg) != 0 {
             FileHandle.standardError.write(Data("error: width/height must be divisible by --downsample\n".utf8))
             exit(2)
         }
-    }
-
-    print(
-        "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)"
-    )
-    if diskPhysicsModeID == 3 {
-        print(
-            "grmhd config vol0=\(diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved), vol1=\(diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved), nuObsHz=\(diskNuObsHzArg), rhoScale=\(diskGrmhdDensityScaleArg), bScale=\(diskGrmhdBScaleArg), jScale=\(diskGrmhdEmissionScaleArg), alphaScale=\(diskGrmhdAbsorptionScaleArg), velScale=\(diskGrmhdVelScaleArg), polarized=\(diskPolarizedRTEnabled), polFrac=\(diskPolarizationFracArg), faradayRot=\(diskFaradayRotScaleArg), faradayConv=\(diskFaradayConvScaleArg), debug=\(diskGrmhdDebugName)"
-        )
-        print(
-            "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
-        )
     }
 
     let c: Double = 299_792_458
@@ -1011,6 +1026,7 @@ var params = PackedParams(
         config.gpuFullCompose = gpuFullCompose
         config.discardCollisionOutput = discardCollisionOutput
         config.linear32IntermediateRequested = linear32Intermediate
+        config.traceHDRDirectMode = traceHDRDirectMode
         config.downsampleArg = downsampleArg
         config.metricName = metricName
         config.metricArg = metricArg
@@ -1184,7 +1200,7 @@ var params = PackedParams(
         config.planeX = planeX
         config.planeY = planeY
         config.d = d
-        config.renderConfigLine = "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), composeGPU=\(composeGPU), downsample=\(downsampleArg), linear32Intermediate=\(useLinear32Intermediate), analysisMode=\(composeAnalysisMode)"
+        config.renderConfigLine = "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), io=(composeGPU=\(composeGPU),gpuFullCompose=\(gpuFullCompose),discardCollisions=\(discardCollisionOutput),hdrFileIntermediate=\(useLinear32Intermediate),traceHDRPreference=\(traceHDRDirectMode)), downsample=\(downsampleArg), analysisMode=\(composeAnalysisMode)"
         if diskPhysicsModeID == 3 {
             let grmhdVol0Label = diskVol0PathResolved.isEmpty ? "none" : diskVol0PathResolved
             let grmhdVol1Label = diskVol1PathResolved.isEmpty ? "none" : diskVol1PathResolved

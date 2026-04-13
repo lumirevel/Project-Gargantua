@@ -2549,18 +2549,19 @@ static inline void renderBH_core_bundle(constant Params& P,
             haveHit = true;
         }
 
-        sumTemp4 += (t4Raw * jacW) * sampleW;
-        sumI += (scalarIRaw * jacW) * sampleW;
+        float weightedW = jacW * sampleW;
+        sumTemp4 += t4Raw * weightedW;
+        sumI += scalarIRaw * weightedW;
         if (bundleLinearAnchors) {
-            sumEmitR += max(subInfo.emit_r_norm, 0.0) * jacW * sampleW;
-            sumEmitPhi += max(subInfo.emit_phi, 0.0) * jacW * sampleW;
-            sumEmitZ += max(subInfo.emit_z_norm, 0.0) * jacW * sampleW;
+            sumEmitR += max(subInfo.emit_r_norm, 0.0) * weightedW;
+            sumEmitPhi += max(subInfo.emit_phi, 0.0) * weightedW;
+            sumEmitZ += max(subInfo.emit_z_norm, 0.0) * weightedW;
         }
         if (bundleVisibleSpectrum) {
             bool xyzOk = false;
             float3 xyz = ray_bundle_visible_xyz_from_collision(subInfo, P, xyzOk);
             if (xyzOk) {
-                sumVisibleXYZ += xyz * jacW * sampleW;
+                sumVisibleXYZ += xyz * weightedW;
                 haveVisibleXYZ = true;
             }
         }
@@ -2699,6 +2700,29 @@ kernel void renderBHClassicLite(constant Params& P [[buffer(0)]],
     }
     uint idx = gid.y * P.width + gid.x;
     outInfo[idx] = pack_collision_lite32(out);
+}
+
+kernel void renderBHClassicLiteGlobal(constant Params& P [[buffer(0)]],
+                                      device CollisionLite32* outInfo [[buffer(1)]],
+                                      texture2d<float, access::sample> diskAtlasTex [[texture(0)]],
+                                      texture3d<float, access::sample> diskVol0Tex [[texture(1)]],
+                                      texture3d<float, access::sample> diskVol1Tex [[texture(2)]],
+                                      uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= P.width || gid.y >= P.height) return;
+    uint gx = gid.x + P.offsetX;
+    uint gy = gid.y + P.offsetY;
+    if (gx >= P.fullWidth || gy >= P.fullHeight) return;
+    float x = (float(gx) + 0.5) - float(P.fullWidth)  * 0.5;
+    float y = (float(gy) + 0.5) - float(P.fullHeight) * 0.5;
+
+    CollisionInfo out;
+    bool hit = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, out);
+    if (!hit || out.hit == 0u) {
+        init_collision_info(out);
+    }
+    uint gidx = gy * P.fullWidth + gx;
+    outInfo[gidx] = pack_collision_lite32(out);
 }
 
 kernel void renderBHClassicGlobal(constant Params& P [[buffer(0)]],

@@ -198,11 +198,35 @@ struct ComposeParams {
     var preserveHighlightColor: UInt32
 }
 
+struct ComposeSolveParams {
+    var cloudQuantileLow: Float
+    var cloudQuantileHigh: Float
+    var lumQuantile: Float
+    var targetWhite: Float
+    var pFloor: Float
+    var _pad0: Float
+    var _pad1: Float
+    var _pad2: Float
+}
+
+struct ComposeSolveResult {
+    var cloudQ10: Float
+    var cloudQ90: Float
+    var p50: Float
+    var p995: Float
+    var exposure: Float
+    var _pad0: Float
+    var cloudSamples: UInt32
+    var lumSamples: UInt32
+}
+
 func printPackedParamsLayout() {
     print("PackedParams.layout size=\(MemoryLayout<PackedParams>.size) stride=\(MemoryLayout<PackedParams>.stride) align=\(MemoryLayout<PackedParams>.alignment)")
     print("CollisionInfo.layout size=\(MemoryLayout<CollisionInfo>.size) stride=\(MemoryLayout<CollisionInfo>.stride) align=\(MemoryLayout<CollisionInfo>.alignment)")
     print("CollisionLite32.layout size=\(MemoryLayout<CollisionLite32>.size) stride=\(MemoryLayout<CollisionLite32>.stride) align=\(MemoryLayout<CollisionLite32>.alignment)")
     print("ComposeParams.layout size=\(MemoryLayout<ComposeParams>.size) stride=\(MemoryLayout<ComposeParams>.stride) align=\(MemoryLayout<ComposeParams>.alignment)")
+    print("ComposeSolveParams.layout size=\(MemoryLayout<ComposeSolveParams>.size) stride=\(MemoryLayout<ComposeSolveParams>.stride) align=\(MemoryLayout<ComposeSolveParams>.alignment)")
+    print("ComposeSolveResult.layout size=\(MemoryLayout<ComposeSolveResult>.size) stride=\(MemoryLayout<ComposeSolveResult>.stride) align=\(MemoryLayout<ComposeSolveResult>.alignment)")
     let offsets = packedParamsCriticalOffsets()
     for key in offsets.keys.sorted() {
         if let value = offsets[key] {

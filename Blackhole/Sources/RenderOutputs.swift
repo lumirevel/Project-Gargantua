@@ -284,8 +284,8 @@ enum RenderOutputs {
         if useLinear32Intermediate {
             let metaURL = URL(fileURLWithPath: linear32OutPath + ".json")
             try metaData.write(to: metaURL)
-            print("Saved linear32 at:", URL(fileURLWithPath: linear32OutPath).path)
-            print("Saved linear32 (\(linearOutSize) bytes, hits=\(hitCount))")
+            print("Saved hdr32 intermediate at:", URL(fileURLWithPath: linear32OutPath).path)
+            print("Saved hdr32 intermediate (\(linearOutSize) bytes, hits=\(hitCount))")
             print("Saved meta at:", metaURL.path)
         } else if !discardCollisionOutput {
             let metaURL = URL(fileURLWithPath: outPath + ".json")

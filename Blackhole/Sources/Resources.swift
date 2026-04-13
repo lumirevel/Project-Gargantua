@@ -35,6 +35,237 @@ enum Resources {
     }
 }
 
+struct InFlightTraceSlot {
+    let traceParamBuf: MTLBuffer
+    let traceTileBuf: MTLBuffer?
+    let linearParamBuf: MTLBuffer?
+    let linearTileBuf: MTLBuffer?
+}
+
+struct RenderFrameResources {
+    let outputURL: URL
+    let linearOutputURL: URL
+    let collisionBuffer: MTLBuffer?
+    let collisionBase: UnsafeMutableRawPointer?
+    let directLinearTraceBuf: MTLBuffer?
+    let directLinearHitCountBuf: MTLBuffer?
+    let directLinearParamBuf: MTLBuffer?
+    let composeBaseBufForLinear: MTLBuffer?
+    let traceSlots: [InFlightTraceSlot]
+    let traceStride: Int
+    let collisionStorageSize: Int
+    let maxInFlight: Int
+    let slotBytes: Int
+}
+
+extension Resources {
+    static func makeFrameResources(
+        device: MTLDevice,
+        config: ResolvedRenderConfig,
+        params: PackedParams,
+        policy: RenderResourcePolicy,
+        useInMemoryCollisions: Bool,
+        useLinear32Intermediate: Bool,
+        width: Int,
+        height: Int,
+        composeExposure: Float,
+        composeLookID: UInt32,
+        spectralEncodingID: UInt32,
+        composePrecisionID: UInt32,
+        composeAnalysisMode: UInt32,
+        composeCameraModelID: UInt32,
+        composeCameraPsfSigmaArg: Float,
+        composeCameraReadNoiseArg: Float,
+        composeCameraShotNoiseArg: Float,
+        composeCameraFlareStrengthArg: Float,
+        backgroundModeID: UInt32,
+        backgroundStarDensityArg: Float,
+        backgroundStarStrengthArg: Float,
+        backgroundNebulaStrengthArg: Float,
+        preserveHighlightColor: UInt32,
+        downsampleArg: Int,
+        composeDitherArg: Float,
+        composeInnerEdgeArg: Float,
+        composeSpectralStepArg: Float,
+        tileSize: Int,
+        traceInFlightOverrideArg: Int
+    ) -> RenderFrameResources {
+        let directLinearTraceBuf: MTLBuffer? =
+            policy.directLinearAllowed()
+            ? device.makeBuffer(length: policy.linearOutSize, options: .storageModeShared)
+            : nil
+        let directLinearEnabled = directLinearTraceBuf != nil
+        let directLinearHitCountBuf: MTLBuffer? = directLinearEnabled
+            ? device.makeBuffer(length: MemoryLayout<UInt32>.stride, options: .storageModeShared)
+            : nil
+        if directLinearEnabled, directLinearHitCountBuf == nil {
+            fail("failed to allocate direct linear hit-count buffer")
+        }
+        if let directLinearHitCountBuf {
+            memset(directLinearHitCountBuf.contents(), 0, MemoryLayout<UInt32>.stride)
+        }
+
+        let collisionLite32Enabled = policy.collisionLite32Enabled(
+            directLinearEnabled: directLinearEnabled,
+            useLinear32Intermediate: useLinear32Intermediate
+        )
+        let traceStride = policy.traceStride(collisionLite32Enabled: collisionLite32Enabled)
+        let collisionStorageSize = policy.collisionStorageSize(collisionLite32Enabled: collisionLite32Enabled)
+
+        let collisionBuffer: MTLBuffer? = (useInMemoryCollisions && !directLinearEnabled)
+            ? device.makeBuffer(length: collisionStorageSize, options: .storageModeShared)
+            : nil
+        if useInMemoryCollisions, collisionBuffer == nil, !directLinearEnabled {
+            fail("failed to allocate in-memory collision buffer (\(collisionStorageSize) bytes)")
+        }
+        let collisionBase = collisionBuffer?.contents()
+
+        let outputURL = URL(fileURLWithPath: config.outPath)
+        let linearOutputURL = URL(fileURLWithPath: config.linear32OutPath)
+
+        var composeParamsBase = params
+        let composeBaseBufForLinear: MTLBuffer? = useLinear32Intermediate
+            ? device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])
+            : nil
+        if useLinear32Intermediate, composeBaseBufForLinear == nil {
+            fail("failed to allocate linear32 base param buffer")
+        }
+
+        let directLinearParamBuf: MTLBuffer?
+        if directLinearEnabled {
+            var directLinearParams = ComposeParams(
+                tileWidth: UInt32(width),
+                tileHeight: UInt32(height),
+                downsample: 1,
+                outTileWidth: 0,
+                outTileHeight: 0,
+                srcOffsetX: 0,
+                srcOffsetY: 0,
+                outOffsetX: 0,
+                outOffsetY: 0,
+                fullInputWidth: UInt32(width),
+                fullInputHeight: UInt32(height),
+                exposure: composeExposure,
+                dither: composeDitherArg,
+                innerEdgeMult: composeInnerEdgeArg,
+                spectralStep: composeSpectralStepArg,
+                cloudQ10: 0.0,
+                cloudInvSpan: 1.0,
+                look: composeLookID,
+                spectralEncoding: spectralEncodingID,
+                precisionMode: composePrecisionID,
+                analysisMode: composeAnalysisMode,
+                cloudBins: 0,
+                lumBins: 0,
+                lumLogMin: 0.0,
+                lumLogMax: 0.0,
+                cameraModel: composeCameraModelID,
+                cameraPsfSigmaPx: composeCameraPsfSigmaArg,
+                cameraReadNoise: composeCameraReadNoiseArg,
+                cameraShotNoise: composeCameraShotNoiseArg,
+                cameraFlareStrength: composeCameraFlareStrengthArg,
+                backgroundMode: backgroundModeID,
+                backgroundStarDensity: backgroundStarDensityArg,
+                backgroundStarStrength: backgroundStarStrengthArg,
+                backgroundNebulaStrength: backgroundNebulaStrengthArg,
+                preserveHighlightColor: preserveHighlightColor
+            )
+            directLinearParamBuf = device.makeBuffer(bytes: &directLinearParams, length: MemoryLayout<ComposeParams>.stride, options: [])
+            if directLinearParamBuf == nil {
+                fail("failed to allocate direct linear compose param buffer")
+            }
+        } else {
+            directLinearParamBuf = nil
+        }
+
+        let dsForTile = config.composeGPU ? downsampleArg : 1
+        let baseTile = max(1, tileSize)
+        let alignedTile = max(dsForTile, (baseTile / dsForTile) * dsForTile)
+        let effectiveTile = alignedTile
+        let maxTraceTilePixels = effectiveTile * effectiveTile
+        let traceTileTotal = max(1, ((width + effectiveTile - 1) / effectiveTile) * ((height + effectiveTile - 1) / effectiveTile))
+
+        let slotTraceParamBytes = MemoryLayout<PackedParams>.stride
+        let slotTraceTileBytes = maxTraceTilePixels * traceStride
+        let slotLinearParamBytes = useLinear32Intermediate ? MemoryLayout<ComposeParams>.stride : 0
+        let slotLinearTileBytes = useLinear32Intermediate ? (maxTraceTilePixels * policy.linearStride) : 0
+        let slotBytes = slotTraceParamBytes
+            + ((useInMemoryCollisions && !useLinear32Intermediate) ? 0 : slotTraceTileBytes)
+            + slotLinearParamBytes
+            + slotLinearTileBytes
+
+        let inFlightBudget = policy.inFlightBudget()
+        var maxInFlight = 2
+        if slotBytes > 0 && slotBytes * 3 <= inFlightBudget {
+            maxInFlight = 3
+        }
+        if traceInFlightOverrideArg > 0 {
+            maxInFlight = traceInFlightOverrideArg
+        }
+        maxInFlight = min(maxInFlight, traceTileTotal)
+        maxInFlight = max(1, maxInFlight)
+
+        var traceSlots: [InFlightTraceSlot] = []
+        traceSlots.reserveCapacity(maxInFlight)
+        for _ in 0..<maxInFlight {
+            guard let traceParamBuf = device.makeBuffer(length: slotTraceParamBytes, options: .storageModeShared) else {
+                fail("failed to allocate trace param buffer slot")
+            }
+            let needsTraceTile = !(useInMemoryCollisions && !useLinear32Intermediate) && !directLinearEnabled
+            let traceTileBuf: MTLBuffer?
+            if needsTraceTile {
+                guard let buf = device.makeBuffer(length: slotTraceTileBytes, options: .storageModeShared) else {
+                    fail("failed to allocate trace tile buffer slot")
+                }
+                traceTileBuf = buf
+            } else {
+                traceTileBuf = nil
+            }
+
+            let linearParamBuf: MTLBuffer?
+            let linearTileBuf: MTLBuffer?
+            if useLinear32Intermediate {
+                guard let lp = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
+                    fail("failed to allocate linear32 compose param buffer slot")
+                }
+                guard let lt = device.makeBuffer(length: maxTraceTilePixels * policy.linearStride, options: .storageModeShared) else {
+                    fail("failed to allocate linear32 tile buffer slot")
+                }
+                linearParamBuf = lp
+                linearTileBuf = lt
+            } else {
+                linearParamBuf = nil
+                linearTileBuf = nil
+            }
+
+            traceSlots.append(
+                InFlightTraceSlot(
+                    traceParamBuf: traceParamBuf,
+                    traceTileBuf: traceTileBuf,
+                    linearParamBuf: linearParamBuf,
+                    linearTileBuf: linearTileBuf
+                )
+            )
+        }
+
+        return RenderFrameResources(
+            outputURL: outputURL,
+            linearOutputURL: linearOutputURL,
+            collisionBuffer: collisionBuffer,
+            collisionBase: collisionBase,
+            directLinearTraceBuf: directLinearTraceBuf,
+            directLinearHitCountBuf: directLinearHitCountBuf,
+            directLinearParamBuf: directLinearParamBuf,
+            composeBaseBufForLinear: composeBaseBufForLinear,
+            traceSlots: traceSlots,
+            traceStride: traceStride,
+            collisionStorageSize: collisionStorageSize,
+            maxInFlight: maxInFlight,
+            slotBytes: slotBytes
+        )
+    }
+}
+
 func writePPM(path: String, width: Int, height: Int, rgb: [UInt8]) throws {
     let header = "P6\n\(width) \(height)\n255\n"
     let url = URL(fileURLWithPath: path)

@@ -13,6 +13,7 @@ struct ResolvedRenderConfig {
     var discardCollisionOutput: Bool = false
     var linear32IntermediateRequested: Bool = false
     var useLinear32Intermediate: Bool = false
+    var traceHDRDirectMode: String = "auto"
     var downsampleArg: Int = 1
 
     var metricName: String = "schwarzschild"

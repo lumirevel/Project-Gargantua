@@ -428,6 +428,106 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
     return rgb;
 }
 
+static inline float comp_cloud_raw_fast(float noise,
+                                        float3 vDisk,
+                                        constant Params& P,
+                                        constant ComposeParams& C)
+{
+    float n = noise;
+    if (abs(n) < 1e-6 && C.spectralEncoding == 0u) {
+        n = comp_synthetic_noise(vDisk, P);
+    }
+    n = clamp(n, -1.0, 1.0);
+    float raw = (n < -1e-6) ? clamp(0.5 + 0.5 * n, 0.0, 1.0) : clamp(n, 0.0, 1.0);
+    if (P.diskNoiseModel == 1u) {
+        raw = 0.5 + (raw - 0.5) * 0.46;
+        raw = smoothstep(0.10, 0.90, raw);
+        raw = 0.5 + (raw - 0.5) * 0.55;
+    }
+    return raw;
+}
+
+static inline float3 comp_linear_rgb_precloud_legacy_fast(float T_emit,
+                                                          float3 vDisk,
+                                                          float3 directWorld,
+                                                          constant Params& P,
+                                                          constant ComposeParams& C)
+{
+    float g_total = 1.0;
+    if (C.spectralEncoding == 1u) {
+        g_total = clamp(vDisk.x, 1e-4, 1e4);
+    } else {
+        float3 d = directWorld;
+        float v_norm = length(vDisk);
+        float d_norm = length(d);
+        float dot_vd = dot(vDisk, d);
+        float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
+        float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
+        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+        float delta = 1.0 / max(gamma * (1.0 - beta * cos_theta), 1e-9);
+        float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
+        r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
+        float r_obs = max(length(P.camPos), 1.0001 * P.rs);
+        float grav_num = clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0);
+        float grav_den = clamp(1.0 - P.rs / r_obs, 1e-8, 1.0);
+        float g_gr = sqrt(clamp(grav_num / grav_den, 1e-8, 4.0));
+        g_total = clamp(delta * g_gr, 1e-4, 1e4);
+    }
+
+    float T_obs = max(T_emit * g_total, 1.0);
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lam_m = lam * 1e-9;
+        float x_bar, y_bar, z_bar;
+        comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
+        float b = comp_planck_lambda(lam_m, T_obs);
+        if (kahan) {
+            float yx = b * x_bar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * y_bar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * z_bar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * x_bar;
+            Y += b * y_bar;
+            Z += b * z_bar;
+        }
+    }
+
+    float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    float mu = abs(directWorld.z) / max(length(directWorld), 1e-30);
+    rgb *= comp_limb_factor(mu, P);
+    return rgb;
+}
+
+static inline float3 comp_linear_rgb_legacy_fast(float T_emit,
+                                                 float3 vDisk,
+                                                 float3 directWorld,
+                                                 float noise,
+                                                 constant Params& P,
+                                                 constant ComposeParams& C,
+                                                 thread float& cloudRaw)
+{
+    cloudRaw = comp_cloud_raw_fast(noise, vDisk, P, C);
+    return comp_linear_rgb_precloud_legacy_fast(T_emit, vDisk, directWorld, P, C);
+}
+
 static inline float3 comp_linear_rgb(const CollisionInfo rec,
                                      constant Params& P,
                                      constant ComposeParams& C)
@@ -621,6 +721,23 @@ static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant Comp
     return flareExp / exposure;
 }
 
+static inline float3 comp_linear_full_rgb(device const float4* inLinear,
+                                          uint srcX,
+                                          uint srcY,
+                                          constant ComposeParams& C)
+{
+    uint gidx = srcY * C.fullInputWidth + srcX;
+    float4 rgbw = inLinear[gidx];
+    if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
+    if (rgbw.w < 0.0) return float3(0.0);
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
+        rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+    }
+    return rgb;
+}
+
 static inline float3 comp_sample_linear_full_bilinear(device const float4* inLinear,
                                                       float2 pos,
                                                       constant ComposeParams& C)
@@ -634,10 +751,10 @@ static inline float3 comp_sample_linear_full_bilinear(device const float4* inLin
     float tx = fx - float(x0);
     float ty = fy - float(y0);
 
-    float3 c00 = inLinear[y0 * C.fullInputWidth + x0].xyz;
-    float3 c10 = inLinear[y0 * C.fullInputWidth + x1].xyz;
-    float3 c01 = inLinear[y1 * C.fullInputWidth + x0].xyz;
-    float3 c11 = inLinear[y1 * C.fullInputWidth + x1].xyz;
+    float3 c00 = comp_linear_full_rgb(inLinear, x0, y0, C);
+    float3 c10 = comp_linear_full_rgb(inLinear, x1, y0, C);
+    float3 c01 = comp_linear_full_rgb(inLinear, x0, y1, C);
+    float3 c11 = comp_linear_full_rgb(inLinear, x1, y1, C);
     return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
 }
 
@@ -709,8 +826,7 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
                                                  uint srcY,
                                                  constant ComposeParams& C)
 {
-    uint centerIdx = srcY * C.fullInputWidth + srcX;
-    float3 center = inLinear[centerIdx].xyz;
+    float3 center = comp_linear_full_rgb(inLinear, srcX, srcY, C);
     if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
@@ -727,18 +843,16 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
     float3 sum = center * w0;
     float wSum = w0;
 
-    uint idxL = srcY * C.fullInputWidth + xL;
-    uint idxR = srcY * C.fullInputWidth + xR;
-    uint idxD = yD * C.fullInputWidth + srcX;
-    uint idxU = yU * C.fullInputWidth + srcX;
-    sum += (inLinear[idxL].xyz + inLinear[idxR].xyz + inLinear[idxD].xyz + inLinear[idxU].xyz) * w1;
+    sum += (comp_linear_full_rgb(inLinear, xL, srcY, C)
+          + comp_linear_full_rgb(inLinear, xR, srcY, C)
+          + comp_linear_full_rgb(inLinear, srcX, yD, C)
+          + comp_linear_full_rgb(inLinear, srcX, yU, C)) * w1;
     wSum += 4.0 * w1;
 
-    uint idxLD = yD * C.fullInputWidth + xL;
-    uint idxLU = yU * C.fullInputWidth + xL;
-    uint idxRD = yD * C.fullInputWidth + xR;
-    uint idxRU = yU * C.fullInputWidth + xR;
-    sum += (inLinear[idxLD].xyz + inLinear[idxLU].xyz + inLinear[idxRD].xyz + inLinear[idxRU].xyz) * w2;
+    sum += (comp_linear_full_rgb(inLinear, xL, yD, C)
+          + comp_linear_full_rgb(inLinear, xL, yU, C)
+          + comp_linear_full_rgb(inLinear, xR, yD, C)
+          + comp_linear_full_rgb(inLinear, xR, yU, C)) * w2;
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
@@ -1063,6 +1177,77 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     return srgb;
 }
 
+kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
+                                 constant ComposeParams& C [[buffer(1)]],
+                                 device float4* outLinear [[buffer(2)]],
+                                 device atomic_uint* outHitCount [[buffer(3)]],
+                                 texture2d<float, access::sample> diskAtlasTex [[texture(0)]],
+                                 texture3d<float, access::sample> diskVol0Tex [[texture(1)]],
+                                 texture3d<float, access::sample> diskVol1Tex [[texture(2)]],
+                                 uint2 gid [[thread_position_in_grid]],
+                                 uint2 tid [[thread_position_in_threadgroup]],
+                                 uint2 tgSize [[threads_per_threadgroup]])
+{
+    threadgroup uint localHits[256];
+    uint localIndex = tid.y * tgSize.x + tid.x;
+    localHits[localIndex] = 0u;
+
+    if (gid.x < P.width && gid.y < P.height) {
+        uint gx = gid.x + P.offsetX;
+        uint gy = gid.y + P.offsetY;
+        if (gx < P.fullWidth && gy < P.fullHeight) {
+            uint gidx = gy * P.fullWidth + gx;
+
+            float x = (float(gx) + 0.5) - float(P.fullWidth)  * 0.5;
+            float y = (float(gy) + 0.5) - float(P.fullHeight) * 0.5;
+
+            CollisionInfo rec;
+            bool traced = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, rec);
+            if (!traced || rec.hit == 0u) {
+                float3 bg = comp_background_linear(rec.direct_world.xyz, C);
+                outLinear[gidx] = float4(bg, -2.0);
+            } else {
+                if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+                    float cloudRaw = 0.0;
+                    float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
+                                                             rec.v_disk.xyz,
+                                                             rec.direct_world.xyz,
+                                                             rec.noise,
+                                                             P,
+                                                             C,
+                                                             cloudRaw);
+                    outLinear[gidx] = float4(rgb, cloudRaw);
+                } else {
+                    float cloudRaw = comp_cloud_raw(rec, P, C);
+                    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+                    if (FC_PHYSICS_MODE == 2u) {
+                        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+                        rgbBase *= retFactor;
+                    }
+                    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
+                        float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
+                        outLinear[gidx] = float4(rgb, cloudRaw);
+                    } else {
+                        outLinear[gidx] = float4(rgbBase, cloudRaw);
+                    }
+                }
+                localHits[localIndex] = 1u;
+            }
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint offset = (tgSize.x * tgSize.y) >> 1; offset > 0u; offset >>= 1u) {
+        if (localIndex < offset) {
+            localHits[localIndex] += localHits[localIndex + offset];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (localIndex == 0u && localHits[0] > 0u) {
+        atomic_fetch_add_explicit(&(outHitCount[0]), localHits[0], memory_order_relaxed);
+    }
+}
+
 kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
                              constant ComposeParams& C [[buffer(1)]],
                              device const CollisionInfo* inInfo [[buffer(2)]],
@@ -1085,8 +1270,45 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
-    float3 rgb = comp_linear_rgb(rec, P, C);
-    outLinear[gidx] = float4(rgb, 1.0);
+    float cloudRaw = comp_cloud_raw(rec, P, C);
+    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (FC_PHYSICS_MODE == 2u) {
+        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+        rgbBase *= retFactor;
+    }
+    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
+        float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
+        outLinear[gidx] = float4(rgb, cloudRaw);
+        return;
+    }
+    outLinear[gidx] = float4(rgbBase, cloudRaw);
+}
+
+kernel void composeLinearRGBLite(constant Params& P [[buffer(0)]],
+                                 constant ComposeParams& C [[buffer(1)]],
+                                 device const CollisionLite32* inInfo [[buffer(2)]],
+                                 device float4* outLinear [[buffer(3)]],
+                                 uint gid [[thread_position_in_grid]])
+{
+    uint count = C.tileWidth * C.tileHeight;
+    if (gid >= count) return;
+    uint lx = gid % C.tileWidth;
+    uint ly = gid / C.tileWidth;
+    if (ly >= C.tileHeight) return;
+
+    uint gx = C.srcOffsetX + lx;
+    uint gy = C.srcOffsetY + ly;
+    uint gidx = gy * C.fullInputWidth + gx;
+
+    CollisionInfo rec = unpack_collision_lite32(inInfo[gidx]);
+    if (rec.hit == 0u) {
+        float3 bg = comp_background_linear(rec.direct_world.xyz, C);
+        outLinear[gidx] = float4(bg, -2.0);
+        return;
+    }
+    float cloudRaw = comp_cloud_raw(rec, P, C);
+    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    outLinear[gidx] = float4(rgbBase, cloudRaw);
 }
 
 kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
@@ -1161,6 +1383,44 @@ kernel void composeCloudHist(constant Params& P [[buffer(0)]],
     atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
 }
 
+kernel void composeCloudHistLinear(constant ComposeParams& C [[buffer(0)]],
+                                   device const float4* inLinear [[buffer(1)]],
+                                   device atomic_uint* outHist [[buffer(2)]],
+                                   uint gid [[thread_position_in_grid]])
+{
+    uint count = C.tileWidth * C.tileHeight;
+    if (gid >= count) return;
+    float4 rgbw = inLinear[gid];
+    if (rgbw.w < 0.0) return;
+    uint bins = max(C.cloudBins, 1u);
+    float cloud = clamp(rgbw.w, 0.0, 1.0);
+    uint bin = min((uint)floor(cloud * float(bins - 1u) + 0.5), bins - 1u);
+    atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
+}
+
+kernel void composeCloudHistLite(constant Params& P [[buffer(0)]],
+                                 constant ComposeParams& C [[buffer(1)]],
+                                 device const CollisionLite32* inInfo [[buffer(2)]],
+                                 device atomic_uint* outHist [[buffer(3)]],
+                                 uint gid [[thread_position_in_grid]])
+{
+    uint count = C.tileWidth * C.tileHeight;
+    if (gid >= count) return;
+    uint lx = gid % C.tileWidth;
+    uint ly = gid / C.tileWidth;
+    if (ly >= C.tileHeight) return;
+
+    uint gx = C.srcOffsetX + lx;
+    uint gy = C.srcOffsetY + ly;
+    uint gidx = gy * C.fullInputWidth + gx;
+    CollisionInfo rec = unpack_collision_lite32(inInfo[gidx]);
+    if (rec.hit == 0u) return;
+    uint bins = max(C.cloudBins, 1u);
+    float cloud = comp_cloud_raw(rec, P, C);
+    uint bin = min((uint)floor(cloud * float(bins - 1u) + 0.5), bins - 1u);
+    atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
+}
+
 kernel void composeLumHist(constant Params& P [[buffer(0)]],
                            constant ComposeParams& C [[buffer(1)]],
                            device const CollisionInfo* inInfo [[buffer(2)]],
@@ -1195,8 +1455,13 @@ kernel void composeLumHistLinear(constant ComposeParams& C [[buffer(0)]],
     uint gy = C.srcOffsetY + ly;
     uint gidx = gy * C.fullInputWidth + gx;
     float4 rgbw = inLinear[gidx];
-    if (rgbw.w <= 0.0) return;
-    float lum = dot(rgbw.xyz, float3(0.2126, 0.7152, 0.0722));
+    if (rgbw.w < 0.0) return;
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        float cloud = comp_cloud_norm_from_raw(clamp(rgbw.w, 0.0, 1.0), C);
+        rgb = comp_apply_cloud_to_rgb(rgbw.xyz, cloud);
+    }
+    float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
     uint bins = max(C.lumBins, 1u);
     float t = (comp_log10(max(lum, 1e-30)) - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6);
     t = clamp(t, 0.0, 1.0);
@@ -1224,6 +1489,98 @@ kernel void composeLumHistLinearTileCloud(constant ComposeParams& C [[buffer(0)]
     t = clamp(t, 0.0, 1.0);
     uint bin = min((uint)floor(t * float(bins - 1u) + 0.5), bins - 1u);
     atomic_fetch_add_explicit(&(outHist[bin]), 1u, memory_order_relaxed);
+}
+
+static inline float comp_quantile_from_hist(device const atomic_uint* hist,
+                                            uint bins,
+                                            float q,
+                                            float minVal,
+                                            float maxVal,
+                                            thread uint& totalOut)
+{
+    totalOut = 0u;
+    if (bins == 0u) return minVal;
+
+    uint total = 0u;
+    for (uint i = 0u; i < bins; ++i) {
+        total += atomic_load_explicit(&(hist[i]), memory_order_relaxed);
+    }
+    totalOut = total;
+    if (total == 0u) return minVal;
+
+    float qClamped = clamp(q, 0.0, 1.0);
+    uint target = (uint)floor(float(max(total - 1u, 0u)) * qClamped);
+    uint cum = 0u;
+    uint idx = bins - 1u;
+    for (uint i = 0u; i < bins; ++i) {
+        cum += atomic_load_explicit(&(hist[i]), memory_order_relaxed);
+        if (cum > target) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (bins == 1u) return minVal;
+    float t = float(idx) / float(bins - 1u);
+    return mix(minVal, maxVal, t);
+}
+
+kernel void composeSolveCloudStats(constant ComposeSolveParams& S [[buffer(0)]],
+                                   device const atomic_uint* cloudHist [[buffer(1)]],
+                                   device ComposeParams* ioCompose [[buffer(2)]],
+                                   device ComposeSolveResult* outResult [[buffer(3)]],
+                                   uint gid [[thread_position_in_grid]])
+{
+    if (gid != 0u) return;
+
+    ComposeParams C = ioCompose[0];
+    ComposeSolveResult R = outResult[0];
+    uint total = 0u;
+    float q10 = comp_quantile_from_hist(cloudHist, max(C.cloudBins, 1u), S.cloudQuantileLow, 0.0, 1.0, total);
+    uint totalQ90 = 0u;
+    float q90 = comp_quantile_from_hist(cloudHist, max(C.cloudBins, 1u), S.cloudQuantileHigh, 0.0, 1.0, totalQ90);
+    if (total == 0u) {
+        q10 = 0.0;
+        q90 = 1.0;
+    }
+
+    C.cloudQ10 = q10;
+    C.cloudInvSpan = 1.0 / max(q90 - q10, 1e-6);
+    ioCompose[0] = C;
+
+    R.cloudQ10 = q10;
+    R.cloudQ90 = q90;
+    R.cloudSamples = total;
+    outResult[0] = R;
+}
+
+kernel void composeSolveExposure(constant ComposeSolveParams& S [[buffer(0)]],
+                                 device const atomic_uint* lumHist [[buffer(1)]],
+                                 device ComposeParams* ioCompose [[buffer(2)]],
+                                 device ComposeSolveResult* outResult [[buffer(3)]],
+                                 uint gid [[thread_position_in_grid]])
+{
+    if (gid != 0u) return;
+
+    ComposeParams C = ioCompose[0];
+    ComposeSolveResult R = outResult[0];
+    uint totalP50 = 0u;
+    float p50Log = comp_quantile_from_hist(lumHist, max(C.lumBins, 1u), 0.50, C.lumLogMin, C.lumLogMax, totalP50);
+    uint totalP995 = 0u;
+    float p995Log = comp_quantile_from_hist(lumHist, max(C.lumBins, 1u), S.lumQuantile, C.lumLogMin, C.lumLogMax, totalP995);
+
+    float p50 = (totalP50 > 0u) ? pow(10.0, p50Log) : 0.0;
+    float p995 = (totalP995 > 0u) ? pow(10.0, p995Log) : 0.0;
+    float exposure = (totalP995 == 0u) ? 1.0 : (S.targetWhite / max(p995, S.pFloor));
+
+    C.exposure = exposure;
+    ioCompose[0] = C;
+
+    R.p50 = p50;
+    R.p995 = p995;
+    R.exposure = exposure;
+    R.lumSamples = totalP995;
+    outResult[0] = R;
 }
 
 kernel void composeBH(constant Params& P [[buffer(0)]],
