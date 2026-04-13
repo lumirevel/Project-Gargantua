@@ -349,6 +349,7 @@ static inline void volume_integrate_segment(float3 p0,
     float prevThetaeVolume = 0.0;
     float prevBVolume = 0.0;
 
+
     for (int i = 0; i < 24; ++i) {
         if (i >= n) break;
         float t = (float(i) + 0.5) / float(max(n, 1));
@@ -638,7 +639,7 @@ static inline void volume_integrate_segment(float3 p0,
             if (!(rho > 1e-24) || !(thetae > 1e-5)) continue;
             float texLocal = 0.5;
             float texStrength = clamp(P.diskPrecisionTexture, 0.0, 1.0);
-            if (havePrevVolumeSample) {
+            if (texStrength > 1e-5 && havePrevVolumeSample) {
                 float bNow = max(length(bVec), 1e-30);
                 float logRhoStep = log(clamp(rho / max(prevRhoVolume, 1e-30), 1e-4, 1e4));
                 float logThetaeStep = log(clamp(thetae / max(prevThetaeVolume, 1e-30), 1e-4, 1e4));
@@ -1147,6 +1148,7 @@ static inline bool grmhd_pol_debug_enabled(constant Params& P) {
             FC_TRACE_DEBUG_OFF == 0u &&
             P.diskGrmhdDebugView == 9u);
 }
+
 
 static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
                                            bool volumeMode,

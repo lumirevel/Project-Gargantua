@@ -89,7 +89,6 @@ enum RenderExecution {
             try? linearOutHandle?.close()
         }
 
-        let tg = MTLSize(width: 16, height: 16, depth: 1)
         let dsForTile = config.composeGPU ? config.downsampleArg : 1
         let alignedTile = max(dsForTile, (max(1, config.tileSize) / dsForTile) * dsForTile)
         let effectiveTile = alignedTile
@@ -105,6 +104,12 @@ enum RenderExecution {
             if collisionLite32Enabled { return runtime.traceLitePipeline }
             return runtime.tracePipeline
         }()
+        let traceThreadWidth = max(1, activeTracePipeline.threadExecutionWidth)
+        let traceMaxThreads = max(1, activeTracePipeline.maxTotalThreadsPerThreadgroup)
+        let tgWidth = min(traceThreadWidth, 32)
+        let targetThreads = min(traceMaxThreads, max(64, traceThreadWidth * 8))
+        let tgHeight = max(1, min(8, targetThreads / max(tgWidth, 1)))
+        let tg = MTLSize(width: tgWidth, height: tgHeight, depth: 1)
         let activeComposeLinearTilePipeline = collisionLite32Enabled ? runtime.composeLinearTileLitePipeline : runtime.composeLinearTilePipeline
         let tgLinearTile1D = MTLSize(width: max(1, min(256, activeComposeLinearTilePipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
 

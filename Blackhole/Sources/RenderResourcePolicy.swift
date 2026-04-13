@@ -43,10 +43,13 @@ struct RenderResourcePolicy {
             useInMemoryCollisions &&
             config.discardCollisionOutput &&
             !config.rayBundleActive &&
-            config.diskPhysicsModeID <= 2 &&
             !config.visibleModeEnabled &&
             config.composeAnalysisMode == 0 &&
-            config.diskGrmhdDebugID == 0
+            config.diskGrmhdDebugID == 0 &&
+            (
+                config.diskPhysicsModeID <= 2 ||
+                (config.diskPhysicsModeID == 3 && params.diskVolumeFormat == 1 && params.diskVolumeMode != 0)
+            )
         workingSetCap = Int(min(device.recommendedMaxWorkingSetSize, UInt64(Int.max)))
         outWidth = config.width / config.downsampleArg
         outHeight = config.height / config.downsampleArg
@@ -55,11 +58,13 @@ struct RenderResourcePolicy {
         fullComposeOutBytes = outWidth * outHeight * MemoryLayout<UInt32>.stride
         approxTextureBytes = config.diskAtlasData.count + config.diskVolume0Data.count + config.diskVolume1Data.count
         directLinearThresholdBytes = 512 * 1024 * 1024
+        let grmhdScalarDirectDefault =
+            (config.diskPhysicsModeID == 3 && !config.visibleModeEnabled && config.diskGrmhdDebugID == 0)
         directLinearPreferred =
             directLinearTraceSafe &&
             (
                 config.traceHDRDirectMode == "on" ||
-                (config.traceHDRDirectMode == "auto" && outSize >= directLinearThresholdBytes)
+                (config.traceHDRDirectMode == "auto" && (grmhdScalarDirectDefault || outSize >= directLinearThresholdBytes))
             )
         projectedDirectLinearBytes = approxTextureBytes + linearOutSize + fullComposeOutBytes
         projectedFullComposeBytes = approxTextureBytes + outSize + linearOutSize + fullComposeOutBytes

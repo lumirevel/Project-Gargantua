@@ -213,6 +213,36 @@ cleanup_temp_artifacts() {
 
 trap cleanup_temp_artifacts EXIT
 
+CACHE_ROOT="${BH_CACHE_ROOT:-/tmp/blackhole_cache}"
+
+compute_cache_key() {
+  printf '%s\0' "$@" | shasum -a 256 | awk '{print $1}'
+}
+
+file_stamp() {
+  local path="$1"
+  stat -f '%m:%z' "$path"
+}
+
+run_cached_build() {
+  local target="$1"
+  shift
+  local lockdir="${target}.lock"
+  if [[ -f "$target" ]]; then
+    return 0
+  fi
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if [[ -f "$target" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  if [[ ! -f "$target" ]]; then
+    "$@"
+  fi
+  rmdir "$lockdir" 2>/dev/null || true
+}
+
 # Migrate old hidden ETA history path to the new visible default path.
 if [[ -z "${BH_ETA_HISTORY:-}" && -f "$ETA_HISTORY_OLD" && ! -f "$ETA_HISTORY" ]]; then
   mv "$ETA_HISTORY_OLD" "$ETA_HISTORY" 2>/dev/null || cp "$ETA_HISTORY_OLD" "$ETA_HISTORY"
@@ -1893,19 +1923,9 @@ if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
     echo "error: HDF5 sample script not found: $HDF5_SAMPLE_SCRIPT" >&2
     exit 2
   fi
-  if [[ "$DISK_HDF5_SAMPLE_OUT_EXPLICIT" -eq 1 ]]; then
-    DISK_HDF5_PATH="$DISK_HDF5_SAMPLE_OUT"
-  else
-    TEMP_HDF5_SAMPLE="$(mktemp /tmp/blackhole_hdf5_sample.XXXXXX).h5"
-    DISK_HDF5_PATH="$TEMP_HDF5_SAMPLE"
-  fi
-
-  log_section "Preprocess - HDF5 Sample"
-  log_item "output" "$DISK_HDF5_PATH"
-  log_item "nr,nth,nphi" "${DISK_HDF5_SAMPLE_NR},${DISK_HDF5_SAMPLE_NTH},${DISK_HDF5_SAMPLE_NPHI}"
   HDF5_SAMPLE_CMD=(
     "$PYTHON_BIN" "$HDF5_SAMPLE_SCRIPT"
-    --output "$DISK_HDF5_PATH"
+    --output "__OUTPUT__"
     --nr "$DISK_HDF5_SAMPLE_NR"
     --nth "$DISK_HDF5_SAMPLE_NTH"
     --nphi "$DISK_HDF5_SAMPLE_NPHI"
@@ -1937,7 +1957,24 @@ if [[ "$DISK_HDF5_SAMPLE" -eq 1 ]]; then
   if [[ -n "$DISK_HDF5_SAMPLE_SIGMA_MAX" ]]; then
     HDF5_SAMPLE_CMD+=(--sigma-max "$DISK_HDF5_SAMPLE_SIGMA_MAX")
   fi
-  "${HDF5_SAMPLE_CMD[@]}"
+  if [[ "$DISK_HDF5_SAMPLE_OUT_EXPLICIT" -eq 1 ]]; then
+    DISK_HDF5_PATH="$DISK_HDF5_SAMPLE_OUT"
+  else
+    mkdir -p "$CACHE_ROOT"
+    HDF5_SAMPLE_CACHE_KEY="$(compute_cache_key "${HDF5_SAMPLE_CMD[@]}")"
+    DISK_HDF5_PATH="$CACHE_ROOT/hdf5_sample_${HDF5_SAMPLE_CACHE_KEY}.h5"
+  fi
+
+  log_section "Preprocess - HDF5 Sample"
+  log_item "output" "$DISK_HDF5_PATH"
+  log_item "nr,nth,nphi" "${DISK_HDF5_SAMPLE_NR},${DISK_HDF5_SAMPLE_NTH},${DISK_HDF5_SAMPLE_NPHI}"
+  HDF5_SAMPLE_CMD[3]="$DISK_HDF5_PATH"
+  if [[ -f "$DISK_HDF5_PATH" ]]; then
+    log_item "cache" "hit"
+  else
+    log_item "cache" "miss"
+    run_cached_build "$DISK_HDF5_PATH" "${HDF5_SAMPLE_CMD[@]}"
+  fi
   if [[ ! -f "$DISK_HDF5_PATH" ]]; then
     echo "error: sample HDF5 was not created: $DISK_HDF5_PATH" >&2
     exit 2
@@ -2087,19 +2124,26 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     ensure_h5py_python
 
     if [[ "$DISK_VOL0_SET" -eq 0 ]]; then
-      TEMP_HDF5_VOL0="$(mktemp /tmp/blackhole_grmhd_vol0.XXXXXX).bin"
-      DISK_VOL0_VALUE="$TEMP_HDF5_VOL0"
+      mkdir -p "$CACHE_ROOT"
       DISK_VOL0_SET=1
     fi
     if [[ "$DISK_VOL1_SET" -eq 0 ]]; then
-      TEMP_HDF5_VOL1="$(mktemp /tmp/blackhole_grmhd_vol1.XXXXXX).bin"
-      DISK_VOL1_VALUE="$TEMP_HDF5_VOL1"
       DISK_VOL1_SET=1
     fi
     if [[ "$DISK_META_SET" -eq 0 ]]; then
-      TEMP_HDF5_VOLMETA="$(mktemp /tmp/blackhole_grmhd_meta.XXXXXX).json"
-      DISK_META_VALUE="$TEMP_HDF5_VOLMETA"
       DISK_META_SET=1
+    fi
+
+    if [[ -z "$DISK_VOL0_VALUE" && -z "$DISK_VOL1_VALUE" && -z "$DISK_META_VALUE" ]]; then
+      GRMHD_CACHE_KEY="$(compute_cache_key \
+        "$VOLUME_HDF5_SOURCE" "$(file_stamp "$VOLUME_HDF5_SOURCE")" \
+        "$DISK_GRMHD_NR" "$DISK_GRMHD_NPHI" "$DISK_GRMHD_NZ" "$DISK_GRMHD_NATIVE_3D" \
+        "$DISK_HDF5_R_TO_RS" "$DISK_HDF5_R_KEY" "$DISK_HDF5_PHI_KEY" "$DISK_HDF5_THETA_KEY" \
+        "$DISK_HDF5_RHO_KEY" "$DISK_HDF5_TEMP_KEY" "$DISK_HDF5_VR_KEY" "$DISK_HDF5_VPHI_KEY" \
+        "$DISK_HDF5_THETA_INDEX" "$DISK_HDF5_THETA_AVERAGE" "$DISK_GRMHD_Z_MAX" "$DISK_GRMHD_U_TO_THETAE")"
+      DISK_VOL0_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.vol0.bin"
+      DISK_VOL1_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.vol1.bin"
+      DISK_META_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.meta.json"
     fi
 
     GRMHD_VOLUME_CMD=(
@@ -2157,7 +2201,12 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     log_item "meta" "$DISK_META_VALUE"
     log_item "nr,nphi,nz" "${DISK_GRMHD_NR},${DISK_GRMHD_NPHI},${DISK_GRMHD_NZ}"
     log_item "native3d" "$DISK_GRMHD_NATIVE_3D"
-    "${GRMHD_VOLUME_CMD[@]}"
+    if [[ -f "$DISK_VOL0_VALUE" && -f "$DISK_VOL1_VALUE" && -f "$DISK_META_VALUE" ]]; then
+      log_item "cache" "hit"
+    else
+      log_item "cache" "miss"
+      run_cached_build "$DISK_META_VALUE" "${GRMHD_VOLUME_CMD[@]}"
+    fi
     if [[ ! -f "$DISK_VOL0_VALUE" || ! -f "$DISK_VOL1_VALUE" || ! -f "$DISK_META_VALUE" ]]; then
       echo "error: GRMHD volume bridge did not produce vol0/vol1/meta outputs." >&2
       exit 2
