@@ -1,0 +1,29 @@
+{
+  "name": "imx455-like-full-frame-astro",
+  "sceneMatrix": [
+    [1.020, 0.004, -0.004],
+    [0.004, 1.006, -0.002],
+    [-0.006, 0.014, 0.992]
+  ],
+  "displayMatrix": [
+    [1.040, 0.010, -0.016],
+    [0.006, 1.006, 0.000],
+    [-0.010, 0.020, 0.990]
+  ],
+  "fullWellElectrons": 51000,
+  "readNoiseElectrons": 3.6,
+  "peakQuantumEfficiency": 0.90,
+  "dsnuElectrons": 1.2,
+  "prnuPercent": 0.35,
+  "darkCurrentElectronsPerSecond": 0.003,
+  "exposureSeconds": 1.0,
+  "pixelPitchMicrons": 3.76,
+  "lensFNumber": 4.0,
+  "lensVignettingStops": 0.28,
+  "shoulderMix": 0.14,
+  "chromaNoiseMix": 0.28,
+  "toeStrength": 0.08,
+  "saturation": 1.04,
+  "displayShoulder": 0.0,
+  "flareStrength": 0.03
+}

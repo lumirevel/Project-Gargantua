@@ -85,7 +85,7 @@ The `realistic` preset keeps the existing geodesic/lensing path scientific by de
 - `--camera-profile scientific` applies the default lens/sensor response after ray tracing and HDR composition.
 - `--camera-profile cinema-digital` or `full-frame` shifts realism toward camera/lens/sensor behavior rather than modifying geodesic tracing.
 - `--camera-profile-json path/to/profile.json` overrides the built-in camera response with explicit calibration parameters.
-- `docs/camera_profile.example.json` is a starting point for a measured or hand-fit camera response profile.
+- `docs/camera_profile.example.json` is a starting point for a hand-fit camera response profile; `docs/camera_profiles/` contains sensor-physics-oriented examples.
 
 Realism debug maps:
 ```bash
@@ -103,7 +103,9 @@ Debug values:
 - `perturbation`: disk-coordinate turbulence/shear field.
 - `hdr`: pre-tone-map HDR luminance map.
 - `--camera-profile {ideal|scientific|cinema-digital|full-frame}`: post-render camera/lens/sensor response profile.
-- `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json`. Supported keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.
+- `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json` or `docs/camera_profiles/imx455_full_frame_astro_like.json`.
+- Direct response keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.
+- Physical camera keys include `fullWellElectrons`, `readNoiseElectrons`, `peakQuantumEfficiency`, `darkCurrentElectronsPerSecond`, `exposureSeconds`, `dsnuElectrons`, `prnuPercent`, `pixelPitchMicrons`, `lensFNumber`, `lensVignettingStops`, `psfSigmaPixels`, and `flareStrength`; these are converted to the renderer's internal camera response/noise/PSF parameters unless the direct keys or CLI overrides are provided.
 - `--realism-profile {off|physical|observational|cinematic}`: thin-disk look-development profile; `physical` is the realistic preset default.
 
 ## Kerr Render

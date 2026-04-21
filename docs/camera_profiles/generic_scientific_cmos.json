@@ -1,0 +1,28 @@
+{
+  "name": "generic-scientific-cmos-emva-like",
+  "sceneMatrix": [
+    [0.992, 0.006, 0.002],
+    [0.006, 0.991, 0.003],
+    [0.002, 0.010, 0.988]
+  ],
+  "displayMatrix": [
+    [0.985, 0.012, 0.003],
+    [0.010, 0.985, 0.005],
+    [0.004, 0.016, 0.980]
+  ],
+  "fullWellElectrons": 10500,
+  "readNoiseElectrons": 2.4,
+  "peakQuantumEfficiency": 0.68,
+  "dsnuElectrons": 0.9,
+  "prnuPercent": 0.4,
+  "darkCurrentElectronsPerSecond": 0.2,
+  "exposureSeconds": 1.0,
+  "pixelPitchMicrons": 3.45,
+  "lensFNumber": 5.6,
+  "lensVignettingStops": 0.18,
+  "shoulderMix": 0.10,
+  "chromaNoiseMix": 0.12,
+  "toeStrength": 0.0,
+  "saturation": 0.98,
+  "displayShoulder": 0.0
+}

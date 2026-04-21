@@ -14,6 +14,10 @@ struct CameraCalibration {
     var sensorParams: SIMD4<Float>
     var noiseParams: SIMD4<Float>
     var colorParams: SIMD4<Float>
+    var psfSigmaPixels: Float?
+    var readNoise: Float?
+    var shotNoise: Float?
+    var flareStrength: Float?
 }
 
 private struct CameraCalibrationJSON: Decodable {
@@ -30,6 +34,18 @@ private struct CameraCalibrationJSON: Decodable {
     var toeStrength: Double?
     var saturation: Double?
     var displayShoulder: Double?
+    var fullWellElectrons: Double?
+    var readNoiseElectrons: Double?
+    var darkCurrentElectronsPerSecond: Double?
+    var exposureSeconds: Double?
+    var dsnuElectrons: Double?
+    var prnuPercent: Double?
+    var peakQuantumEfficiency: Double?
+    var pixelPitchMicrons: Double?
+    var lensFNumber: Double?
+    var lensVignettingStops: Double?
+    var psfSigmaPixels: Double?
+    var flareStrength: Double?
 }
 
 private enum CameraCalibrationFactory {
@@ -46,7 +62,11 @@ private enum CameraCalibrationFactory {
             displayB: SIMD4<Float>(0, 0, 1, 0),
             sensorParams: SIMD4<Float>(1, 0, 0, 0),
             noiseParams: .zero,
-            colorParams: SIMD4<Float>(1, 0, 0, 0)
+            colorParams: SIMD4<Float>(1, 0, 0, 0),
+            psfSigmaPixels: nil,
+            readNoise: nil,
+            shotNoise: nil,
+            flareStrength: nil
         )
     }
 
@@ -117,6 +137,7 @@ private enum CameraCalibrationFactory {
             c.noiseParams.w = Float(raw.toeStrength ?? Double(c.noiseParams.w))
             c.colorParams.x = Float(raw.saturation ?? Double(c.colorParams.x))
             c.colorParams.y = Float(raw.displayShoulder ?? Double(c.colorParams.y))
+            applyPhysicalSensorModel(raw, to: &c)
             return c
         } catch {
             fail("failed to read --camera-profile-json \(path): \(error.localizedDescription)")
@@ -132,6 +153,62 @@ private enum CameraCalibrationFactory {
             SIMD4<Float>(Float(matrix[1][0]), Float(matrix[1][1]), Float(matrix[1][2]), 0),
             SIMD4<Float>(Float(matrix[2][0]), Float(matrix[2][1]), Float(matrix[2][2]), 0)
         )
+    }
+
+    private static func applyPhysicalSensorModel(_ raw: CameraCalibrationJSON, to c: inout CameraCalibration) {
+        let fullWellElectrons = raw.fullWellElectrons.map { max($0, 1.0) }
+        let readNoiseElectrons = raw.readNoiseElectrons.map { max($0, 0.0) }
+        let qePeak = raw.peakQuantumEfficiency.map { clamp($0, 0.05, 1.0) }
+
+        if raw.sensorGain == nil, let qePeak {
+            c.sensorParams.x = Float(clamp(Double(c.sensorParams.x) * qePeak / 0.68, 0.35, 1.5))
+        }
+
+        if raw.fullWell == nil, let fullWellElectrons {
+            let noiseFloor = max(readNoiseElectrons ?? 2.0, 0.25)
+            let dynamicRange = max(fullWellElectrons / noiseFloor, 1.0)
+            c.sensorParams.y = Float(clamp(log10(dynamicRange) * 2.35, 6.0, 11.0))
+        }
+
+        if raw.blackLevel == nil, let fullWellElectrons {
+            let exposure = max(raw.exposureSeconds ?? 1.0, 0.0)
+            let dark = max((raw.darkCurrentElectronsPerSecond ?? 0.0) * exposure, 0.0)
+            let dsnu = max(raw.dsnuElectrons ?? 0.0, 0.0)
+            c.sensorParams.w = Float(clamp((dark + dsnu) / fullWellElectrons * 16.0, 0.0, 0.025))
+        }
+
+        if raw.rowNoise == nil, let prnuPercent = raw.prnuPercent {
+            c.noiseParams.z = Float(clamp(prnuPercent * 0.45, 0.0, 0.45))
+        }
+
+        if raw.vignette == nil, let stops = raw.lensVignettingStops {
+            let cornerTransmission = pow(2.0, -max(stops, 0.0))
+            c.noiseParams.x = Float(clamp((1.0 - cornerTransmission) / 0.555, 0.0, 0.65))
+        }
+
+        if let fullWellElectrons {
+            let qe = max(qePeak ?? 0.68, 0.05)
+            c.shotNoise = Float(clamp(0.75 / sqrt(fullWellElectrons * qe), 0.0015, 0.014))
+            if let readNoiseElectrons {
+                let dsnu = max(raw.dsnuElectrons ?? 0.0, 0.0)
+                c.readNoise = Float(clamp((readNoiseElectrons / fullWellElectrons) * 6.0 + (dsnu / fullWellElectrons) * 1.5, 0.00005, 0.008))
+            }
+        }
+
+        if let psf = raw.psfSigmaPixels {
+            c.psfSigmaPixels = Float(max(psf, 0.0))
+        } else if let fNumber = raw.lensFNumber, let pitch = raw.pixelPitchMicrons, pitch > 0 {
+            let airyRadiusPixels = 1.22 * 0.55 * max(fNumber, 0.1) / pitch
+            c.psfSigmaPixels = Float(clamp(0.5 * airyRadiusPixels, 0.08, 1.2))
+        }
+
+        if let flare = raw.flareStrength {
+            c.flareStrength = Float(clamp(flare, 0.0, 1.0))
+        }
+    }
+
+    private static func clamp(_ value: Double, _ lo: Double, _ hi: Double) -> Double {
+        min(max(value, lo), hi)
     }
 }
 
@@ -268,7 +345,7 @@ enum ParamsBuilderVisual {
             fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic")
         }
 
-        let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
+        let cameraPsfSigmaDefault: Double = {
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.42 : 0.55
             case 2: return 0.38
@@ -280,30 +357,46 @@ enum ParamsBuilderVisual {
                 default: return 0.0
                 }
             }
-        }())))
-        let cameraReadNoiseArg = Float(max(0.0, doubleArg("--camera-read-noise", default: {
+        }()
+        let cameraPsfSigmaArg = Float(max(0.0, doubleArg(
+            "--camera-psf-sigma",
+            default: Double(cameraCalibration.psfSigmaPixels ?? Float(cameraPsfSigmaDefault))
+        )))
+        let cameraReadNoiseDefault: Double = {
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.0013 : 0.0023
             case 2: return 0.0011
             case 3: return 0.0018
             default: return 0.0
             }
-        }())))
-        let cameraShotNoiseArg = Float(max(0.0, doubleArg("--camera-shot-noise", default: {
+        }()
+        let cameraReadNoiseArg = Float(max(0.0, doubleArg(
+            "--camera-read-noise",
+            default: Double(cameraCalibration.readNoise ?? Float(cameraReadNoiseDefault))
+        )))
+        let cameraShotNoiseDefault: Double = {
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.0055 : 0.009
             case 2: return 0.006
             case 3: return 0.008
             default: return 0.0
             }
-        }())))
-        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg("--camera-flare", default: {
+        }()
+        let cameraShotNoiseArg = Float(max(0.0, doubleArg(
+            "--camera-shot-noise",
+            default: Double(cameraCalibration.shotNoise ?? Float(cameraShotNoiseDefault))
+        )))
+        let cameraFlareDefault: Double = {
             switch cameraProfileID {
             case 2: return 0.16
             case 3: return 0.05
             default: return (cameraModelID == 2 ? 0.20 : 0.0)
             }
-        }()))))
+        }()
+        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg(
+            "--camera-flare",
+            default: Double(cameraCalibration.flareStrength ?? Float(cameraFlareDefault))
+        ))))
         if cameraProfileID < 2 && cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
             FileHandle.standardError.write(Data("warn: --camera-flare is only active for cinematic/photo camera profiles\n".utf8))
         }
