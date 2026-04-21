@@ -78,10 +78,10 @@ More natural observational profile:
 ./run_pipeline.sh --width 1200 --height 1200 --preset realistic --presentation-mode eye --output blackhole_realistic.png
 ```
 
-Presentation modes separate physical transport from display intent:
-- `--presentation-mode scientific` is the scientific-master/diagnostic presentation: no sensor model, no flare, no background by default.
-- `--presentation-mode eye` is the recommended human-experience presentation for `--preset realistic`: no camera sensor noise/flare by default, observational thin-disk presentation, restrained human-vision color adaptation, and background context.
-- `--presentation-mode cinema` enables stronger camera/cinematic presentation defaults.
+Presentation modes separate physical transport/source modeling from observer modeling:
+- `--presentation-mode scientific` is the ideal-master/diagnostic presentation: no eye/camera response, no flare, no background by default.
+- `--presentation-mode eye` is the recommended human-observer presentation for `--preset realistic`: no camera sensor noise/flare by default, observational thin-disk source profile, restrained human-vision color adaptation, and background context.
+- `--presentation-mode cinema` enables camera/sensor/lens presentation defaults.
 - `--scientific-master-out master.linear32f32` keeps an HDR32 scientific-master intermediate and defaults presentation to `scientific`.
 
 The `realistic` preset keeps the existing geodesic/lensing path scientific while changing only presentation defaults:
@@ -108,7 +108,7 @@ Realism debug maps:
 Debug values:
 - `g`: raw frequency-shift factor map.
 - `emissivity`: normalized Novikov-Thorne-like radial emissivity.
-- `beaming`: approaching/receding weighting.
+- `beaming`: relativistic transport beaming diagnostic; this is not an extra render multiplier.
 - `photosphere`, `atmosphere`, `corona`: component-only contributions.
 - `perturbation`: disk-coordinate turbulence/shear field.
 - `hdr`: pre-tone-map HDR luminance map.

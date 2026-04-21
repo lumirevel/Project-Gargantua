@@ -8,19 +8,26 @@ scientific-master intermediate should be persisted for inspection or comparison.
 
 ## Modes
 
-| Mode | Intended output | Default camera | Default realism | Default background | Use when |
+| Mode | Intended output | Default observer model | Default disk realism | Default background | Use when |
 | --- | --- | --- | --- | --- | --- |
 | `legacy` | Backward-compatible behavior | Existing defaults | Existing defaults | Existing defaults | Reproducing older renders or tests |
-| `scientific` | Scientific master / diagnostic output | no sensor model (`legacy`) | `physical` | `off` | Comparing radiance, g-factor, emissivity, or numerical changes |
-| `eye` | Human-experience display | human-eye display transform | `observational` | `stars` | Default visually grounded render for `--look realistic` |
-| `cinema` | Camera/cinematic presentation | `cinematic` sensor pipeline | `cinematic` | `stars` | Optional presentation with camera artifacts |
+| `scientific` | Ideal master / diagnostic output | no eye/camera response (`legacy`) | `physical` | `off` | Comparing radiance, g-factor, emissivity, or numerical changes |
+| `eye` | Human observer display | human-eye display transform | `observational` | `stars` | Default visually grounded render for `--look realistic` |
+| `cinema` | Camera observer display | camera/sensor pipeline | `cinematic` | `stars` | Optional presentation with camera/lens artifacts |
 
 ## Current Boundary
 
 Current Metal kernels still produce the same packed trace/hit state and compose path.
 This mode layer is a configuration boundary, not a new physical solver. It prevents
-camera artifacts and stronger presentation defaults from becoming implicit scientific
-truth, and it makes rendered metadata state which layer produced the image.
+observer-model effects and stronger presentation defaults from becoming implicit
+source physics, and it makes rendered metadata state which layer produced the image.
+
+`scientific`, `eye`, and `cinema` can all be scientifically modeled. The distinction
+is not "science vs non-science"; it is where the image is formed:
+`scientific` preserves an idealized radiance/master view, `eye` applies a human
+observer response, and `cinema` applies a camera/sensor/lens response. The highest
+risk of non-physical behavior is the accretion source model, so disk realism profiles
+are kept explicit.
 
 The thin-disk compose path now keeps local emission as an explicit visible-band
 blackbody/XYZ integration before RGB display conversion. The `physical` realism
@@ -36,7 +43,7 @@ model.
 
 ## Physical vs Presentation Responsibilities
 
-Physical layer:
+Physical transport/source layer:
 - geodesic stepping and disk intersections
 - disk-space flow time, orbital shear, turbulence parameters
 - visible-band spectral emission integrated to linear XYZ/RGB
@@ -44,15 +51,15 @@ Physical layer:
 - HDR radiance before display mapping
 - strict `physical` mode without phenomenological surface microstructure
 
-Human/experience layer:
+Human observer layer:
 - human-vision display response, not camera sensor simulation
 - exposure and tone mapping
 - background star field for perceptual context
 - optional observational thin-disk surface layer for perceptual exploration
 
-Cinema-only layer:
-- flare and stronger camera artifacts
-- presentation choices that are not part of the scientific master
+Camera observer layer:
+- sensor/lens response, PSF, flare, and stronger camera artifacts
+- camera-specific presentation choices that are not part of the ideal master
 
 ## Diagnostics
 
