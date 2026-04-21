@@ -79,7 +79,13 @@ enum ParamsBuilderRuntime {
         diskPhysicsModeID: UInt32
     ) -> (composeLook: String, composeLookID: UInt32) {
         let hasLookArg = cliArguments.contains("--look")
-        let defaultLookName = ((diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && !hasLookArg) ? "balanced" : preset
+        let presentationModeRaw = stringArg("--presentation-mode", default: "").lowercased()
+        let scientificPresentation = ["scientific", "science", "master"].contains(presentationModeRaw)
+        let defaultLookName: String = {
+            if scientificPresentation && !hasLookArg { return "linear" }
+            if (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && !hasLookArg { return "balanced" }
+            return preset
+        }()
         let composeLook = stringArg("--look", default: defaultLookName).lowercased()
         let composeLookID: UInt32
         switch composeLook {

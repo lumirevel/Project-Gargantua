@@ -553,7 +553,7 @@ enum ParamsBuilderVisual {
         default:
             fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density, radial-tau")
         }
-        if realismDebugID != 0 && composeLookID != 6 {
+        if realismDebugID != 0 && composeLookID != 6 && presentationModeID != 1 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
         }
         if realismDebugID != 0 && composePolicy.composeAnalysisMode != 0 {

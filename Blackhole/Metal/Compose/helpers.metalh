@@ -219,8 +219,12 @@ static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
     return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 2u);
 }
 
-static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
+static inline bool comp_thin_realism_debug_active(constant ComposeParams& C) {
     return (C.analysisMode >= 31u && C.analysisMode <= 42u);
+}
+
+static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
+    return comp_thin_realism_debug_active(C) && C.realismProfile >= 2u;
 }
 
 static inline bool comp_linear_rgb_is_final_sentinel(float w) {
@@ -253,13 +257,13 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
     }
     if (C.realismProfile >= 3u) {
         cfg.outerFadeStart = 0.50;
-        cfg.outerFadeEnd = 0.91;
+        cfg.outerFadeEnd = 0.98;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
-        cfg.outerFadeStart = 0.54;
-        cfg.outerFadeEnd = 0.94;
+        cfg.outerFadeStart = 0.66;
+        cfg.outerFadeEnd = 1.00;
     } else {
-        cfg.outerFadeStart = 0.58;
-        cfg.outerFadeEnd = 0.97;
+        cfg.outerFadeStart = 0.78;
+        cfg.outerFadeEnd = 1.00;
     }
     cfg.atmosphereTint = float3(1.04, 0.99, 0.91);
     cfg.coronaTint = float3(0.72, 0.88, 1.18);
@@ -648,6 +652,41 @@ static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
     return comp_debug_ramp(t);
 }
 
+static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
+                                                  ThinSpectralEmission thin,
+                                                  constant Params& P,
+                                                  constant ComposeParams& C)
+{
+    float rNorm = comp_emit_radius_norm(rec, P);
+    if (C.analysisMode == 31u) { // strict physical g-factor / red-blue shift
+        float t = clamp((log(max(thin.g, 1e-6)) * 0.4342944819032518 + 0.70) / 1.40, 0.0, 1.0);
+        return comp_debug_ramp(t);
+    }
+    if (C.analysisMode == 32u) {
+        return float3(clamp(comp_thin_nt_emissivity_norm(rNorm, P) / 2.2, 0.0, 1.0));
+    }
+    if (C.analysisMode == 33u) { // transport beaming diagnostic, not an extra render multiplier
+        float beaming = clamp(pow(max(thin.g, 1e-4), 3.0), 0.02, 16.0);
+        float t = clamp((log(max(beaming, 1e-6)) * 0.4342944819032518 + 1.20) / 2.40, 0.0, 1.0);
+        return comp_debug_ramp(t);
+    }
+    if (C.analysisMode == 34u) return thin.rgb; // photosphere-only scientific master
+    if (C.analysisMode == 38u) {
+        float lum = dot(thin.rgb, float3(0.2126, 0.7152, 0.0722));
+        float t = clamp((log(max(lum, 1e-30)) * 0.4342944819032518 - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
+        return comp_debug_ramp(t);
+    }
+    if (C.analysisMode == 39u) {
+        float lt = log(max(thin.tObserved, 1.0)) * 0.4342944819032518;
+        return comp_debug_ramp(clamp((lt - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0));
+    }
+
+    // Atmosphere, corona, perturbation, tau, and density are hybrid presentation
+    // diagnostics. In strict scientific mode, show black rather than silently
+    // enabling phenomenological structure.
+    return float3(0.0);
+}
+
 static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                               constant Params& P,
                                               constant ComposeParams& C)
@@ -918,12 +957,19 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
                                      constant Params& P,
                                      constant ComposeParams& C)
 {
-    if (FC_PHYSICS_MODE == 0u && (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C))) {
-        float cloudRaw = comp_cloud_raw(rec, P, C);
-        ThinHybridRealismSample thin = comp_thin_hybrid_sample(rec, P, C, cloudRaw);
-        if (comp_thin_hybrid_debug_active(C)) {
+    if (FC_PHYSICS_MODE == 0u && comp_thin_realism_debug_active(C)) {
+        if (comp_thin_hybrid_active(C)) {
+            float cloudRaw = comp_cloud_raw(rec, P, C);
+            ThinHybridRealismSample thin = comp_thin_hybrid_sample(rec, P, C, cloudRaw);
             return comp_thin_hybrid_debug_rgb(thin, C);
         }
+        ThinSpectralEmission thin = comp_thin_spectral_emission(rec, P, C);
+        return comp_thin_physical_debug_rgb(rec, thin, P, C);
+    }
+
+    if (FC_PHYSICS_MODE == 0u && comp_thin_hybrid_active(C)) {
+        float cloudRaw = comp_cloud_raw(rec, P, C);
+        ThinHybridRealismSample thin = comp_thin_hybrid_sample(rec, P, C, cloudRaw);
         return thin.finalRgb;
     }
 

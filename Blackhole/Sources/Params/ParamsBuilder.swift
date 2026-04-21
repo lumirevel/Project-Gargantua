@@ -711,6 +711,7 @@ enum ParamsBuilder {
             rayBundleJacobianActive: rayBundleJacobianActive,
             rayBundleJacobianStrengthArg: rayBundleJacobianStrengthArg,
             rayBundleFootprintClampArg: rayBundleFootprintClampArg,
+            composeLook: composeLook,
             presentationModeName: presentationModeName,
             cameraModelName: cameraModelName,
             cameraProfileName: cameraProfileName,
