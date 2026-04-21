@@ -220,13 +220,13 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
     ThinHybridRealismConfig cfg;
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
     if (C.realismProfile >= 3u) {
-        cfg.perturbAmp = clamp(0.26 + 0.34 * turbulence, 0.18, 0.72);
+        cfg.perturbAmp = clamp(0.58 + 0.18 * turbulence, 0.50, 0.84);
         cfg.atmosphereTau = 0.24;
         cfg.coronaStrength = 0.055;
         cfg.beamingStrength = 0.30;
         cfg.innerBoost = 0.78;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
-        cfg.perturbAmp = clamp(0.18 + 0.22 * turbulence, 0.12, 0.44);
+        cfg.perturbAmp = clamp(0.32 + 0.14 * turbulence, 0.24, 0.58);
         cfg.atmosphereTau = 0.12;
         cfg.coronaStrength = 0.024;
         cfg.beamingStrength = 0.12;
@@ -281,15 +281,54 @@ static inline float comp_thin_shear_perturb(float rNorm,
     float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
     float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
     float shear = phi - omega * timeRs;
-    float radialPhase = 0.73 * rr + 0.55 * sin(0.37 * rr);
-    float m3 = cos(3.0 * shear + radialPhase);
-    float m7 = cos(7.0 * (phi - 1.42 * omega * timeRs) + 1.7 * sin(0.21 * rr));
-    float m13 = cos(13.0 * (phi - 2.15 * omega * timeRs) + 0.31 * rr);
-    float spiral = (0.52 * m3 + 0.30 * m7 + 0.18 * m13) / 1.0;
-    float fine = fbm(float3(0.16 * rr, 1.35 * phi - 0.55 * omega * timeRs, 0.047 * timeRs));
-    float p = 0.5 + 0.5 * clamp(0.78 * spiral + 0.44 * (fine - 0.5), -1.0, 1.0);
-    float innerGain = 1.0 + cfg.perturbAmp * (1.0 - smoothstep(3.5, 8.0, rr));
+    float shearFast = phi - 1.92 * omega * timeRs;
+
+    float radialPhase = 0.41 * rr + 0.95 * sin(0.18 * rr);
+    float m2 = cos(2.0 * shear + radialPhase);
+    float m5 = cos(5.0 * shearFast + 1.65 * sin(0.23 * rr));
+    float m11 = cos(11.0 * (phi - 2.75 * omega * timeRs) + 0.19 * rr);
+
+    float waveZone = smoothstep(6.0, 16.0, rr) * (1.0 - smoothstep(42.0, 85.0, rr));
+    float densityWave = sin(23.0 * pow(max(rr - 1.0, 0.0), 0.58) - 2.0 * phi + 0.09 * timeRs);
+    float spiral = 0.42 * m2 + 0.28 * m5 + 0.13 * m11 + 0.17 * waveZone * densityWave;
+
+    float filament = fbm(float3(0.040 * rr, 2.20 * shear, 0.026 * timeRs));
+    float fine = fbm(float3(0.22 * rr, 6.5 * shearFast + 0.8 * sin(0.31 * rr), 0.071 * timeRs));
+    float p = 0.5 + 0.5 * clamp(0.70 * spiral + 0.34 * (filament - 0.5) + 0.20 * (fine - 0.5), -1.0, 1.0);
+    float innerGain = 1.0 + cfg.perturbAmp * (1.0 - smoothstep(3.5, 9.0, rr));
     return clamp(0.5 + (p - 0.5) * innerGain, 0.0, 1.0);
+}
+
+static inline float comp_thin_optical_depth_density(float rNorm,
+                                                    float rInNorm,
+                                                    float phi,
+                                                    float perturb,
+                                                    float cloudNorm,
+                                                    constant Params& P,
+                                                    ThinHybridRealismConfig cfg)
+{
+    float rr = max(rNorm, 1.0001);
+    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
+    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
+    float shear = phi - omega * timeRs;
+
+    float dr = max(rr - rInNorm, 0.0);
+    float ringPhase = 31.0 * pow(dr + 0.15, 0.54) - 2.0 * phi + 0.065 * timeRs;
+    float ringEnvelope = smoothstep(0.8, 4.0, dr) * (1.0 - smoothstep(42.0, 90.0, rr));
+    float ringWave = ringEnvelope * sin(ringPhase);
+
+    float filament = fbm(float3(0.030 * rr, 2.75 * shear, 0.022 * timeRs));
+    float fine = fbm(float3(0.18 * rr, 8.0 * shear + 0.28 * rr, 0.067 * timeRs));
+    float contrast = 0.68 * (perturb - 0.5)
+                   + 0.23 * (cloudNorm - 0.5)
+                   + 0.26 * (filament - 0.5)
+                   + 0.12 * (fine - 0.5)
+                   + 0.20 * ringWave;
+
+    float sigma = 0.30 + 0.62 * cfg.perturbAmp;
+    float tau = exp(clamp(sigma * contrast - 0.5 * sigma * sigma, -0.80, 0.82));
+    float innerDamping = 0.78 + 0.22 * smoothstep(0.35, 2.2, dr);
+    return clamp(mix(1.0, tau * innerDamping, clamp(cfg.perturbAmp * 1.15, 0.0, 1.0)), 0.38, 1.95);
 }
 
 static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
@@ -313,8 +352,9 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
 
     s.perturb = comp_thin_shear_perturb(s.rNorm, s.phi, P, cfg);
     float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
-    float density = 1.0 + cfg.perturbAmp * (0.92 * (s.perturb - 0.5) + 0.28 * (cloudNorm - 0.5));
-    density = clamp(density, 0.34, 1.88);
+    float density = comp_thin_optical_depth_density(s.rNorm, rInNorm, s.phi, s.perturb, cloudNorm, P, cfg);
+    density *= clamp(1.0 + cfg.perturbAmp * (0.78 * (s.perturb - 0.5) + 0.22 * (cloudNorm - 0.5)), 0.58, 1.62);
+    density = clamp(density, 0.34, 2.15);
 
     float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
     float radialLum = (0.62 + cfg.innerBoost * s.innerWeight) * (0.42 + 0.78 * s.emissivity);
@@ -998,6 +1038,13 @@ static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant Comp
     return flareExp / exposure;
 }
 
+static inline float comp_psf_wing_strength(uint profile, constant ComposeParams& C) {
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return 0.0;
+    float flare = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    float profileBoost = (profile >= 3u) ? 0.018 : ((profile >= 2u) ? 0.012 : 0.004);
+    return clamp(profileBoost + 0.010 * C.cameraPsfSigmaPx + 0.050 * flare, 0.0, 0.12);
+}
+
 static inline float3 comp_linear_full_rgb(device const float4* inLinear,
                                           uint srcX,
                                           uint srcY,
@@ -1063,6 +1110,15 @@ static inline float3 comp_add_cinematic_flare_full(float3 base,
     local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirY * rNear, C), C);
     local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirY * rNear, C), C);
     local *= 0.25;
+    float3 bloom = float3(0.0);
+    for (uint j = 0u; j < 3u; ++j) {
+        float r = (j == 0u) ? 3.0 : ((j == 1u) ? 7.0 : 13.0);
+        float w = (j == 0u) ? 0.50 : ((j == 1u) ? 0.31 : 0.19);
+        bloom += w * (1.18 * comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirY * r, C), C)
+                    + 1.18 * comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirY * r, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirX * r, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirX * r, C), C));
+    }
 
     float3 ghosts = float3(0.0);
     for (uint i = 0u; i < 4u; ++i) {
@@ -1095,7 +1151,7 @@ static inline float3 comp_add_cinematic_flare_full(float3 base,
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
     float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
 
-    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
 }
 
@@ -1135,6 +1191,27 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
+    float wing = comp_psf_wing_strength(profile, C);
+    if (wing > 1e-6) {
+        float rA = 1.8 + 2.2 * sigma;
+        float rB = 4.0 + 4.8 * sigma;
+        float sx = float(srcX);
+        float sy = float(srcY);
+        float3 haloA = (
+            comp_sample_linear_full_bilinear(inLinear, float2(sx + rA, sy), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx - rA, sy), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx, sy + rA), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx, sy - rA), C)
+        ) * 0.25;
+        float d = 0.70710678 * rB;
+        float3 haloB = (
+            comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy + d), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy + d), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy - d), C) +
+            comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy - d), C)
+        ) * 0.25;
+        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+    }
     return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
 }
 
@@ -1200,6 +1277,15 @@ static inline float3 comp_add_cinematic_flare_tile(float3 base,
     local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirY * rNear, C), C);
     local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirY * rNear, C), C);
     local *= 0.25;
+    float3 bloom = float3(0.0);
+    for (uint j = 0u; j < 3u; ++j) {
+        float r = (j == 0u) ? 3.0 : ((j == 1u) ? 7.0 : 13.0);
+        float w = (j == 0u) ? 0.50 : ((j == 1u) ? 0.31 : 0.19);
+        bloom += w * (1.18 * comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirY * r, C), C)
+                    + 1.18 * comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirY * r, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirX * r, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirX * r, C), C));
+    }
 
     float3 ghosts = float3(0.0);
     for (uint i = 0u; i < 4u; ++i) {
@@ -1232,7 +1318,7 @@ static inline float3 comp_add_cinematic_flare_tile(float3 base,
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
     float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
 
-    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
 }
 
@@ -1272,6 +1358,27 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
+    float wing = comp_psf_wing_strength(profile, C);
+    if (wing > 1e-6) {
+        float rA = 1.8 + 2.2 * sigma;
+        float rB = 4.0 + 4.8 * sigma;
+        float sx = float(lx);
+        float sy = float(ly);
+        float3 haloA = (
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx + rA, sy), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx - rA, sy), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy + rA), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy - rA), C)
+        ) * 0.25;
+        float d = 0.70710678 * rB;
+        float3 haloB = (
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy + d), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy + d), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy - d), C) +
+            comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy - d), C)
+        ) * 0.25;
+        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+    }
     return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
 }
 
@@ -1334,6 +1441,15 @@ static inline float3 comp_add_cinematic_flare_collision(float3 base,
     local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirY * rNear, P, C), C);
     local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirY * rNear, P, C), C);
     local *= 0.25;
+    float3 bloom = float3(0.0);
+    for (uint j = 0u; j < 3u; ++j) {
+        float r = (j == 0u) ? 3.0 : ((j == 1u) ? 7.0 : 13.0);
+        float w = (j == 0u) ? 0.50 : ((j == 1u) ? 0.31 : 0.19);
+        bloom += w * (1.18 * comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirY * r, P, C), C)
+                    + 1.18 * comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirY * r, P, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirX * r, P, C), C)
+                    + 0.36 * comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirX * r, P, C), C));
+    }
 
     float3 ghosts = float3(0.0);
     for (uint i = 0u; i < 4u; ++i) {
@@ -1366,7 +1482,7 @@ static inline float3 comp_add_cinematic_flare_collision(float3 base,
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
     float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
 
-    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
 }
 
@@ -1407,6 +1523,27 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
+    float wing = comp_psf_wing_strength(profile, C);
+    if (wing > 1e-6) {
+        float rA = 1.8 + 2.2 * sigma;
+        float rB = 4.0 + 4.8 * sigma;
+        float sx = float(lx);
+        float sy = float(ly);
+        float3 haloA = (
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx + rA, sy), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx - rA, sy), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy + rA), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy - rA), P, C)
+        ) * 0.25;
+        float d = 0.70710678 * rB;
+        float3 haloB = (
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy + d), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy + d), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy - d), P, C) +
+            comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy - d), P, C)
+        ) * 0.25;
+        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+    }
     return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
 }
 
