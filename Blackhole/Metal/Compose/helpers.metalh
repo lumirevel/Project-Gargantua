@@ -201,6 +201,14 @@ struct ThinHybridRealismSample {
     float3 finalRgb;
 };
 
+struct ThinDiskStructureSample {
+    float perturb;
+    float density;
+    float tempShift;
+    float opacity;
+    float filament;
+};
+
 static inline bool comp_thin_physical_active(constant ComposeParams& C) {
     return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 1u);
 }
@@ -241,8 +249,16 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
         cfg.beamingStrength = 0.0;
         cfg.innerBoost = 0.0;
     }
-    cfg.outerFadeStart = 0.58;
-    cfg.outerFadeEnd = 0.97;
+    if (C.realismProfile >= 3u) {
+        cfg.outerFadeStart = 0.50;
+        cfg.outerFadeEnd = 0.91;
+    } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
+        cfg.outerFadeStart = 0.54;
+        cfg.outerFadeEnd = 0.94;
+    } else {
+        cfg.outerFadeStart = 0.58;
+        cfg.outerFadeEnd = 0.97;
+    }
     cfg.atmosphereTint = float3(1.04, 0.99, 0.91);
     cfg.coronaTint = float3(0.72, 0.88, 1.18);
     return cfg;
@@ -332,6 +348,61 @@ static inline float comp_thin_optical_depth_density(float rNorm,
     float tau = exp(clamp(sigma * contrast - 0.5 * sigma * sigma, -0.80, 0.82));
     float innerDamping = 0.78 + 0.22 * smoothstep(0.35, 2.2, dr);
     return clamp(mix(1.0, tau * innerDamping, clamp(cfg.perturbAmp * 1.15, 0.0, 1.0)), 0.38, 1.95);
+}
+
+static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
+                                                              float rInNorm,
+                                                              float phi,
+                                                              float cloudNorm,
+                                                              constant Params& P,
+                                                              ThinHybridRealismConfig cfg)
+{
+    ThinDiskStructureSample m;
+    float rr = max(rNorm, 1.0001);
+    float dr = max(rr - rInNorm, 0.0);
+    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
+    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
+    float shear = phi - omega * timeRs;
+    float shearFast = phi - 2.35 * omega * timeRs;
+    float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
+
+    float spiralA = sin(2.0 * shear + 4.8 * logR + 0.23 * sin(0.21 * rr));
+    float spiralB = sin(5.0 * shearFast + 8.5 * logR + 1.1 * sin(0.17 * rr));
+    float zonal = sin(19.0 * logR - 0.70 * phi + 0.055 * timeRs + 0.35 * spiralA);
+    float filamentNoise = fbm(float3(0.055 * rr, 2.65 * shear + 0.72 * logR, 0.031 * timeRs));
+    float knotNoise = fbm(float3(0.22 * rr, 9.0 * shearFast + 0.32 * rr, 0.083 * timeRs));
+
+    float wake = 0.48 * spiralA + 0.30 * spiralB + 0.22 * zonal;
+    float filamentField = clamp(0.5 + 0.5 * (0.70 * wake
+                         + 0.45 * (filamentNoise - 0.5)
+                         + 0.22 * (knotNoise - 0.5)), 0.0, 1.0);
+    m.filament = smoothstep(0.46, 0.88, filamentField);
+
+    float basePerturb = comp_thin_shear_perturb(rr, phi, P, cfg);
+    m.perturb = clamp(mix(basePerturb, filamentField, 0.42), 0.0, 1.0);
+
+    float densityBase = comp_thin_optical_depth_density(rr, rInNorm, phi, m.perturb, cloudNorm, P, cfg);
+    float cloudCentered = cloudNorm - 0.5;
+    float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
+    float contrast = 0.48 * (m.perturb - 0.5)
+                   + 0.22 * cloudCentered
+                   + 0.30 * (m.filament - 0.5)
+                   + 0.14 * zonal
+                   + 0.11 * innerTaper * spiralB;
+    float sigma = 0.18 + 0.42 * cfg.perturbAmp;
+    float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
+    m.density = clamp(densityBase * exp(logDensity), 0.30, 2.45);
+
+    // Small temperature variations follow disk-space structures; this preserves the
+    // NT radial backbone while breaking the overly uniform ribbon look.
+    float tempContrast = cfg.perturbAmp * (0.24 * (m.perturb - 0.5)
+                         + 0.13 * (m.filament - 0.5)
+                         + 0.08 * cloudCentered
+                         + 0.06 * (m.density - 1.0)
+                         + 0.05 * innerTaper * spiralA);
+    m.tempShift = clamp(exp(tempContrast), 0.84, 1.22);
+    m.opacity = clamp(m.density * (0.82 + 0.30 * m.filament) * (0.90 + 0.16 * innerTaper), 0.24, 2.80);
+    return m;
 }
 
 struct ThinSpectralEmission {
@@ -450,17 +521,12 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     s.emissivity = comp_thin_nt_emissivity_norm(s.rNorm, P);
     s.innerWeight = exp(-pow(max((s.rNorm - rInNorm) / 3.2, 0.0), 0.82));
 
-    s.perturb = comp_thin_shear_perturb(s.rNorm, s.phi, P, cfg);
     float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
-    float density = comp_thin_optical_depth_density(s.rNorm, rInNorm, s.phi, s.perturb, cloudNorm, P, cfg);
-    density *= clamp(1.0 + cfg.perturbAmp * (0.78 * (s.perturb - 0.5) + 0.22 * (cloudNorm - 0.5)), 0.58, 1.62);
-    density = clamp(density, 0.34, 2.15);
-    s.density = density;
+    ThinDiskStructureSample micro = comp_thin_disk_structure(s.rNorm, rInNorm, s.phi, cloudNorm, P, cfg);
+    s.perturb = micro.perturb;
+    s.density = micro.density;
 
-    float tempContrast = cfg.perturbAmp * (0.30 * (s.perturb - 0.5)
-                         + 0.14 * (cloudNorm - 0.5)
-                         + 0.11 * (density - 1.0));
-    float tempShift = clamp(1.0 + tempContrast, 0.86, 1.18);
+    float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
     s.observedTemp = max(thin_teff(s.rNorm, P) * fCol * s.g * tempShift, 1.0);
     float tempLum = pow(tempShift, 4.0);
@@ -473,19 +539,19 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
     float radialLum = (0.62 + cfg.innerBoost * s.innerWeight) * (0.42 + 0.78 * s.emissivity);
     s.beaming = clamp(pow(s.g, cfg.beamingStrength), 0.46, 1.86);
-    s.photosphere = rgb * tempTint * tempLum * density * radialLum * s.beaming * s.outerFade * edgeGate;
+    s.photosphere = rgb * tempTint * tempLum * s.density * radialLum * s.beaming * s.outerFade * edgeGate;
 
     float3 d = rec.direct_world.xyz;
     float mu = abs(d.z) / max(length(d), 1e-30);
     float tau = cfg.atmosphereTau
               * (0.45 + 0.75 * s.innerWeight)
-              * (0.55 + 0.45 * density)
+              * (0.50 + 0.50 * micro.opacity)
               / max(mu, 0.22);
     tau = clamp(tau, 0.0, 1.35);
     s.opticalDepth = tau;
     float trans = exp(-tau);
     float absorbed = 1.0 - trans;
-    float3 warmSource = s.photosphere * cfg.atmosphereTint * (0.28 + 0.42 * s.perturb);
+    float3 warmSource = s.photosphere * cfg.atmosphereTint * (0.22 + 0.36 * s.perturb + 0.22 * micro.filament);
     s.atmosphere = warmSource * absorbed * (0.34 + 0.66 * s.outerFade);
 
     float coronaGeom = pow(clamp(s.innerWeight, 0.0, 1.0), 1.55) * pow(1.0 - clamp(mu, 0.0, 1.0), 0.55);
