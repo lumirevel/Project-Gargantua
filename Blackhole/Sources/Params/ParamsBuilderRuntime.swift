@@ -27,6 +27,8 @@ struct MetricSettings {
 enum ParamsBuilderRuntime {
     static func resolvePresetDefaults(preset: String) -> PresetDefaults {
         switch preset {
+        case "realistic", "natural", "observational":
+            return PresetDefaults(camX: 15.0, camY: 0.0, camZ: 0.65, fov: 46.0, roll: -12.0, rcp: 8.2, diskH: 0.035, maxSteps: 1800)
         case "interstellar":
             return PresetDefaults(camX: 4.8, camY: 0.0, camZ: 0.55, fov: 58.0, roll: -18.0, rcp: 9.0, diskH: 0.08, maxSteps: 1600)
         case "eht":
@@ -86,6 +88,7 @@ enum ParamsBuilderRuntime {
         case "agx", "filmic": composeLookID = 3
         case "none", "linear": composeLookID = 4
         case "hdr", "hdr-rich", "hdrrich": composeLookID = 5
+        case "realistic", "natural", "observational": composeLookID = 6
         default: composeLookID = 0
         }
         return (composeLook, composeLookID)

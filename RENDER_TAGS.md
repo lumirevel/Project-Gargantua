@@ -10,7 +10,7 @@ Current flow:
 - `PackedParams` is the ABI boundary into Metal
 
 ## Core Runtime Flags
-- `--preset balanced|interstellar|eht`
+- `--preset balanced|realistic|interstellar|eht`
 - `--width <int>`
 - `--height <int>`
 - `--metric schwarzschild|kerr`
@@ -99,6 +99,7 @@ Visible:
 
 Camera/background:
 - `--camera-model legacy|scientific|cinematic`
+- `--look balanced|realistic|interstellar|eht|agx|hdr`
 - `--camera-psf-sigma`
 - `--camera-read-noise`
 - `--camera-shot-noise`

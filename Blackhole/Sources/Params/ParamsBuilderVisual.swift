@@ -58,7 +58,10 @@ enum ParamsBuilderVisual {
         }()
         let composeDitherArg = Float(doubleArg("--dither", default: composeDitherDefault))
 
-        let cameraModelName = stringArg("--camera-model", default: ((diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? "scientific" : "legacy")).lowercased()
+        let cameraModelName = stringArg("--camera-model", default: {
+            if composeLookID == 6 { return "scientific" }
+            return (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? "scientific" : "legacy"
+        }()).lowercased()
         let cameraModelID: UInt32
         switch cameraModelName {
         case "legacy", "none":
@@ -73,21 +76,21 @@ enum ParamsBuilderVisual {
 
         let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
             switch cameraModelID {
-            case 1: return 0.55
+            case 1: return (composeLookID == 6) ? 0.42 : 0.55
             case 2: return 0.35
             default: return 0.0
             }
         }())))
         let cameraReadNoiseArg = Float(max(0.0, doubleArg("--camera-read-noise", default: {
             switch cameraModelID {
-            case 1: return 0.0025
+            case 1: return (composeLookID == 6) ? 0.0015 : 0.0025
             case 2: return 0.0012
             default: return 0.0
             }
         }())))
         let cameraShotNoiseArg = Float(max(0.0, doubleArg("--camera-shot-noise", default: {
             switch cameraModelID {
-            case 1: return 0.010
+            case 1: return (composeLookID == 6) ? 0.006 : 0.010
             case 2: return 0.006
             default: return 0.0
             }
@@ -111,7 +114,7 @@ enum ParamsBuilderVisual {
                     fail("invalid --bg-stars \(backgroundStarsRawArg). use on|off")
                 }
             }
-            return (cameraModelID == 2) ? "stars" : "off"
+            return (cameraModelID == 2 || composeLookID == 6) ? "stars" : "off"
         }()
         let backgroundModeID: UInt32
         switch backgroundModeName {
@@ -122,9 +125,18 @@ enum ParamsBuilderVisual {
         default:
             fail("invalid --background \(backgroundModeName). use one of: off, stars")
         }
-        let backgroundStarDensityArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-density", default: (backgroundModeID == 1 ? 1.0 : 0.0)))))
-        let backgroundStarStrengthArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-strength", default: (backgroundModeID == 1 ? 1.0 : 0.0)))))
-        let backgroundNebulaStrengthArg = Float(max(0.0, min(2.0, doubleArg("--bg-nebula-strength", default: (backgroundModeID == 1 ? 0.45 : 0.0)))))
+        let backgroundStarDensityArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-density", default: {
+            if backgroundModeID == 0 { return 0.0 }
+            return (composeLookID == 6) ? 0.72 : 1.0
+        }()))))
+        let backgroundStarStrengthArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-strength", default: {
+            if backgroundModeID == 0 { return 0.0 }
+            return (composeLookID == 6) ? 0.70 : 1.0
+        }()))))
+        let backgroundNebulaStrengthArg = Float(max(0.0, min(2.0, doubleArg("--bg-nebula-strength", default: {
+            if backgroundModeID == 0 { return 0.0 }
+            return (composeLookID == 6) ? 0.22 : 0.45
+        }()))))
         if backgroundModeID == 0 && (backgroundStarDensityArg > 1e-6 || backgroundStarStrengthArg > 1e-6 || backgroundNebulaStrengthArg > 1e-6) {
             FileHandle.standardError.write(Data("warn: background intensity args are ignored when --background off\n".utf8))
         }

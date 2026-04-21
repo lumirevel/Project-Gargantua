@@ -73,6 +73,13 @@ Notes:
 - `--output *.bin` controls collisions output path.
 - Use one line (or `\` line continuation). Do not put options on a separate line alone.
 
+More natural observational profile:
+```bash
+./run_pipeline.sh --width 1200 --height 1200 --preset realistic --output blackhole_realistic.png
+```
+
+The `realistic` preset uses a narrower camera view, neutral filmic tone mapping, weak scientific camera blur/noise, and a modest lensed star background.
+
 ## Kerr Render
 
 ```bash
@@ -345,7 +352,7 @@ Physical disk controls:
 - `--disk-ic-amp <>=0>`: HDF5 초기조건 섭동 강도(현상론적 seeded perturbation, default `0`, 비활성)
 - `--disk-ic-seed <int>`: HDF5 초기조건 섭동 시드 (default `1337`)
 - `--disk-ic-scale <cells>`: HDF5 초기조건 섭동 상관 길이(셀 단위, default `12`)
-- `--background {off|stars}`: miss ray 배경 (default: cinematic 카메라에서 `stars`, 나머지는 `off`)
+- `--background {off|stars}`: miss ray 배경 (default: cinematic/realistic profile에서 `stars`, 나머지는 `off`)
 - `--bg-stars {on|off}`: `--background`의 on/off 별칭
 - `--bg-star-density <0..4>`: 별 밀도
 - `--bg-star-strength <0..4>`: 별 밝기

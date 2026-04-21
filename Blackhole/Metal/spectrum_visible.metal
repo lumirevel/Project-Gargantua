@@ -115,7 +115,23 @@ static inline float comp_hdr_like(float x) {
     return clamp(precise::pow(y, 0.92), 0.0, 1.0);
 }
 
+static inline float comp_realistic_like(float x) {
+    float xb = min(max(x, 0.0), 1e12);
+    // Neutral filmic curve: soft toe for faint sky, slower shoulder for hot disk highlights.
+    const float a = 1.82;
+    const float b = 0.030;
+    const float c = 1.62;
+    const float d = 0.310;
+    const float e = 0.045;
+    float y = (xb * (a * xb + b)) / max(xb * (c * xb + d) + e, 1e-8);
+    y = clamp(y, 0.0, 1.0);
+    float toe = smoothstep(0.0, 0.18, y);
+    y = mix(0.72 * y, y, toe);
+    return clamp(precise::pow(y, 0.98), 0.0, 1.0);
+}
+
 static inline float comp_tonemap_luma(float x, uint look) {
+    if (look == 6u) return comp_realistic_like(x); // --look realistic
     if (look == 5u) return comp_hdr_like(x); // --look hdr
     if (look == 3u) return comp_agx_like(x); // --look agx
     if (look == 4u) return clamp(x, 0.0, 1.0); // --look none
@@ -152,6 +168,17 @@ static inline float3 comp_apply_look(float3 rgb, uint look) {
         out.z *= 0.98;
         out = clamp(out, 0.0, 1.0);
         out = precise::pow(out, float3(0.97));
+        return clamp(out, 0.0, 1.0);
+    }
+    if (look == 6u) { // realistic
+        float y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float sat = 1.04 - 0.18 * smoothstep(0.62, 1.0, y);
+        float3 out = mix(float3(y), rgb, sat);
+        // Small daylight-like white balance; avoids the synthetic orange-only look.
+        out *= float3(1.012, 1.000, 0.990);
+        float contrast = smoothstep(0.02, 0.92, y);
+        out = mix(out, out * (0.96 + 0.08 * contrast), 0.45);
+        out = precise::pow(clamp(out, 0.0, 1.0), float3(1.01));
         return clamp(out, 0.0, 1.0);
     }
     return clamp(rgb, 0.0, 1.0);
