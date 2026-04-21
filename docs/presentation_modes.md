@@ -48,6 +48,11 @@ perturbations in observational/camera profiles are evaluated by re-integrating
 the visible-band spectrum at the perturbed observed temperature, not by painting
 a late RGB tint over a scalar intensity.
 
+The observational photosphere treats disk-space density as optical
+depth/covering fraction. Surface emission uses a saturating
+`1 - exp(-tau / mu)` term so optically thick regions approach the local
+blackbody source function instead of growing linearly with density.
+
 ## Physical vs Presentation Responsibilities
 
 Physical transport/source layer:

@@ -585,11 +585,14 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     rgb *= comp_limb_factor(mu, P);
 
     float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
-    // The NT radial flux is already represented by T_eff. Do not multiply by
-    // another emissivity curve here; use only a modest opacity/coverage term.
-    float radialLum = 0.78 + 0.22 * clamp(micro.radialTau / 2.40, 0.0, 1.0);
+    // The NT radial flux is already represented by T_eff. Treat unresolved
+    // density as optical depth/covering fraction, not unbounded luminosity:
+    // optically thick thermal surface emission approaches B_nu(T).
+    float surfaceTau = clamp(1.20 * micro.opacity * (0.72 + 0.28 * clamp(s.density / 1.6, 0.0, 1.0)), 0.0, 6.0);
+    float surfaceEscape = 1.0 - exp(-surfaceTau / max(mu, 0.24));
+    float surfaceCover = 0.70 + 0.30 * clamp(s.density / 1.75, 0.0, 1.0);
     s.beaming = clamp(pow(max(s.g, 1e-4), 3.0), 0.02, 16.0);
-    s.photosphere = rgb * s.density * radialLum * s.outerFade * edgeGate;
+    s.photosphere = rgb * surfaceEscape * surfaceCover * s.outerFade * edgeGate;
 
     float tau = cfg.atmosphereTau
               * (0.45 + 0.75 * s.innerWeight)
