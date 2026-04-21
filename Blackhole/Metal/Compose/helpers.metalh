@@ -449,6 +449,47 @@ struct ThinSpectralEmission {
     float colorDilution;
 };
 
+static inline float3 comp_visible_blackbody_rgb_from_observed_temp(float tObserved,
+                                                                   float colorDilution,
+                                                                   constant ComposeParams& C)
+{
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lamM = lam * 1e-9;
+        float xBar, yBar, zBar;
+        comp_cie_xyz_bar(lam, xBar, yBar, zBar);
+        float b = comp_planck_lambda(lamM, tObserved) * colorDilution;
+        if (kahan) {
+            float yx = b * xBar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * yBar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * zBar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * xBar;
+            Y += b * yBar;
+            Z += b * zBar;
+        }
+    }
+    return comp_xyz_to_rgb(float3(X, Y, Z));
+}
+
 static inline float comp_frequency_shift_from_record(const CollisionInfo rec,
                                                      constant Params& P,
                                                      constant ComposeParams& C)
@@ -481,12 +522,14 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     ThinSpectralEmission e;
     e.g = comp_frequency_shift_from_record(rec, P, C);
     e.tEmit = max(rec.T, 1.0);
+    float fColUsed = 1.0;
     if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
         float rNorm = comp_emit_radius_norm(rec, P);
         float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
         float ntT = thin_teff(rNorm, P) * fCol;
         if (ntT > 1.0 && isfinite(ntT)) {
             e.tEmit = ntT;
+            fColUsed = fCol;
         }
     }
     // For thermal emission, evaluating the observed band at T_obs = g*T_emit is
@@ -494,56 +537,20 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     // (and I_lambda/lambda^5 in wavelength form). Do not add another Doppler
     // brightness multiplier after this path.
     e.tObserved = max(e.tEmit * e.g, 1.0);
-    e.colorDilution = 1.0;
+    e.colorDilution = (fColUsed > 1.0) ? (1.0 / pow(fColUsed, 4.0)) : 1.0;
     if (FC_PHYSICS_MODE == 2u) {
         float fCol = max(P.diskColorFactor, 1.0);
         e.colorDilution = 1.0 / pow(fCol, 4.0);
     }
 
-    float X = 0.0;
-    float Y = 0.0;
-    float Z = 0.0;
-    float cX = 0.0;
-    float cY = 0.0;
-    float cZ = 0.0;
-    bool kahan = (C.precisionMode != 0u);
-    float step = max(C.spectralStep, 0.25);
-    for (float lam = 380.0; lam <= 750.001; lam += step) {
-        float lamM = lam * 1e-9;
-        float xBar, yBar, zBar;
-        comp_cie_xyz_bar(lam, xBar, yBar, zBar);
-        float b = comp_planck_lambda(lamM, e.tObserved) * e.colorDilution;
-        if (kahan) {
-            float yx = b * xBar - cX;
-            float tx = X + yx;
-            cX = (tx - X) - yx;
-            X = tx;
-
-            float yy = b * yBar - cY;
-            float ty = Y + yy;
-            cY = (ty - Y) - yy;
-            Y = ty;
-
-            float yz = b * zBar - cZ;
-            float tz = Z + yz;
-            cZ = (tz - Z) - yz;
-            Z = tz;
-        } else {
-            X += b * xBar;
-            Y += b * yBar;
-            Z += b * zBar;
-        }
-    }
-
-    e.rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    e.rgb = comp_visible_blackbody_rgb_from_observed_temp(e.tObserved, e.colorDilution, C);
     float3 dWorld = rec.direct_world.xyz;
     float mu = abs(dWorld.z) / max(length(dWorld), 1e-30);
     e.rgb *= comp_limb_factor(mu, P);
     return e;
 }
 
-static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
-                                                             const CollisionInfo rec,
+static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInfo rec,
                                                              constant Params& P,
                                                              constant ComposeParams& C,
                                                              float cloudRaw)
@@ -570,20 +577,20 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
     s.observedTemp = max(thin_teff(s.rNorm, P) * fCol * s.g * tempShift, 1.0);
-    float tempLum = pow(tempShift, 4.0);
-    float hot = clamp((tempShift - 1.0) / 0.18, 0.0, 1.0);
-    float cold = clamp((1.0 - tempShift) / 0.14, 0.0, 1.0);
-    float3 tempTint = float3(1.0 - 0.055 * hot + 0.035 * cold,
-                             1.0 + 0.018 * hot,
-                             1.0 + 0.105 * hot - 0.050 * cold);
-
-    float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
-    float radialLum = (0.62 + cfg.innerBoost * s.innerWeight) * (0.42 + 0.78 * s.emissivity);
-    s.beaming = clamp(pow(max(s.g, 1e-4), 3.0), 0.02, 16.0);
-    s.photosphere = rgb * tempTint * tempLum * s.density * radialLum * s.outerFade * edgeGate;
+    float colorDilution = 1.0 / pow(fCol, 4.0);
 
     float3 d = rec.direct_world.xyz;
     float mu = abs(d.z) / max(length(d), 1e-30);
+    float3 rgb = comp_visible_blackbody_rgb_from_observed_temp(s.observedTemp, colorDilution, C);
+    rgb *= comp_limb_factor(mu, P);
+
+    float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
+    // The NT radial flux is already represented by T_eff. Do not multiply by
+    // another emissivity curve here; use only a modest opacity/coverage term.
+    float radialLum = 0.78 + 0.22 * clamp(micro.radialTau / 2.40, 0.0, 1.0);
+    s.beaming = clamp(pow(max(s.g, 1e-4), 3.0), 0.02, 16.0);
+    s.photosphere = rgb * s.density * radialLum * s.outerFade * edgeGate;
+
     float tau = cfg.atmosphereTau
               * (0.45 + 0.75 * s.innerWeight)
               * (0.50 + 0.50 * micro.opacity)
@@ -908,6 +915,15 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
                                      constant Params& P,
                                      constant ComposeParams& C)
 {
+    if (FC_PHYSICS_MODE == 0u && (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C))) {
+        float cloudRaw = comp_cloud_raw(rec, P, C);
+        ThinHybridRealismSample thin = comp_thin_hybrid_sample(rec, P, C, cloudRaw);
+        if (comp_thin_hybrid_debug_active(C)) {
+            return comp_thin_hybrid_debug_rgb(thin, C);
+        }
+        return thin.finalRgb;
+    }
+
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
     if (FC_PHYSICS_MODE == 3u) {
         if (visible_mode_enabled_fc() && C.analysisMode == 0u) {
@@ -935,13 +951,6 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
     if (FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) {
         if (C.analysisMode == 1u) return rgb;
         return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
-    }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
-        ThinHybridRealismSample thin = comp_thin_hybrid_sample(rgb, rec, P, C, cloudRaw);
-        if (comp_thin_hybrid_debug_active(C)) {
-            return comp_thin_hybrid_debug_rgb(thin, C);
-        }
-        return thin.finalRgb;
     }
     if (C.analysisMode != 0u) return rgb;
     if (P.diskNoiseModel == 1u) {

@@ -41,6 +41,13 @@ perturbations and a Shakura-Sunyaev-inspired radial opacity proxy tied to
 image-space noise, but it is not a solved GRMHD or vertical radiative-transfer
 model.
 
+For color-corrected thin-disk emission, the color hardening factor `f_col`
+shifts the local thermal spectrum but applies the matching `1/f_col^4`
+dilution so it does not create extra bolometric power. Disk-space temperature
+perturbations in observational/camera profiles are evaluated by re-integrating
+the visible-band spectrum at the perturbed observed temperature, not by painting
+a late RGB tint over a scalar intensity.
+
 ## Physical vs Presentation Responsibilities
 
 Physical transport/source layer:
