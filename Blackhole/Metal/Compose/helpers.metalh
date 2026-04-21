@@ -316,6 +316,39 @@ struct ThinMRIShearingField {
     float densityContrast;
 };
 
+static inline float comp_periodic01(float x) {
+    return clamp(0.5 + 0.5 * x, 0.0, 1.0);
+}
+
+static inline float comp_thin_periodic_streak(float shear,
+                                              float logR,
+                                              float rr,
+                                              float omega,
+                                              float timeRs,
+                                              float radialCoherence)
+{
+    // Periodic in azimuth by construction. The m={4,7,11} modes are advected
+    // by local orbital phase and sheared by log(r), giving stretched disk-space
+    // structure without hash/fbm randomness or phi seams.
+    float m4 = sin(4.0 * shear + 0.70 * radialCoherence * logR + 0.18 * sin(0.41 * rr));
+    float m7 = sin(7.0 * (shear - 0.22 * omega * timeRs) + 1.35 * radialCoherence * logR + 0.55 * m4);
+    float m11 = sin(11.0 * (shear - 0.37 * omega * timeRs) + 2.05 * radialCoherence * logR + 0.09 * rr);
+    return comp_periodic01(0.46 * m4 + 0.32 * m7 + 0.22 * m11);
+}
+
+static inline float comp_thin_periodic_eddy(float phi,
+                                            float logR,
+                                            float rr,
+                                            float omega,
+                                            float timeRs,
+                                            float radialCoherence)
+{
+    float e5 = cos(5.0 * (phi - 1.85 * omega * timeRs) + 0.92 * radialCoherence * logR);
+    float e9 = sin(9.0 * (phi - 2.45 * omega * timeRs) + 1.70 * radialCoherence * logR + 0.21 * rr);
+    float e14 = cos(14.0 * (phi - 3.10 * omega * timeRs) + 2.65 * radialCoherence * logR + 0.35 * e5);
+    return comp_periodic01(0.40 * e5 + 0.34 * e9 + 0.26 * e14);
+}
+
 static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
                                                                float rInNorm,
                                                                float phi,
@@ -350,22 +383,16 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     float zonalPhase = radialCoherence * logR + 0.035 * timeRs + 0.18 * sin(2.0 * shear);
     f.zonal = sin(zonalPhase);
 
-    float3 streakCoord = float3(0.35 * radialCoherence * logR,
-                                2.4 * shear + 0.9 * logR,
-                                0.018 * timeRs);
-    float3 eddyCoord = float3(1.25 * radialCoherence * logR,
-                              8.0 * (phi - 2.4 * omega * timeRs) + 0.31 * rr,
-                              0.062 * timeRs);
-    float streakNoise = fbm(streakCoord);
-    float eddyNoise = fbm(eddyCoord);
-    float ridge = 1.0 - abs(2.0 * streakNoise - 1.0);
-    f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddyNoise);
+    float streak = comp_thin_periodic_streak(shear, logR, rr, omega, timeRs, radialCoherence);
+    float eddy = comp_thin_periodic_eddy(phi, logR, rr, omega, timeRs, radialCoherence);
+    float ridge = 1.0 - abs(2.0 * streak - 1.0);
+    f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddy);
 
     float cloudCentered = cloudNorm - 0.5;
     float raw = 0.54 * f.channel
               + 0.16 * f.zonal
               + 0.34 * (f.filament - 0.5)
-              + 0.16 * (eddyNoise - 0.5)
+              + 0.16 * (eddy - 0.5)
               + 0.10 * cloudCentered;
     f.densityContrast = clamp(raw * innerGain * innerActivity, -1.0, 1.0);
 
