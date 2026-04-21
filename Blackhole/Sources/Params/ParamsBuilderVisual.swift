@@ -479,14 +479,17 @@ enum ParamsBuilderVisual {
         }
         let backgroundStarDensityArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-density", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.24 }
             return (composeLookID == 6) ? 0.72 : 1.0
         }()))))
         let backgroundStarStrengthArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-strength", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.22 }
             return (composeLookID == 6) ? 0.70 : 1.0
         }()))))
         let backgroundNebulaStrengthArg = Float(max(0.0, min(2.0, doubleArg("--bg-nebula-strength", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.18 }
             return (composeLookID == 6) ? 0.22 : 0.45
         }()))))
         if backgroundModeID == 0 && (backgroundStarDensityArg > 1e-6 || backgroundStarStrengthArg > 1e-6 || backgroundNebulaStrengthArg > 1e-6) {

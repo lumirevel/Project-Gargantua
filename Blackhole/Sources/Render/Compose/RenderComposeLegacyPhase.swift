@@ -381,7 +381,11 @@ enum RenderComposeLegacyPhase {
                 lumSamples.sort()
                 let p50 = percentileSorted(lumSamples, 0.50)
                 let p995 = percentileSorted(lumSamples, 0.995)
-                var targetWhite: Float = composeTargetWhite(composeLookID)
+                var targetWhite: Float = composeTargetWhite(
+                    composeLookID,
+                    presentationModeID: config.presentationModeID,
+                    realismProfileID: realismProfileID
+                )
                 if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
                 let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
                 composeExposure = targetWhite / max(p995, pFloor)
@@ -517,7 +521,11 @@ enum RenderComposeLegacyPhase {
             let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, composeLumLogMin, composeLumLogMax) }
             let p50 = Float(pow(10.0, Double(p50Log)))
             let gpuP995 = Float(pow(10.0, Double(p995Log)))
-            var targetWhite: Float = composeTargetWhite(composeLookID)
+            var targetWhite: Float = composeTargetWhite(
+                composeLookID,
+                presentationModeID: config.presentationModeID,
+                realismProfileID: realismProfileID
+            )
             if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
             let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
             composeExposure = targetWhite / max(gpuP995, pFloor)

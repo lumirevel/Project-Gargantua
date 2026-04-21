@@ -41,3 +41,16 @@ func composeTargetWhite(_ lookID: UInt32) -> Float {
     if lookID == 5 { return 1.40 }
     return 0.8
 }
+
+func composeTargetWhite(_ lookID: UInt32, presentationModeID: UInt32, realismProfileID: UInt32) -> Float {
+    var target = composeTargetWhite(lookID)
+    if presentationModeID == 2 {
+        // Human-eye mode should preserve highlight structure rather than expose
+        // the p99.5 disk to near-white. This is a display adaptation choice, not
+        // a change to the scientific radiance buffer.
+        target *= (realismProfileID >= 2) ? 0.66 : 0.74
+    } else if presentationModeID == 3 {
+        target *= 0.82
+    }
+    return target
+}

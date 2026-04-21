@@ -141,7 +141,11 @@ enum RenderComposeHDRIntermediatePhase {
                 cloudQuantileHigh: 0.92,
                 lumQuantile: 0.995,
                 targetWhite: {
-                    var v = composeTargetWhite(composeLookID)
+                    var v = composeTargetWhite(
+                        composeLookID,
+                        presentationModeID: config.presentationModeID,
+                        realismProfileID: realismProfileID
+                    )
                     if config.diskVolumeEnabled && config.diskPhysicsModeID != 3 { v *= 2.2 }
                     return v
                 }(),

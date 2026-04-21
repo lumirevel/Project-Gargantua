@@ -362,8 +362,8 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddyNoise);
 
     float cloudCentered = cloudNorm - 0.5;
-    float raw = 0.52 * f.channel
-              + 0.24 * f.zonal
+    float raw = 0.54 * f.channel
+              + 0.16 * f.zonal
               + 0.34 * (f.filament - 0.5)
               + 0.16 * (eddyNoise - 0.5)
               + 0.10 * cloudCentered;
@@ -451,7 +451,7 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     float contrast = 0.62 * mri.densityContrast
                    + 0.22 * cloudCentered
                    + 0.30 * (m.filament - 0.5)
-                   + 0.12 * mri.zonal
+                   + 0.06 * mri.zonal
                    + 0.10 * innerTaper * mri.channel;
     float sigma = 0.18 + 0.42 * cfg.perturbAmp;
     float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
@@ -557,7 +557,7 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     float fColUsed = 1.0;
     if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
         float rNorm = comp_emit_radius_norm(rec, P);
-        float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
+        float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
         float fluxTaper = comp_thin_outer_flux_taper(rNorm, P);
         float ntT = thin_teff(rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol;
         if (ntT > 1.0 && isfinite(ntT)) {
@@ -608,7 +608,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     s.radialTau = micro.radialTau;
 
     float tempShift = micro.tempShift;
-    float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
+    float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
     float fluxTaper = comp_thin_outer_flux_taper(s.rNorm, P);
     s.observedTemp = max(thin_teff(s.rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol * s.g * tempShift, 1.0);
     float colorDilution = 1.0 / pow(fCol, 4.0);
@@ -618,7 +618,9 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float3 rgb = comp_visible_blackbody_rgb_from_observed_temp(s.observedTemp, colorDilution, C);
     rgb *= comp_limb_factor(mu, P);
 
-    float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
+    float edge0 = rInNorm + max(0.045, 0.012 * rInNorm);
+    float edge1 = rInNorm + max(0.560, 0.090 * rInNorm);
+    float edgeGate = smoothstep(edge0, edge1, s.rNorm);
     // The NT radial flux is already represented by T_eff. Treat unresolved
     // density as optical depth/covering fraction, not unbounded luminosity:
     // optically thick thermal surface emission approaches B_nu(T).
@@ -629,21 +631,33 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     s.photosphere = rgb * surfaceEscape * surfaceCover * s.outerFade * edgeGate;
 
     float tau = cfg.atmosphereTau
-              * (0.45 + 0.75 * s.innerWeight)
-              * (0.50 + 0.50 * micro.opacity)
-              / max(mu, 0.22);
-    tau = clamp(tau, 0.0, 1.35);
+              * (0.38 + 0.82 * s.innerWeight)
+              * (0.42 + 0.58 * micro.opacity)
+              / max(mu, 0.24);
+    tau = clamp(tau, 0.0, 1.25);
     s.opticalDepth = tau;
     float trans = exp(-tau);
     float absorbed = 1.0 - trans;
     float3 warmSource = s.photosphere * cfg.atmosphereTint * (0.22 + 0.36 * s.perturb + 0.22 * micro.filament);
-    s.atmosphere = warmSource * absorbed * (0.34 + 0.66 * s.outerFade);
+    s.atmosphere = warmSource * absorbed * (0.22 + 0.46 * s.outerFade);
 
     float coronaGeom = pow(clamp(s.innerWeight, 0.0, 1.0), 1.55) * pow(1.0 - clamp(mu, 0.0, 1.0), 0.55);
     float coronaLum = dot(s.photosphere, float3(0.2126, 0.7152, 0.0722));
     s.corona = cfg.coronaTint * coronaLum * cfg.coronaStrength * coronaGeom;
 
-    s.finalRgb = max(s.photosphere * trans + s.atmosphere + s.corona, float3(0.0));
+    // Eye/observational presentation only: very long optical paths are usually
+    // higher-order disk images near the critical curve. At single-ray sampling
+    // they alias into dotted guide-line-like rings, so attenuate them as
+    // unresolved sub-pixel energy. Strict scientific/debug paths remain intact.
+    float pathRs = abs(rec.ct) / max(P.rs, 1e-6);
+    float highOrder = smoothstep(72.0, 150.0, pathRs);
+    float highOrderVisibility = mix(1.0, 0.28, highOrder);
+    s.photosphere *= highOrderVisibility;
+    s.atmosphere *= highOrderVisibility;
+    s.corona *= highOrderVisibility;
+
+    float selfShadow = mix(1.0, 0.86, smoothstep(0.72, 1.25, tau) * (0.35 + 0.65 * s.innerWeight));
+    s.finalRgb = max(s.photosphere * trans * selfShadow + s.atmosphere + s.corona, float3(0.0));
     return s;
 }
 
@@ -1242,26 +1256,33 @@ static inline float3 comp_apply_camera_scene_response(float3 rgbExp,
     return max(out - blackLevel, 0.0);
 }
 
+static inline float3 comp_apply_human_vision_pipeline(float3 rgbTm)
+{
+    float3 out = clamp(rgbTm, 0.0, 1.0);
+    float y = dot(out, float3(0.2126, 0.7152, 0.0722));
+
+    // Human-eye presentation only: mesopic desaturation, Purkinje-like
+    // blue-green bias in dark regions, macular/lens short-wavelength filtering,
+    // and cone bleaching for intense highlights. Physical radiance is unchanged.
+    float mesopic = smoothstep(0.018, 0.26, y);
+    float scotopic = 1.0 - mesopic;
+    float bleach = smoothstep(0.62, 0.98, y);
+    float saturation = mix(0.30, 1.0, mesopic) * mix(1.0, 0.62, bleach);
+    out = mix(float3(y), out, saturation);
+
+    out *= mix(float3(1.0), float3(0.82, 0.99, 1.13), 0.25 * scotopic);
+    out *= mix(float3(1.0), float3(1.025, 1.000, 0.935), 0.18 * smoothstep(0.30, 1.0, y));
+
+    float3 bleachedWhite = float3(y);
+    out = mix(out, bleachedWhite, 0.24 * bleach);
+    return clamp(out, 0.0, 1.0);
+}
+
 static inline float3 comp_apply_camera_color_pipeline(float3 rgbTm,
                                                       constant ComposeParams& C)
 {
     if (C.cameraModel == 3u) {
-        float3 out = clamp(rgbTm, 0.0, 1.0);
-        float y = dot(out, float3(0.2126, 0.7152, 0.0722));
-        // Human-eye presentation: approximate mesopic desaturation in dark regions
-        // plus a weak Purkinje-like blue-green shift, and mild cone bleaching
-        // for very bright highlights. This is a display transform only; it
-        // does not alter the physical radiance buffer.
-        float mesopic = smoothstep(0.020, 0.24, y);
-        float scotopic = 1.0 - mesopic;
-        float bleach = smoothstep(0.72, 1.0, y);
-        float saturation = mix(0.36, 1.0, mesopic) * mix(1.0, 0.76, bleach);
-        float gray = y;
-        out = mix(float3(gray), out, saturation);
-        out *= mix(float3(1.0), float3(0.86, 0.98, 1.10), 0.22 * scotopic);
-        float3 bleachedWhite = float3(y);
-        out = mix(out, bleachedWhite, 0.16 * bleach);
-        return clamp(out, 0.0, 1.0);
+        return comp_apply_human_vision_pipeline(rgbTm);
     }
     uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
     if (profile == 0u) return rgbTm;
