@@ -23,9 +23,16 @@ camera artifacts and stronger presentation defaults from becoming implicit scien
 truth, and it makes rendered metadata state which layer produced the image.
 
 The thin-disk compose path now keeps local emission as an explicit visible-band
-blackbody/XYZ integration before RGB display conversion. The observational/cinematic
-profiles add disk-coordinate shear perturbation, density/opacity modulation, and a
-thin atmosphere/corona approximation after the scientific emission step.
+blackbody/XYZ integration before RGB display conversion. The `physical` realism
+profile is the strict baseline: NT-like radial temperature/emissivity, frequency
+shift, limb darkening, and no atmosphere/corona/microstructure layer.
+
+The `observational` and `cinematic` profiles add a phenomenological thin-disk
+surface layer after that baseline. The layer uses disk-coordinate shear
+perturbations and a Shakura-Sunyaev-inspired radial opacity proxy tied to
+`mdot`, radiative efficiency, and the inner boundary. It is more constrained than
+image-space noise, but it is not a solved GRMHD or vertical radiative-transfer
+model.
 
 ## Physical vs Presentation Responsibilities
 
@@ -35,11 +42,13 @@ Physical layer:
 - visible-band spectral emission integrated to linear XYZ/RGB
 - relativistic g-factor / beaming diagnostics
 - HDR radiance before display mapping
+- strict `physical` mode without phenomenological surface microstructure
 
 Human/experience layer:
 - human-vision display response, not camera sensor simulation
 - exposure and tone mapping
 - background star field for perceptual context
+- optional observational thin-disk surface layer for perceptual exploration
 
 Cinema-only layer:
 - flare and stronger camera artifacts
@@ -48,7 +57,8 @@ Cinema-only layer:
 ## Diagnostics
 
 Use `--realism-debug` with `g`, `emissivity`, `beaming`, `photosphere`,
-`atmosphere`, `corona`, `perturbation`, `hdr`, `temperature`, `tau`, or `density`.
+`atmosphere`, `corona`, `perturbation`, `hdr`, `temperature`, `tau`, `density`,
+or `radial-tau`.
 These maps disable camera presentation so the output remains a direct diagnostic.
 
 ## Near-Term Upgrade Hooks

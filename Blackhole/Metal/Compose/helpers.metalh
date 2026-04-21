@@ -193,6 +193,7 @@ struct ThinHybridRealismSample {
     float beaming;
     float opticalDepth;
     float observedTemp;
+    float radialTau;
     float innerWeight;
     float outerFade;
     float3 photosphere;
@@ -207,6 +208,7 @@ struct ThinDiskStructureSample {
     float tempShift;
     float opacity;
     float filament;
+    float radialTau;
 };
 
 static inline bool comp_thin_physical_active(constant ComposeParams& C) {
@@ -218,7 +220,7 @@ static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
 }
 
 static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
-    return (C.analysisMode >= 31u && C.analysisMode <= 41u);
+    return (C.analysisMode >= 31u && C.analysisMode <= 42u);
 }
 
 static inline bool comp_linear_rgb_is_final_sentinel(float w) {
@@ -350,6 +352,34 @@ static inline float comp_thin_optical_depth_density(float rNorm,
     return clamp(mix(1.0, tau * innerDamping, clamp(cfg.perturbAmp * 1.15, 0.0, 1.0)), 0.38, 1.95);
 }
 
+static inline float comp_thin_alpha_opacity_proxy(float rNorm,
+                                                  float rInNorm,
+                                                  constant Params& P)
+{
+    float rr = max(rNorm, rInNorm + 1e-4);
+    float dr = max(rr - rInNorm, 0.0);
+    float x = max(rr / max(rInNorm, 1e-4), 1.0);
+
+    // Dimensionless Shakura-Sunyaev-inspired proxy, not a solved vertical
+    // structure model. It anchors visual opacity to mdot, efficiency, and
+    // zero-torque inner-boundary behavior before turbulence is applied.
+    const float alphaRef = 0.10;
+    float eta = clamp(P.diskRadiativeEfficiency, 0.01, 0.42);
+    float mdot = max(P.diskMdotEdd, 1e-5);
+    float boundary = max(1.0 - sqrt(rInNorm / rr), 0.0);
+    float innerGate = smoothstep(0.04, 0.90, dr);
+    float mdotScale = pow(clamp(mdot / 0.10, 0.05, 30.0), 0.55);
+    float etaScale = pow(clamp(0.10 / eta, 0.25, 10.0), 0.35);
+    float alphaScale = pow(0.10 / alphaRef, 0.80);
+    float radial = pow(x, -0.68) * (0.35 + 0.65 * sqrt(clamp(boundary, 0.0, 1.0)));
+    float tau = innerGate * mdotScale * etaScale * alphaScale * radial;
+    return clamp(tau, 0.18, 2.40);
+}
+
+// Observational/cinematic thin-disk structure. This is a phenomenological
+// layer: the radial opacity baseline is thin-disk inspired, while azimuthal
+// structure is constrained to disk coordinates and Keplerian shear. It is not
+// used by the strict physical/scientific presentation path.
 static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
                                                               float rInNorm,
                                                               float phi,
@@ -381,6 +411,8 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     float basePerturb = comp_thin_shear_perturb(rr, phi, P, cfg);
     m.perturb = clamp(mix(basePerturb, filamentField, 0.42), 0.0, 1.0);
 
+    float radialTau = comp_thin_alpha_opacity_proxy(rr, rInNorm, P);
+    m.radialTau = radialTau;
     float densityBase = comp_thin_optical_depth_density(rr, rInNorm, phi, m.perturb, cloudNorm, P, cfg);
     float cloudCentered = cloudNorm - 0.5;
     float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
@@ -391,7 +423,9 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
                    + 0.11 * innerTaper * spiralB;
     float sigma = 0.18 + 0.42 * cfg.perturbAmp;
     float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
-    m.density = clamp(densityBase * exp(logDensity), 0.30, 2.45);
+    float turbulentDensity = densityBase * exp(logDensity);
+    float densityMix = clamp(0.45 + 0.45 * cfg.perturbAmp, 0.0, 0.92);
+    m.density = clamp(radialTau * mix(1.0, turbulentDensity, densityMix), 0.22, 2.55);
 
     // Small temperature variations follow disk-space structures; this preserves the
     // NT radial backbone while breaking the overly uniform ribbon look.
@@ -401,7 +435,9 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
                          + 0.06 * (m.density - 1.0)
                          + 0.05 * innerTaper * spiralA);
     m.tempShift = clamp(exp(tempContrast), 0.84, 1.22);
-    m.opacity = clamp(m.density * (0.82 + 0.30 * m.filament) * (0.90 + 0.16 * innerTaper), 0.24, 2.80);
+    m.opacity = clamp(radialTau * m.density
+                    * (0.82 + 0.30 * m.filament)
+                    * (0.90 + 0.16 * innerTaper), 0.18, 2.90);
     return m;
 }
 
@@ -525,6 +561,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     ThinDiskStructureSample micro = comp_thin_disk_structure(s.rNorm, rInNorm, s.phi, cloudNorm, P, cfg);
     s.perturb = micro.perturb;
     s.density = micro.density;
+    s.radialTau = micro.radialTau;
 
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
@@ -587,7 +624,8 @@ static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
         return comp_debug_ramp(clamp((lt - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0));
     }
     if (C.analysisMode == 40u) return comp_debug_ramp(clamp(s.opticalDepth / 1.35, 0.0, 1.0));
-    if (C.analysisMode == 41u) return comp_debug_ramp(clamp((s.density - 0.34) / max(2.15 - 0.34, 1e-6), 0.0, 1.0));
+    if (C.analysisMode == 41u) return comp_debug_ramp(clamp((s.density - 0.22) / max(2.55 - 0.22, 1e-6), 0.0, 1.0));
+    if (C.analysisMode == 42u) return comp_debug_ramp(clamp((s.radialTau - 0.18) / max(2.40 - 0.18, 1e-6), 0.0, 1.0));
     float lum = dot(s.finalRgb, float3(0.2126, 0.7152, 0.0722)); // pre-tone HDR luminance
     float t = clamp((log(max(lum, 1e-30)) * 0.4342944819032518 - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
     return comp_debug_ramp(t);

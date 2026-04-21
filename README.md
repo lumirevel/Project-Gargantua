@@ -85,8 +85,8 @@ Presentation modes separate physical transport from display intent:
 - `--scientific-master-out master.linear32f32` keeps an HDR32 scientific-master intermediate and defaults presentation to `scientific`.
 
 The `realistic` preset keeps the existing geodesic/lensing path scientific while changing only presentation defaults:
-- `--realism-profile physical` uses an NT-like thin-disk color-temperature backbone without extra artistic beaming, atmosphere, or corona.
-- `--realism-profile observational` enables modest disk-space perturbation/atmosphere/corona approximations for visual exploration.
+- `--realism-profile physical` is the strict thin-disk baseline: NT-like color-temperature/emissivity, spectral emission, g-factor, and no phenomenological atmosphere/corona/microstructure layer.
+- `--realism-profile observational` enables a phenomenological thin-disk surface layer for visual exploration. Its opacity is tied to a Shakura-Sunyaev-inspired radial proxy, but it is not a solved GRMHD or full radiative-transfer model.
 - `--realism-profile cinematic` is the stronger look-development profile, not the strict science baseline.
 - `--camera-profile scientific` applies the default lens/sensor response after ray tracing and HDR composition.
 - `--camera-profile cinema-digital` or `full-frame` shifts realism toward camera/lens/sensor behavior rather than modifying geodesic tracing.
@@ -102,6 +102,7 @@ Realism debug maps:
 ./run_pipeline.sh --preset realistic --realism-debug temperature --output debug_temperature.png
 ./run_pipeline.sh --preset realistic --realism-debug tau --output debug_tau.png
 ./run_pipeline.sh --preset realistic --realism-debug density --output debug_density.png
+./run_pipeline.sh --preset realistic --realism-debug radial-tau --output debug_radial_tau.png
 ```
 
 Debug values:
@@ -114,11 +115,12 @@ Debug values:
 - `temperature`: observed thin-disk color-temperature proxy after g-factor and disk-space variation.
 - `tau`: thin-atmosphere optical-depth proxy.
 - `density`: disk-space density/opacity modulation proxy.
+- `radial-tau`: thin-disk radial opacity baseline before turbulent modulation.
 - `--camera-profile {ideal|scientific|cinema-digital|full-frame}`: post-render camera/lens/sensor response profile.
 - `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json` or `docs/camera_profiles/imx455_full_frame_astro_like.json`.
 - Direct response keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.
 - Physical camera keys include `fullWellElectrons`, `readNoiseElectrons`, `peakQuantumEfficiency`, `darkCurrentElectronsPerSecond`, `exposureSeconds`, `dsnuElectrons`, `prnuPercent`, `pixelPitchMicrons`, `lensFNumber`, `lensVignettingStops`, `psfSigmaPixels`, and `flareStrength`; these are converted to the renderer's internal camera response/noise/PSF parameters unless the direct keys or CLI overrides are provided.
-- `--realism-profile {off|physical|observational|cinematic}`: thin-disk look-development profile; `physical` is the realistic preset default.
+- `--realism-profile {off|physical|observational|cinematic}`: thin-disk realism/presentation profile; use `physical` for strict comparisons and `observational`/`cinematic` for phenomenological surface structure.
 
 ## Kerr Render
 

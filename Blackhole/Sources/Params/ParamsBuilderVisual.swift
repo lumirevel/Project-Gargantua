@@ -548,8 +548,10 @@ enum ParamsBuilderVisual {
             realismDebugID = 40
         case "density", "rho":
             realismDebugID = 41
+        case "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            realismDebugID = 42
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density, radial-tau")
         }
         if realismDebugID != 0 && composeLookID != 6 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
