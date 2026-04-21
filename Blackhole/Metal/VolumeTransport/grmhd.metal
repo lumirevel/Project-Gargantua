@@ -46,19 +46,10 @@ static inline float disk_visible_kerr_ku_gfactor(float rEmit,
     float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
     float omega = 1.0 / max(pow_1p5(rM) + a, 1e-8);
     float drdt = 0.0;
-
-    KerrCovMetric cov = kerr_cov_metric(rM, 0.5 * M_PI, a);
-    float uDen = -(cov.gtt
-                 + 2.0 * omega * cov.gtphi
-                 + omega * omega * cov.gphiphi
-                 + cov.grr * drdt * drdt);
-    if (!(uDen > 1e-12) || !isfinite(uDen)) return 1.0;
-
-    float u_t = 1.0 / sqrt(uDen);
     float prRay = mix(pr0, pr1, clamp(segT, 0.0, 1.0));
-    float E_emit = u_t * (1.0 - omega * LzConst - drdt * prRay);
-    if (!(E_emit > 1e-12) || !isfinite(E_emit)) return 1.0;
-    return clamp(1.0 / E_emit, 1e-4, 1e4);
+    float g = 1.0;
+    if (!disk_kerr_flow_gfactor(rM, a, omega, drdt, LzConst, prRay, g)) return 1.0;
+    return g;
 }
 
 static inline float disk_planck_nu(float nuHz, float T, constant Params& P)

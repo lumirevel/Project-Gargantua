@@ -433,6 +433,38 @@ static inline float disk_schwarzschild_direct_gfactor(float rEmit,
     return clamp(eObs / eEmit, 1e-4, 1e4);
 }
 
+// Invariant Kerr redshift factor for an equatorial emitter. In these units the
+// distant observer contribution is normalized to k_t=-1, so
+// g = 1 / (u^t * (1 - Omega * Lz - v^r * p_r)).
+static inline bool disk_kerr_flow_gfactor(float rM,
+                                          float a,
+                                          float omega,
+                                          float drdt,
+                                          float LzConst,
+                                          float prRay,
+                                          thread float& gOut)
+{
+    KerrCovMetric cov = kerr_cov_metric(max(rM, 1.0001), 0.5 * M_PI, a);
+    float uDen = -(cov.gtt
+                 + 2.0 * omega * cov.gtphi
+                 + omega * omega * cov.gphiphi
+                 + cov.grr * drdt * drdt);
+    if (!(uDen > 1e-12) || !isfinite(uDen)) return false;
+
+    float uTime = 1.0 / sqrt(max(uDen, 1e-12));
+    float eEmit = uTime * (1.0 - omega * LzConst - drdt * prRay);
+    if (!(eEmit > 1e-8) || !isfinite(eEmit)) {
+        // Preserve the legacy safety fallback: if the radial momentum term
+        // drives the local photon energy invalid, keep the same emitter u^t
+        // but drop the radial contribution before declaring the sample bad.
+        eEmit = uTime * max(1.0 - omega * LzConst, 1e-8);
+    }
+    if (!(eEmit > 1e-8) || !isfinite(eEmit)) return false;
+
+    gOut = clamp(1.0 / eEmit, 1e-4, 1e4);
+    return isfinite(gOut);
+}
+
 static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     float dxy = length(float2(pos.x, pos.y));
     float rMin = disk_emit_min_radius_m(P);
