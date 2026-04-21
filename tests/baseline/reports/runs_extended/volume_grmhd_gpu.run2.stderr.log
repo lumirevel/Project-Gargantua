@@ -1,0 +1,5 @@
+[eta] mode=runtime-linear prior=00.4s
+[eta-phase] group=trace done 1/1 (tiles) elapsed=00.0s task=trace tile=1/1
+[eta-phase] group=light done 196608/262144 (ops) elapsed=00.0s task=luma hist full frame
+[eta-phase] group=compose done 262144/262144 (ops) elapsed=00.2s task=compose full frame
+[eta] done elapsed 00.3s pred 00.3s err  0.1% task=compose full frame

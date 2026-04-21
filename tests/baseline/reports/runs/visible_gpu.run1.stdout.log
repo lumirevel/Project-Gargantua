@@ -1,51 +1,41 @@
 
 == Preprocess - HDF5 Sample ==
-  output           /tmp/blackhole_hdf5_sample.mI3Uvb.h5
+  output           /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
   nr,nth,nphi      96,64,192
-saved FM torus HDF5: /private/tmp/blackhole_hdf5_sample.mI3Uvb.h5
-shape: nr=96, nth=64, nphi=192
-params: a=0.920000, r_h=1.391918, r_in=4.500000, r_pmax=6.000000, n=3.000000, beta_target=100.000000
-diagnostics: divB_rms=2.412e-22, divB_rel_max=9.854e-17, sigma_max=1.375e-03
+  cache            hit
 
 == Preprocess - GRMHD Volumes ==
-  input            /tmp/blackhole_hdf5_sample.mI3Uvb.h5
-  vol0             /tmp/blackhole_grmhd_vol0.gRNaCz.bin
-  vol1             /tmp/blackhole_grmhd_vol1.G7O0LI.bin
-  meta             /tmp/blackhole_grmhd_meta.ZSrK3M.json
+  input            /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
+  vol0             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol0.bin
+  vol1             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol1.bin
+  meta             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.meta.json
   nr,nphi,nz       128,256,72
   native3d         auto
-saved vol0: /private/tmp/blackhole_grmhd_vol0.gRNaCz.bin
-saved vol1: /private/tmp/blackhole_grmhd_vol1.G7O0LI.bin
-saved meta: /private/tmp/blackhole_grmhd_meta.ZSrK3M.json
-grid: 128x256x72, rNorm=[1.4500, 9.0000], zNormMax=0.3500
-mapping: native 3D r-theta-phi -> r-phi-z (theta from z/r)
+  cache            hit
 
 == Pipeline ==
   metric           schwarzschild
   pipeline_mode    gpu-only
-  gpu_strategy     in-memory
-  collisions_mode  auto
-  collisions_policy temp
-  compose          gpu
+  gpu_strategy     canonical-gpu-compose
+  debug_outputs    off
   ssaa             1
   output_size      320x320
   render_size      320x320
   tile_size        full-frame
   eta_output       errors
   eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
-  disk_vol0        /tmp/blackhole_grmhd_vol0.gRNaCz.bin
-  disk_vol1        /tmp/blackhole_grmhd_vol1.G7O0LI.bin
-  disk_meta        /tmp/blackhole_grmhd_meta.ZSrK3M.json
-  hdf5_sample      /tmp/blackhole_hdf5_sample.mI3Uvb.h5 (temporary)
-  collisions_out   /tmp/blackhole_discard.qlt5rv (temporary)
+  disk_vol0        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol0.bin
+  disk_vol1        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol1.bin
+  disk_meta        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.meta.json
+  hdf5_sample      /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5 (temporary)
   image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run1.png
 
 == Build ==
   status           skipped (--no-build)
+  binary           /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/.DerivedData/Build/Products/Release/Blackhole
 
 == Stage 1/1 - Swift ==
 
 == Outputs ==
   image            /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/visible_gpu.run1.png
   cleanup          temporary collisions removed
-  cleanup          temporary HDF5 sample removed

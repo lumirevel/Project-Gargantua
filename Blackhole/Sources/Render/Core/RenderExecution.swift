@@ -12,23 +12,18 @@ enum RenderExecution {
         if !config.visibleConfigLine.isEmpty { print(config.visibleConfigLine) }
 
         let policy = RenderResourcePolicy(config: config, params: params, device: device)
-        let preferLegacyRuntimeLinear =
-            policy.composeStrategyPreference == .tileFirst &&
-            config.composeGPU &&
-            !config.visibleModeEnabled &&
-            !config.rayBundleActive &&
-            config.composeAnalysisMode == 0
-        let effectiveGpuFullCompose = config.gpuFullCompose && !preferLegacyRuntimeLinear
-        let effectiveUseLinear32Intermediate = config.useLinear32Intermediate
-        let effectiveUseInMemoryCollisions = policy.useInMemoryCollisions && !effectiveUseLinear32Intermediate && !preferLegacyRuntimeLinear
-        let effectiveDiscardCollisionOutput = config.discardCollisionOutput && !preferLegacyRuntimeLinear
+        if config.traceHDRDirectMode == "on" && !policy.directLinearTraceSafe {
+            print("warn: --trace-hdr-direct on ignored: \(policy.directLinearUnsafeReason)")
+        }
+        let flags = RenderExecutionPlanning.makeFlags(config: config, policy: policy)
         let frameResources = Resources.makeFrameResources(
             device: device,
             config: config,
             params: params,
             policy: policy,
-            useInMemoryCollisions: effectiveUseInMemoryCollisions,
-            useLinear32Intermediate: effectiveUseLinear32Intermediate,
+            useDirectLinear: flags.effectiveUseDirectLinear,
+            useInMemoryCollisions: flags.effectiveUseInMemoryCollisions,
+            useLinear32Intermediate: flags.effectiveUseLinear32Intermediate,
             width: config.width,
             height: config.height,
             composeExposure: config.composeExposure,
@@ -54,79 +49,42 @@ enum RenderExecution {
             traceInFlightOverrideArg: config.traceInFlightOverrideArg
         )
 
-        let directLinearEnabled = frameResources.directLinearTraceBuf != nil
-        let inMemoryCollisionLiteEnabled = policy.inMemoryCollisionLiteEnabled(directLinearEnabled: directLinearEnabled)
-        let collisionLite32Enabled = policy.collisionLite32Enabled(
-            directLinearEnabled: directLinearEnabled,
-            useLinear32Intermediate: effectiveUseLinear32Intermediate
+        let plan = RenderExecutionPlanning.makePlan(
+            config: config,
+            params: params,
+            runtime: runtime,
+            policy: policy,
+            frameResources: frameResources
         )
 
-        if effectiveDiscardCollisionOutput && !(effectiveUseInMemoryCollisions || effectiveUseLinear32Intermediate) {
+        if plan.flags.effectiveDiscardCollisionOutput && !(plan.directLinearEnabled || plan.flags.effectiveUseInMemoryCollisions || plan.flags.effectiveUseLinear32Intermediate) {
             fail("--discard-collisions/--skip-collision-dump is only supported with --gpu-full-compose/--compose-in-memory or --linear32-intermediate/--hdr-intermediate")
         }
 
-        let tracePathSummary = policy.tracePathSummary(
-            directLinearEnabled: directLinearEnabled,
-            collisionLite32Enabled: collisionLite32Enabled,
-            inMemoryCollisionLiteEnabled: inMemoryCollisionLiteEnabled,
-            useLinear32Intermediate: effectiveUseLinear32Intermediate
-        )
-        print("trace path=\(tracePathSummary)")
+        print("trace path=\(plan.tracePathSummary)")
+        print(memoryPlanSummary(plan.intermediatePlan))
 
         var linearOutHandle: FileHandle? = nil
-        if effectiveUseLinear32Intermediate {
+        if plan.flags.effectiveUseLinear32Intermediate {
             _ = FileManager.default.createFile(atPath: frameResources.linearOutputURL.path, contents: nil)
             linearOutHandle = try FileHandle(forWritingTo: frameResources.linearOutputURL)
+            try linearOutHandle?.truncate(atOffset: UInt64(policy.linearOutSize))
         }
         var outHandle: FileHandle? = nil
-        if !effectiveUseInMemoryCollisions && !effectiveDiscardCollisionOutput && !effectiveUseLinear32Intermediate {
+        if !plan.flags.effectiveUseInMemoryCollisions && !plan.flags.effectiveDiscardCollisionOutput && !plan.flags.effectiveUseLinear32Intermediate {
             _ = FileManager.default.createFile(atPath: frameResources.outputURL.path, contents: nil)
             outHandle = try FileHandle(forWritingTo: frameResources.outputURL)
-            try outHandle?.truncate(atOffset: UInt64(policy.outSize))
+            try outHandle?.truncate(atOffset: UInt64(frameResources.collisionStorageSize))
         }
         defer {
             try? outHandle?.close()
             try? linearOutHandle?.close()
         }
 
-        let dsForTile = config.composeGPU ? config.downsampleArg : 1
-        let alignedTile = max(dsForTile, (max(1, config.tileSize) / dsForTile) * dsForTile)
-        let effectiveTile = alignedTile
-        if effectiveTile < max(config.width, config.height) {
-            print("tile rendering enabled: \(effectiveTile)x\(effectiveTile)")
+        if plan.effectiveTile < max(config.width, config.height) {
+            print("tile rendering enabled: \(plan.effectiveTile)x\(plan.effectiveTile)")
         }
-        let traceTilesX = max(1, (config.width + effectiveTile - 1) / effectiveTile)
-        let traceTilesY = max(1, (config.height + effectiveTile - 1) / effectiveTile)
-        let traceTileTotal = max(1, traceTilesX * traceTilesY)
-
-        let activeTracePipeline: MTLComputePipelineState = {
-            if directLinearEnabled { return runtime.traceLinearPipeline }
-            if collisionLite32Enabled { return runtime.traceLitePipeline }
-            return runtime.tracePipeline
-        }()
-        let traceThreadWidth = max(1, activeTracePipeline.threadExecutionWidth)
-        let traceMaxThreads = max(1, activeTracePipeline.maxTotalThreadsPerThreadgroup)
-        let tgWidth = min(traceThreadWidth, 32)
-        let targetThreads = min(traceMaxThreads, max(64, traceThreadWidth * 8))
-        let tgHeight = max(1, min(8, targetThreads / max(tgWidth, 1)))
-        let tg = MTLSize(width: tgWidth, height: tgHeight, depth: 1)
-        let activeComposeLinearTilePipeline = collisionLite32Enabled ? runtime.composeLinearTileLitePipeline : runtime.composeLinearTilePipeline
-        let tgLinearTile1D = MTLSize(width: max(1, min(256, activeComposeLinearTilePipeline.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1)
-
-        let totalPixels = policy.count
-        let composePrepassOpsTarget: Int
-        if config.composeGPU && effectiveGpuFullCompose && config.autoExposureEnabled {
-            composePrepassOpsTarget = 2 * policy.count
-        } else if config.composeGPU && effectiveUseLinear32Intermediate && config.autoExposureEnabled {
-            composePrepassOpsTarget = policy.count
-        } else {
-            composePrepassOpsTarget = 0
-        }
-        let composeOps = config.composeGPU ? (composePrepassOpsTarget + policy.outWidth * policy.outHeight) : 0
-        let totalOps = totalPixels + composeOps
-        let progressStep = max(1, totalOps / 256)
-
-        print("trace in-flight=\(frameResources.maxInFlight), slotBytes=\(frameResources.slotBytes), tiles=\(traceTileTotal)")
+        print("trace in-flight=\(frameResources.maxInFlight), slotBytes=\(frameResources.slotBytes), tiles=\(plan.traceTileTotal)")
 
         let traceResult = try RenderTracePhase.execute(
             RenderTracePhaseInput(
@@ -134,22 +92,22 @@ enum RenderExecution {
                 params: params,
                 width: config.width,
                 height: config.height,
-                effectiveTile: effectiveTile,
-                traceTileTotal: traceTileTotal,
-                traceTilesX: traceTilesX,
-                traceTilesY: traceTilesY,
-                tg: tg,
-                tgLinearTile1D: tgLinearTile1D,
+                effectiveTile: plan.effectiveTile,
+                traceTileTotal: plan.traceTileTotal,
+                traceTilesX: plan.traceTilesX,
+                traceTilesY: plan.traceTilesY,
+                tg: plan.tg,
+                tgLinearTile1D: plan.tgLinearTile1D,
                 traceSlots: frameResources.traceSlots,
                 maxInFlight: frameResources.maxInFlight,
-                totalPixels: totalPixels,
-                totalOps: totalOps,
-                progressStep: progressStep,
-                useLinear32Intermediate: effectiveUseLinear32Intermediate,
-                useInMemoryCollisions: effectiveUseInMemoryCollisions,
-                directLinearEnabled: directLinearEnabled,
-                collisionLite32Enabled: collisionLite32Enabled,
-                discardCollisionOutput: effectiveDiscardCollisionOutput,
+                totalPixels: plan.totalPixels,
+                totalOps: plan.totalOps,
+                progressStep: plan.progressStep,
+                useLinear32Intermediate: plan.flags.effectiveUseLinear32Intermediate,
+                useInMemoryCollisions: plan.flags.effectiveUseInMemoryCollisions,
+                directLinearEnabled: plan.directLinearEnabled,
+                collisionLite32Enabled: plan.collisionLite32Enabled,
+                discardCollisionOutput: plan.flags.effectiveDiscardCollisionOutput,
                 traceStride: frameResources.traceStride,
                 linearStride: policy.linearStride,
                 linearCloudBins: 2048,
@@ -182,8 +140,8 @@ enum RenderExecution {
                 collisionBase: frameResources.collisionBase,
                 outHandle: outHandle,
                 linearOutHandle: linearOutHandle,
-                tracePipeline: activeTracePipeline,
-                composeLinearTilePipeline: activeComposeLinearTilePipeline,
+                tracePipeline: plan.activeTracePipeline,
+                composeLinearTilePipeline: plan.activeComposeLinearTilePipeline,
                 diskAtlasTex: runtime.diskAtlasTex,
                 diskVol0Tex: runtime.diskVol0Tex,
                 diskVol1Tex: runtime.diskVol1Tex
@@ -197,30 +155,30 @@ enum RenderExecution {
                 runtime: runtime,
                 policy: policy,
                 frameResources: frameResources,
-                directLinearEnabled: directLinearEnabled,
-                collisionLite32Enabled: collisionLite32Enabled,
+                directLinearEnabled: plan.directLinearEnabled,
+                collisionLite32Enabled: plan.collisionLite32Enabled,
                 traceResult: traceResult,
-                effectiveTile: effectiveTile,
-                totalPixels: totalPixels,
-                totalOps: totalOps,
-                progressStep: progressStep,
-                effectiveGpuFullCompose: effectiveGpuFullCompose,
-                effectiveUseLinear32Intermediate: effectiveUseLinear32Intermediate,
-                effectiveUseInMemoryCollisions: effectiveUseInMemoryCollisions
+                effectiveTile: plan.effectiveTile,
+                totalPixels: plan.totalPixels,
+                totalOps: plan.totalOps,
+                progressStep: plan.progressStep,
+                effectiveGpuFullCompose: plan.flags.effectiveGpuFullCompose,
+                effectiveUseLinear32Intermediate: plan.flags.effectiveUseLinear32Intermediate,
+                effectiveUseInMemoryCollisions: plan.flags.effectiveUseInMemoryCollisions
             )
         )
 
-        if effectiveUseInMemoryCollisions && !effectiveDiscardCollisionOutput && !effectiveUseLinear32Intermediate {
+        if plan.flags.effectiveUseInMemoryCollisions && !plan.flags.effectiveDiscardCollisionOutput && !plan.flags.effectiveUseLinear32Intermediate {
             guard let collisionBase = frameResources.collisionBase else {
                 fail("in-memory collision buffer unexpectedly missing at flush")
             }
-            try writeRawBuffer(to: frameResources.outputURL, sourceBase: UnsafeRawPointer(collisionBase), byteCount: policy.outSize)
+            try writeRawBuffer(to: frameResources.outputURL, sourceBase: UnsafeRawPointer(collisionBase), byteCount: frameResources.collisionStorageSize)
         }
 
         let meta = RenderOutputs.makeMeta(
             config: config,
             composeExposure: composeResult.composeExposure,
-            effectiveTile: effectiveTile,
+            effectiveTile: plan.effectiveTile,
             outWidth: policy.outWidth,
             outHeight: policy.outHeight,
             collisionStride: frameResources.traceStride
@@ -229,11 +187,41 @@ enum RenderExecution {
             meta: meta,
             outPath: config.outPath,
             linear32OutPath: config.linear32OutPath,
-            useLinear32Intermediate: effectiveUseLinear32Intermediate,
-            discardCollisionOutput: effectiveDiscardCollisionOutput,
-            outSize: policy.outSize,
+            useLinear32Intermediate: plan.flags.effectiveUseLinear32Intermediate,
+            discardCollisionOutput: plan.flags.effectiveDiscardCollisionOutput,
+            outSize: frameResources.collisionStorageSize,
             linearOutSize: policy.linearOutSize,
             hitCount: traceResult.hitCount
         )
+    }
+
+    private static func memoryPlanSummary(_ plan: RenderIntermediatePlan) -> String {
+        let cap = plan.workingSetCapBytes > 0 ? formatBytes(plan.workingSetCapBytes) : "unknown"
+        return [
+            "memory plan=\(plan.kind.rawValue)",
+            "persistentIntermediate=\(formatBytes(plan.persistentIntermediateBytes))",
+            "collisionFull=\(formatBytes(plan.fullFrameCollisionBytes))",
+            "hdrFull=\(formatBytes(plan.fullFrameLinearBytes))",
+            "rgbaOut=\(formatBytes(plan.fullFrameOutputBytes))",
+            "assets=\(formatBytes(plan.assetTextureBytes))",
+            "traceSlots=\(plan.maxInFlight)x\(formatBytes(plan.traceSlotBytes))",
+            "estimatedPeak=\(formatBytes(plan.estimatedPeakBytes))",
+            "workingSetCap=\(cap)"
+        ].joined(separator: ", ")
+    }
+
+    private static func formatBytes(_ bytes: Int) -> String {
+        if bytes <= 0 { return "0 B" }
+        let units = ["B", "KiB", "MiB", "GiB"]
+        var value = Double(bytes)
+        var unitIndex = 0
+        while value >= 1024.0 && unitIndex < units.count - 1 {
+            value /= 1024.0
+            unitIndex += 1
+        }
+        if unitIndex == 0 {
+            return "\(bytes) B"
+        }
+        return String(format: "%.1f %@", value, units[unitIndex])
     }
 }

@@ -196,6 +196,10 @@ struct ComposeParams {
     var backgroundStarStrength: Float
     var backgroundNebulaStrength: Float
     var preserveHighlightColor: UInt32
+    var diskNoiseModel: UInt32
+    var _pad0: UInt32
+    var _pad1: UInt32
+    var _pad2: UInt32
 }
 
 struct ComposeSolveParams {

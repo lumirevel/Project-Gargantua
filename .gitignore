@@ -1,0 +1,31 @@
+# Local build products
+.DerivedData/
+DerivedData/
+*.dSYM/
+Blackhole.xcodeproj/xcshareddata/
+
+# Python/script caches
+__pycache__/
+*.pyc
+
+# Local render outputs at repo root
+/*.png
+/*.ppm
+/*.bin
+/*.bin.json
+/*.h5
+/pipeline_eta_history.json
+
+# Local render outputs under the app wrapper directory
+/Blackhole/*.png
+/Blackhole/*.ppm
+/Blackhole/*.bin
+/Blackhole/*.bin.json
+/Blackhole/*.h5
+/Blackhole/__pycache__/
+
+# Ad-hoc sweep/tuning outputs
+/sweep_*/
+/tune_ref/
+/tests/baseline/reports/verify_runs/
+/tests/baseline/reports/*verify_report.json

@@ -51,37 +51,44 @@ ABI guard:
 
 ## Phase 1: Swift Modularization
 
-Planned modular split under `Blackhole/Sources/`:
-- `CLI.swift`
-- `LogicalParams.swift`
-- `PackedParams.swift`
-- `ParamsBuilder.swift`
-- `Resources.swift`
-- `MetalPipelines.swift`
-- `Renderer.swift`
-- `Regression.swift`
-- `AppMain.swift`
+Current modular split under `Blackhole/Sources/`:
+- `App/`: CLI, app entry, user-facing errors
+- `Core/ABI/`: packed GPU ABI types
+- `Core/Config/`: logical and resolved render config
+- `Core/Math/`: shared scalar/vector helpers
+- `Core/Physics/`: accretion model, visible spectrum, disk orbit policy
+- `Diagnostics/`: regression helpers
+- `Params/`: CLI/config/default resolution and `PackedParams` packing
+- `Render/Core/`: runtime resources, outputs, setup, execution shell
+- `Render/Planning/`: execution flags and trace/compose planning
+- `Render/Trace/`: trace submission, traversal, tile completion
+- `Render/Compose/`: legacy tiled compose, full-GPU compose, HDR intermediate compose
+- `Render/Support/`: renderer facade, histogram/progress helpers
 
 Entry point policy:
 - `Blackhole/main.swift` remains a thin launcher only.
 
 ## Phase 2: Metal Split
 
-`integral.metal` is now an include aggregator and keeps kernel entry names unchanged:
+`integral.metal` is an include aggregator and keeps kernel entry names unchanged:
 
 - `Blackhole/Metal/gr_math.metal`
 - `Blackhole/Metal/disk_models.metal`
-- `Blackhole/Metal/volume_rt.metal`
+- `Blackhole/Metal/volume_rt.metal`: entry points and trace orchestration
+- `Blackhole/Metal/VolumeTransport/*.metal`: legacy, GRMHD, and commit helpers
+- `Blackhole/Metal/Bundle/ray_bundle.metal`
+- `Blackhole/Metal/Visible/bridge.metal`
 - `Blackhole/Metal/spectrum_visible.metal`
-- `Blackhole/Metal/post_compose.metal`
+- `Blackhole/Metal/post_compose.metal`: include wrapper
+- `Blackhole/Metal/Compose/*.metalh`: compose helpers and kernels
 
-The split is behavior-preserving (textual include composition) so runtime outputs should remain hash-identical in deterministic cases.
+The split is source-organization only. Current canonical wrapper routing uses GPU-only/full-compose paths, so old hash baselines can drift from earlier legacy/runtime-linear compose captures even when the visual delta is small.
 
 ## Phase 3: Model Interface Seam
 
 Future accretion models are prepared behind a stable Swift interface:
 
-- `Blackhole/Sources/AccretionModel.swift`
+- `Blackhole/Sources/Core/Physics/AccretionModel.swift`
 
 Current runtime now resolves disk-policy defaults through model-specific policy objects while preserving legacy output.
 

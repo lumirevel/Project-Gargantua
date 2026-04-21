@@ -1,0 +1,1173 @@
+
+static inline float comp_precision_returning_radiation_factor(const CollisionInfo rec,
+                                                             constant Params& P,
+                                                             constant ComposeParams& C,
+                                                             float cloudRaw)
+{
+    if (FC_PHYSICS_MODE != 2u) return 1.0;
+    float ret = clamp(P.diskReturningRad, 0.0, 1.0);
+    if (!(ret > 1e-6)) return 1.0;
+
+    float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+    float rIn = disk_inner_radius_m(P);
+    float rH = disk_horizon_radius_m(P);
+    float span = max(2.8 * rIn - rIn, 1e-6);
+    float x = clamp((rEmit - rIn) / span, 0.0, 1.0);
+    float innerWeight = 1.0 - smoothstep(0.0, 1.0, x);
+    float horizonGate = smoothstep(rH * (1.02 + 16.0 * P.eps), rIn, rEmit);
+
+    float spinFac = (FC_METRIC == 0) ? 0.14 : pow(clamp(abs(P.spin), 0.0, 0.999), 1.6);
+
+    float3 d = rec.direct_world.xyz;
+    float mu = abs(d.z) / max(length(d), 1e-30);
+    float bending = 0.35 + 0.65 * pow(1.0 - clamp(mu, 0.0, 1.0), 0.72);
+
+    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+    float c = clamp((cloudNorm - 0.18) / 0.82, 0.0, 1.0);
+    float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+    float tau0 = max(P.diskCloudOpticalDepth, 0.0);
+    float albedo = clamp(P.diskScatteringAlbedo, 0.0, 1.0);
+    uint bounceCount = clamp(P.diskReturnBounces, 1u, 4u);
+    float reprocess = 1.0 - exp(-tau0 * (0.30 + 0.70 * coverage * c));
+    float absorbFrac = clamp(0.45 + 0.55 * reprocess, 0.0, 1.0);
+
+    float firstBounce = ret
+                      * (0.22 + 0.78 * spinFac)
+                      * innerWeight
+                      * bending
+                      * horizonGate
+                      * absorbFrac;
+    firstBounce = clamp(firstBounce, 0.0, 0.95);
+
+    // Multi-bounce geometric approximation: I_ret ~ f1 * (1 + q + q^2 + ...)
+    float q = albedo
+            * (0.20 + 0.55 * spinFac)
+            * (0.35 + 0.65 * bending)
+            * (0.40 + 0.60 * innerWeight)
+            * (0.55 + 0.45 * horizonGate);
+    q = clamp(q, 0.0, 0.88);
+
+    float accum = 0.0;
+    float term = firstBounce;
+    for (uint b = 0u; b < bounceCount; ++b) {
+        accum += term;
+        term *= q;
+    }
+    return 1.0 + clamp(accum, 0.0, 1.6);
+}
+
+static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
+                                                       const CollisionInfo rec,
+                                                       constant Params& P,
+                                                       constant ComposeParams& C,
+                                                       float cloudRaw)
+{
+    float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
+    float tau0 = max(P.diskCloudOpticalDepth, 0.0);
+    float porosity = clamp(P.diskCloudPorosity, 0.0, 1.0);
+    float shadowStrength = clamp(P.diskCloudShadowStrength, 0.0, 1.0);
+    float albedo = clamp(P.diskScatteringAlbedo, 0.0, 1.0);
+    if (!(coverage > 1e-6) || (!(tau0 > 1e-6) && !(porosity > 1e-6) && !(shadowStrength > 1e-6))) {
+        return rgb;
+    }
+
+    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+    float c = clamp((cloudNorm - 0.18) / 0.82, 0.0, 1.0);
+    float baseClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, c);
+
+    float3 d = rec.direct_world.xyz;
+    float dNorm = max(length(d), 1e-30);
+    float3 rayDir = d / dNorm;
+    float mu = abs(rayDir.z);
+
+    float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+    float halfH = disk_half_thickness_m(rEmit, P);
+    float span = max(P.re - P.rs, 1e-6);
+    float u = clamp((rEmit - P.rs) / span, 0.0, 1.0);
+    float innerBoost = 1.0 + 0.36 * (1.0 - smoothstep(0.06, 0.42, u));
+
+    // Use physical LOS distance through local disk volume (meters).
+    float pathMeters = (1.6 * halfH) / max(mu, 0.085);
+    pathMeters = clamp(pathMeters, 0.15 * P.rs, 3.5 * P.rs);
+    float pathRs = pathMeters / max(P.rs, 1e-6);
+
+    uint nSteps = clamp(P.diskRTSteps, 0u, 32u);
+    if (nSteps == 0u) {
+        float suggested = 6.0 + 1.0 * tau0 * innerBoost + 4.5 * pathRs;
+        nSteps = uint(clamp(suggested, 6.0, 24.0));
+    }
+    nSteps = max(nSteps, 4u);
+
+    float ds = pathMeters / float(nSteps);
+    float alphaBase = (tau0 * innerBoost) / max(pathMeters, 1e-9);
+    float phaseScatter = 0.5 * (1.0 + mu * mu); // Thomson-like angular term
+    float3 I = rgb;
+    float trans = 1.0;
+    const float3 scatterTint = float3(1.08, 1.0, 0.93);
+    float rInner = disk_inner_radius_m(P);
+    float tRef = max(rec.T, 1.0);
+
+    float r0 = max(rec.emit_r_norm * P.rs, P.rs * 1.0001);
+    float phi0 = rec.emit_phi;
+    float z0 = rec.emit_z_norm * P.rs;
+    float3 emitPos = float3(r0 * cos(phi0), r0 * sin(phi0), z0);
+
+    for (uint i = 0u; i < 32u; ++i) {
+        if (i >= nSteps) break;
+        float s = (float(i) + 0.5) / float(nSteps);
+        float signedOffset = (s - 0.5) * pathMeters;
+        float3 samplePos = emitPos + rayDir * signedOffset;
+        if (!inside_disk_volume(samplePos, P)) continue;
+
+        float sampleR = length(samplePos.xy);
+        float samplePhi = atan2(samplePos.y, samplePos.x);
+        float sampleZ = samplePos.z;
+        float ctLocal = rec.ct + signedOffset;
+
+        float localCloud = disk_cloud_noise(sampleR, samplePhi, sampleZ, ctLocal, P);
+        if (P.diskNoiseModel == 1u) {
+            float perlin = disk_perlin_texture_noise(sampleR, samplePhi, sampleZ, P);
+            localCloud = 0.55 * localCloud + 0.45 * clamp(0.5 + 0.5 * perlin, 0.0, 1.0);
+        }
+        float phase = 2.0 * s - 1.0;
+        float jitter = comp_hash13(float3(21.0 * sampleR / max(P.rs, 1e-6) + 13.0 * phase,
+                                          9.0 * samplePhi - 7.0 * phase,
+                                          15.0 * sampleZ / max(P.rs, 1e-6) + 3.0 * localCloud));
+        localCloud = clamp(0.84 * localCloud + 0.16 * jitter, 0.0, 1.0);
+        localCloud = pow(localCloud, 1.22);
+
+        float localClump = smoothstep(max(0.0, 1.0 - coverage), 1.0, localCloud);
+        float holeField = comp_hash13(float3(19.1 * sampleR / max(P.rs, 1e-6) + 11.0 * phase,
+                                             23.0 * samplePhi - 7.0 * phase,
+                                             17.0 * sampleZ / max(P.rs, 1e-6) + 13.0 * localCloud));
+        float holeThreshold = porosity * mix(0.76, 0.48, localClump);
+        float occupied = smoothstep(holeThreshold - 0.07, holeThreshold + 0.07, holeField);
+        float fill = clamp(localClump * occupied, 0.0, 1.0);
+        fill = mix(fill, localClump, 0.48);
+
+        float density = mix(0.28, 1.02, fill);
+        float dTau = min(alphaBase * density * ds, 3.5);
+        float stepTrans = exp(-dTau);
+        float absorbed = 1.0 - stepTrans;
+
+        float tStep = disk_effective_temperature(sampleR, rInner, P);
+        tStep *= disk_precision_texture_factor(sampleR, samplePhi, sampleZ, P);
+        float tRatio = pow(clamp(tStep / tRef, 0.04, 12.0), 4.0);
+
+        float3 thermalSrc = rgb * tRatio * (0.10 + 0.90 * fill);
+        float scatterAmp = (0.10 + 0.90 * phaseScatter) * (0.20 + 0.80 * fill);
+        float lumI = dot(I, float3(0.2126, 0.7152, 0.0722));
+        float3 scatterSrc = scatterTint * lumI * scatterAmp;
+        float3 source = mix(thermalSrc, scatterSrc, albedo);
+
+        I = I * stepTrans + source * absorbed;
+        trans *= stepTrans;
+    }
+
+    float attenuation = mix(1.0, trans, shadowStrength);
+    float porosityLift = mix(1.0, 1.0 + 0.35 * porosity * (1.0 - baseClump), 0.65);
+    float floor = 0.04 + 0.24 * porosity;
+    float3 out = I * attenuation * porosityLift;
+    return max(out, rgb * floor);
+}
+
+static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
+                                              constant Params& P,
+                                              constant ComposeParams& C)
+{
+    if (FC_PHYSICS_MODE == 3u) {
+        if (C.analysisMode >= 11u && C.analysisMode <= 14u) {
+            float raw = 0.0;
+            float lo = -30.0;
+            float hi = 2.0;
+            if (C.analysisMode == 11u) {
+                raw = max(rec.emit_r_norm, 0.0); // max_rho
+                lo = -16.0;
+                hi = 2.0;
+            } else if (C.analysisMode == 12u) {
+                raw = max(rec.emit_phi, 0.0); // max_b2
+                lo = -20.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 13u) {
+                raw = max(rec.emit_z_norm, 0.0); // max_jnu
+                lo = -40.0;
+                hi = -20.0;
+            } else if (C.analysisMode == 14u) {
+                raw = max(rec.noise, 0.0); // max_inu
+                lo = -40.0;
+                hi = -20.0;
+            }
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        if (C.analysisMode == 15u) { // Teff map
+            float raw = max(rec.T, 1.0);
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - 2.0) / max(7.0 - 2.0, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        if (C.analysisMode == 16u) { // g-factor map
+            float raw = clamp(rec.v_disk.x, 1e-6, 1e6);
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv + 2.0) / max(4.0, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        if (C.analysisMode == 19u) { // linear polarization fraction map
+            float p = clamp(rec.noise, 0.0, 1.0);
+            return float3(p);
+        }
+
+        if (visible_mode_enabled_fc()) {
+            if (rec.noise <= -50.0) {
+                // Packed by render-stage SSAA: emit_{r,phi,z} = linear XYZ.
+                float3 xyzPacked = max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
+                float Y = xyzPacked.y;
+                if (C.analysisMode == 17u) { // Y luminance map
+                    float lv = log(max(Y, 1e-38)) * 0.4342944819032518;
+                    float t = clamp((lv + 30.0) / max(34.0, 1e-6), 0.0, 1.0);
+                    return float3(t);
+                }
+                if (C.analysisMode == 18u) { // approximate dominant wavelength map
+                    float3 rgbPacked = max(comp_xyz_to_rgb(xyzPacked), float3(0.0));
+                    float peakLamApprox = 550.0;
+                    if (rgbPacked.x >= rgbPacked.y && rgbPacked.x >= rgbPacked.z) {
+                        peakLamApprox = 650.0;
+                    } else if (rgbPacked.z >= rgbPacked.x && rgbPacked.z >= rgbPacked.y) {
+                        peakLamApprox = 450.0;
+                    }
+                    float w = clamp((peakLamApprox - 380.0) / 400.0, 0.0, 1.0);
+                    float3 ramp = float3(
+                        clamp(1.5 - abs(4.0 * w - 3.0), 0.0, 1.0),
+                        clamp(1.5 - abs(4.0 * w - 2.0), 0.0, 1.0),
+                        clamp(1.5 - abs(4.0 * w - 1.0), 0.0, 1.0)
+                    );
+                    return ramp;
+                }
+                return comp_xyz_to_rgb(xyzPacked);
+            }
+
+            float g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
+            float tEmit = max(rec.T, 1.0);
+            float colorDilution = 1.0;
+            if (P.visibleTeffModel == 2u) {
+                float fCol = max(P.diskColorFactor, 1.0);
+                tEmit *= fCol;
+                colorDilution = 1.0 / pow(fCol, 4.0);
+            }
+            float X = 0.0;
+            float Y = 0.0;
+            float Z = 0.0;
+            float yLum = 0.0;
+            float peakLam = 380.0;
+            bool useInuAnchor = (P.visiblePhotosphereRhoThreshold <= 0.0);
+            float scalarI = max(rec.v_disk.w, 0.0);
+            bool usedSpectralAnchors = false;
+            if (useInuAnchor) {
+                // Packed by trace pass in visible volumetric mode:
+                // emit_{r,phi,z} = I_nu@{650,550,450}nm (observer frame).
+                float3 iNuVis = max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
+                if (dot(iNuVis, float3(1.0)) > 1e-30) {
+                    comp_visible_xyz_from_three_band_inu(iNuVis, colorDilution, P, X, Y, Z, yLum, peakLam);
+                    usedSpectralAnchors = true;
+                }
+            }
+
+            if (!usedSpectralAnchors) {
+                comp_visible_xyz_from_spectrum(tEmit, g_total, P, X, Y, Z, yLum, peakLam);
+                X *= colorDilution;
+                Y *= colorDilution;
+                Z *= colorDilution;
+
+                // Fallback amplitude anchor from scalar I_nu when spectral anchors are absent.
+                if (useInuAnchor && scalarI > 1e-18) {
+                    float nuObsRef = max(P.diskNuObsHz, 1e6);
+                    float nuEmRef = nuObsRef / max(g_total, 1e-8);
+                    float iNuPred = pow(g_total, 3.0) * comp_visible_iNu_emit(nuEmRef, tEmit, P) * colorDilution;
+                    float amp = scalarI / max(iNuPred, 1e-38);
+                    amp = clamp(amp, 0.0, 1e12);
+                    X *= amp;
+                    Y *= amp;
+                    Z *= amp;
+                }
+            }
+
+            if (C.analysisMode == 17u) { // Y luminance map
+                float lv = log(max(Y, 1e-38)) * 0.4342944819032518;
+                float t = clamp((lv + 30.0) / max(34.0, 1e-6), 0.0, 1.0);
+                return float3(t);
+            }
+            if (C.analysisMode == 18u) { // spectrum peak wavelength map
+                float w = clamp((peakLam - 380.0) / 400.0, 0.0, 1.0);
+                float3 ramp = float3(
+                    clamp(1.5 - abs(4.0 * w - 3.0), 0.0, 1.0),
+                    clamp(1.5 - abs(4.0 * w - 2.0), 0.0, 1.0),
+                    clamp(1.5 - abs(4.0 * w - 1.0), 0.0, 1.0)
+                );
+                return ramp;
+            }
+            float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+            float3 d_world = rec.direct_world.xyz;
+            float mu = abs(d_world.z) / max(length(d_world), 1e-30);
+            float limb = comp_limb_factor(mu, P);
+            return rgb * limb;
+        }
+
+        float iNu = max(rec.v_disk.w, 0.0);
+        return float3(iNu);
+    }
+
+    float g_total = 1.0;
+    if (C.spectralEncoding == 1u) {
+        g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
+    } else {
+        float3 v = rec.v_disk.xyz;
+        float3 d = rec.direct_world.xyz;
+        float v_norm = length(v);
+        float d_norm = length(d);
+        float dot_vd = dot(v, d);
+        float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
+        float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
+        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+        float delta = 1.0 / max(gamma * (1.0 - beta * cos_theta), 1e-9);
+        float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
+        r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
+        float r_obs = max(length(P.camPos), 1.0001 * P.rs);
+        float grav_num = clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0);
+        float grav_den = clamp(1.0 - P.rs / r_obs, 1e-8, 1.0);
+        float g_gr = sqrt(clamp(grav_num / grav_den, 1e-8, 4.0));
+        g_total = clamp(delta * g_gr, 1e-4, 1e4);
+    }
+
+    float T_emit = max(rec.T, 1.0);
+    float T_obs = max(T_emit * g_total, 1.0);
+    float colorDilution = 1.0;
+    if (FC_PHYSICS_MODE == 2u) {
+        float fCol = max(P.diskColorFactor, 1.0);
+        colorDilution = 1.0 / pow(fCol, 4.0);
+    }
+
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lam_m = lam * 1e-9;
+        float x_bar, y_bar, z_bar;
+        comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
+        float b = comp_planck_lambda(lam_m, T_obs) * colorDilution;
+        if (kahan) {
+            float yx = b * x_bar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * y_bar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * z_bar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * x_bar;
+            Y += b * y_bar;
+            Z += b * z_bar;
+        }
+    }
+
+    float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    if (P.diskVolumeMode != 0u && FC_PHYSICS_MODE == 2u) {
+        float volAmp = clamp(rec.v_disk.w, 0.0, 1.0);
+        rgb *= (0.65 + 2.80 * volAmp);
+    }
+
+    float3 d_world = rec.direct_world.xyz;
+    float mu = abs(d_world.z) / max(length(d_world), 1e-30);
+    float limb = comp_limb_factor(mu, P);
+    rgb *= limb;
+    if (C.spectralEncoding == 1u && FC_PHYSICS_MODE == 1u) {
+        float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
+        float rIn = disk_inner_radius_m(P);
+        float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
+        float x = clamp((rEmit - rH) / max(rIn - rH, 1e-6), 0.0, 1.0);
+        float xSoft = smoothstep(0.0, 1.0, x);
+        float floor = 0.35 * clamp(P.diskPlungeFloor, 0.0, 1.0);
+        float gate = floor + (1.0 - floor) * pow(max(xSoft, 1e-4), 2.2);
+        rgb *= clamp(gate, 0.0, 1.0);
+    }
+    return rgb;
+}
+
+static inline float comp_cloud_raw_fast(float noise,
+                                        float3 vDisk,
+                                        constant Params& P,
+                                        constant ComposeParams& C)
+{
+    float n = noise;
+    if (abs(n) < 1e-6 && C.spectralEncoding == 0u) {
+        n = comp_synthetic_noise(vDisk, P);
+    }
+    n = clamp(n, -1.0, 1.0);
+    float raw = (n < -1e-6) ? clamp(0.5 + 0.5 * n, 0.0, 1.0) : clamp(n, 0.0, 1.0);
+    if (P.diskNoiseModel == 1u) {
+        raw = 0.5 + (raw - 0.5) * 0.46;
+        raw = smoothstep(0.10, 0.90, raw);
+        raw = 0.5 + (raw - 0.5) * 0.55;
+    }
+    return raw;
+}
+
+static inline float3 comp_linear_rgb_precloud_legacy_fast(float T_emit,
+                                                          float3 vDisk,
+                                                          float3 directWorld,
+                                                          constant Params& P,
+                                                          constant ComposeParams& C)
+{
+    float g_total = 1.0;
+    if (C.spectralEncoding == 1u) {
+        g_total = clamp(vDisk.x, 1e-4, 1e4);
+    } else {
+        float3 d = directWorld;
+        float v_norm = length(vDisk);
+        float d_norm = length(d);
+        float dot_vd = dot(vDisk, d);
+        float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
+        float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
+        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+        float delta = 1.0 / max(gamma * (1.0 - beta * cos_theta), 1e-9);
+        float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
+        r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
+        float r_obs = max(length(P.camPos), 1.0001 * P.rs);
+        float grav_num = clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0);
+        float grav_den = clamp(1.0 - P.rs / r_obs, 1e-8, 1.0);
+        float g_gr = sqrt(clamp(grav_num / grav_den, 1e-8, 4.0));
+        g_total = clamp(delta * g_gr, 1e-4, 1e4);
+    }
+
+    float T_obs = max(T_emit * g_total, 1.0);
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lam_m = lam * 1e-9;
+        float x_bar, y_bar, z_bar;
+        comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
+        float b = comp_planck_lambda(lam_m, T_obs);
+        if (kahan) {
+            float yx = b * x_bar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * y_bar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * z_bar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * x_bar;
+            Y += b * y_bar;
+            Z += b * z_bar;
+        }
+    }
+
+    float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    float mu = abs(directWorld.z) / max(length(directWorld), 1e-30);
+    rgb *= comp_limb_factor(mu, P);
+    return rgb;
+}
+
+static inline float3 comp_linear_rgb_legacy_fast(float T_emit,
+                                                 float3 vDisk,
+                                                 float3 directWorld,
+                                                 float noise,
+                                                 constant Params& P,
+                                                 constant ComposeParams& C,
+                                                 thread float& cloudRaw)
+{
+    cloudRaw = comp_cloud_raw_fast(noise, vDisk, P, C);
+    return comp_linear_rgb_precloud_legacy_fast(T_emit, vDisk, directWorld, P, C);
+}
+
+static inline float3 comp_linear_rgb(const CollisionInfo rec,
+                                     constant Params& P,
+                                     constant ComposeParams& C)
+{
+    float3 rgb = comp_linear_rgb_precloud(rec, P, C);
+    if (FC_PHYSICS_MODE == 3u) {
+        if (visible_mode_enabled_fc() && C.analysisMode == 0u) {
+            float texStrength = clamp(P.diskPrecisionTexture, 0.0, 1.0);
+            if (texStrength > 1e-5) {
+                float cloudRaw = comp_cloud_raw(rec, P, C);
+                float cloud = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+                float core = precise::pow(cloud, 1.18);
+                float clump = precise::pow(core, 1.55);
+                float vvoid = precise::pow(1.0 - cloud, 1.35);
+                float density = 1.0 + texStrength * (0.26 * core - 0.14 * vvoid);
+                rgb *= max(density, 0.08);
+                rgb *= (1.0 + texStrength * 0.10 * clump);
+                rgb.x *= (1.0 + texStrength * 0.035 * clump);
+                rgb.z *= (1.0 - texStrength * 0.028 * clump);
+            }
+        }
+        return rgb;
+    }
+    float cloudRaw = comp_cloud_raw(rec, P, C);
+    if (FC_PHYSICS_MODE == 2u) {
+        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+        rgb *= retFactor;
+    }
+    if (FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) {
+        if (C.analysisMode == 1u) return rgb;
+        return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
+    }
+    if (C.analysisMode != 0u) return rgb;
+    if (P.diskNoiseModel == 1u) {
+        // Perlin mode targets a softer cloud look: avoid strong stripe amplification.
+        float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
+        float core = precise::pow(cloud, 1.06);
+        float clump = precise::pow(core, 1.55);
+        float vvoid = precise::pow(1.0 - cloud, 1.45);
+        float density = 0.82 + 0.58 * core;
+        rgb *= density;
+        rgb *= (1.0 + 0.12 * clump);
+        rgb *= (1.0 - 0.07 * vvoid);
+        rgb.x *= (1.0 + 0.045 * clump);
+        rgb.z *= (1.0 - 0.035 * clump);
+        return rgb;
+    }
+    float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
+    return comp_apply_cloud_to_rgb(rgb, cloud);
+}
+
+static inline float3 comp_apply_linear_cloud_from_raw(float3 rgb,
+                                                      float cloudRaw,
+                                                      constant ComposeParams& C)
+{
+    float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
+    if (FC_PHYSICS_MODE == 0u && C.diskNoiseModel == 1u) {
+        float core = precise::pow(cloud, 1.06);
+        float clump = precise::pow(core, 1.55);
+        float vvoid = precise::pow(1.0 - cloud, 1.45);
+        float density = 0.82 + 0.58 * core;
+        rgb *= density;
+        rgb *= (1.0 + 0.12 * clump);
+        rgb *= (1.0 - 0.07 * vvoid);
+        rgb.x *= (1.0 + 0.045 * clump);
+        rgb.z *= (1.0 - 0.035 * clump);
+        return rgb;
+    }
+    return comp_apply_cloud_to_rgb(rgb, cloud);
+}
+
+static inline float comp_log10(float x) {
+    return log(max(x, 1e-30)) * 0.4342944819032518;
+}
+
+static inline float comp_bayer8(uint x, uint y) {
+    uint idx = ((y & 7u) << 3u) | (x & 7u);
+    return ((float(BAYER8_LUT[idx]) + 0.5) / 64.0) - 0.5;
+}
+
+static inline float comp_hash01_u32(uint x, uint y, uint salt) {
+    uint h = x * 1664525u + y * 1013904223u + salt * 374761393u + 0x9E3779B9u;
+    h ^= (h >> 13u);
+    h *= 1274126177u;
+    h ^= (h >> 16u);
+    return float(h & 0x00FFFFFFu) * (1.0 / 16777216.0);
+}
+
+static inline float comp_hash_signed_u32(uint x, uint y, uint salt) {
+    return 2.0 * comp_hash01_u32(x, y, salt) - 1.0;
+}
+
+static inline float3 comp_background_starfield_display(float3 dir, constant ComposeParams& C) {
+    if (C.backgroundMode == 0u) return float3(0.0);
+
+    float density = clamp(C.backgroundStarDensity, 0.0, 4.0);
+    float strength = max(C.backgroundStarStrength, 0.0);
+    float nebula = clamp(C.backgroundNebulaStrength, 0.0, 2.0);
+    if (!(strength > 1e-6) && !(nebula > 1e-6)) return float3(0.0);
+
+    float d2 = dot(dir, dir);
+    float3 n = (d2 > 1e-20) ? normalize(dir) : float3(0.0, 0.0, 1.0);
+    float phi = atan2(n.y, n.x);
+    float u = fract(phi * (0.5 / M_PI));
+    float v = acos(clamp(n.z, -1.0, 1.0)) * (1.0 / M_PI);
+
+    float3 sky = float3(0.0);
+
+    // Milky-way-like diffuse band to make gravitational lens distortion visible.
+    float bandWidth = mix(0.22, 0.08, clamp(0.55 * nebula, 0.0, 1.0));
+    float band = exp(-pow(abs(n.z) / max(bandWidth, 1e-4), 1.45));
+    float dustA = fbm(n * 14.0 + float3(1.7, -2.4, 0.8));
+    float dustB = fbm(n * 31.0 + float3(-4.2, 3.5, -1.9));
+    float lane = smoothstep(0.40, 0.82, 0.62 * dustA + 0.38 * dustB);
+    float neb = nebula * (0.02 + 0.30 * band * lane);
+    sky += neb * float3(1.0, 0.93, 0.84);
+
+    // Star layer A: dense faint stars.
+    float cellA = mix(540.0, 2200.0, clamp(density * 0.25, 0.0, 1.0));
+    float2 pA = float2(u * cellA, v * cellA * 0.62);
+    float2 idA = floor(pA);
+    float2 fA = fract(pA);
+    float hA0 = comp_hash13(float3(idA, 17.13));
+    float hA1 = comp_hash13(float3(idA, 89.31));
+    float hA2 = comp_hash13(float3(idA, 137.47));
+    float hA3 = comp_hash13(float3(idA, 221.77));
+    float hA4 = comp_hash13(float3(idA, 311.23));
+    float pStarA = clamp(0.0010 + 0.0038 * density, 0.0, 0.03);
+    float onA = (hA0 < pStarA) ? 1.0 : 0.0;
+    float2 cA = float2(hA1, hA2);
+    float2 dA = fA - cA;
+    float r2A = dot(dA, dA);
+    float coreA = onA * exp(-r2A * (9000.0 + 12000.0 * hA1));
+    float haloA = onA * exp(-r2A * (650.0 + 900.0 * hA2));
+    float brightA = onA * (0.08 + 2.7 * pow(hA3, 9.0));
+    float3 colA = mix(float3(1.08, 0.86, 0.68), float3(0.70, 0.82, 1.10), hA4);
+    sky += strength * (1.8 * coreA + 0.12 * haloA) * brightA * colA;
+
+    // Star layer B: sparse bright stars with weak diffraction-like spikes.
+    float cellB = mix(150.0, 540.0, clamp(density * 0.25, 0.0, 1.0));
+    float2 pB = float2(u * cellB, v * cellB * 0.85);
+    float2 idB = floor(pB);
+    float2 fB = fract(pB);
+    float hB0 = comp_hash13(float3(idB, 12.71));
+    float hB1 = comp_hash13(float3(idB, 44.93));
+    float hB2 = comp_hash13(float3(idB, 98.51));
+    float hB3 = comp_hash13(float3(idB, 166.2));
+    float hB4 = comp_hash13(float3(idB, 255.8));
+    float pStarB = clamp(0.00020 + 0.00090 * density, 0.0, 0.01);
+    float onB = (hB0 < pStarB) ? 1.0 : 0.0;
+    float2 cB = float2(hB1, hB2);
+    float2 dB = fB - cB;
+    float r2B = dot(dB, dB);
+    float coreB = onB * exp(-r2B * (22000.0 + 24000.0 * hB1));
+    float haloB = onB * exp(-r2B * (430.0 + 520.0 * hB2));
+    float spikeB = onB * (exp(-abs(dB.x) * 90.0) * exp(-abs(dB.y) * 3.5)
+                        + exp(-abs(dB.y) * 90.0) * exp(-abs(dB.x) * 3.5));
+    float brightB = onB * (0.4 + 5.5 * pow(hB3, 12.0));
+    float3 colB = mix(float3(1.10, 0.90, 0.74), float3(0.68, 0.80, 1.12), hB4);
+    sky += strength * ((2.8 * coreB + 0.09 * haloB + 0.018 * spikeB) * brightB) * colB;
+
+    return clamp(sky, 0.0, 4.0);
+}
+
+static inline float3 comp_background_linear(float3 dir, constant ComposeParams& C) {
+    if (C.backgroundMode == 0u) return float3(0.0);
+    float3 displayLike = comp_background_starfield_display(dir, C);
+    // Background is authored in post-exposure-like domain for stable tuning.
+    float invExposure = min(1.0 / max(C.exposure, 1e-30), 5.0e18);
+    return displayLike * invExposure;
+}
+
+static inline float3 comp_apply_camera_sensor(float3 color,
+                                              uint globalOutX,
+                                              uint globalOutY,
+                                              constant ComposeParams& C)
+{
+    float3 out = clamp(color, 0.0, 1.0);
+    if (C.cameraModel == 0u) return out;
+
+    float lum = dot(out, float3(0.2126, 0.7152, 0.0722));
+    float shot = max(C.cameraShotNoise, 0.0) * sqrt(max(lum, 1e-6));
+    float read = max(C.cameraReadNoise, 0.0);
+    float sigma = shot + read;
+    if (sigma > 1e-8) {
+        float3 n = float3(
+            comp_hash_signed_u32(globalOutX, globalOutY, 17u),
+            comp_hash_signed_u32(globalOutX, globalOutY, 59u),
+            comp_hash_signed_u32(globalOutX, globalOutY, 101u)
+        );
+        out = clamp(out + sigma * n, 0.0, 1.0);
+        lum = dot(out, float3(0.2126, 0.7152, 0.0722));
+    }
+
+    return out;
+}
+
+static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant ComposeParams& C) {
+    float exposure = max(C.exposure, 1e-8);
+    float3 expColor = sceneLin * exposure;
+    float lum = dot(expColor, float3(0.2126, 0.7152, 0.0722));
+    const float threshold = 0.90;
+    const float knee = 0.22;
+    float x = max(lum - threshold, 0.0);
+    float soft = (x * x) / max(x + knee, 1e-6);
+    float gain = clamp((x + soft) / max(lum, 1e-6), 0.0, 5.0);
+    float3 flareExp = expColor * gain;
+    // Keep flare energy bounded in exposed space to avoid screen-wide washout.
+    float capExp = mix(1.2, 2.0, clamp(C.cameraFlareStrength, 0.0, 1.0));
+    flareExp = min(max(flareExp, float3(0.0)), float3(capExp));
+    return flareExp / exposure;
+}
+
+static inline float3 comp_linear_full_rgb(device const float4* inLinear,
+                                          uint srcX,
+                                          uint srcY,
+                                          constant ComposeParams& C)
+{
+    uint gidx = srcY * C.fullInputWidth + srcX;
+    float4 rgbw = inLinear[gidx];
+    if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
+    if (rgbw.w < 0.0) return float3(0.0);
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);
+    }
+    return rgb;
+}
+
+static inline float3 comp_sample_linear_full_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.fullInputWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.fullInputHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.fullInputWidth - 1u);
+    uint y1 = min(y0 + 1u, C.fullInputHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = comp_linear_full_rgb(inLinear, x0, y0, C);
+    float3 c10 = comp_linear_full_rgb(inLinear, x1, y0, C);
+    float3 c01 = comp_linear_full_rgb(inLinear, x0, y1, C);
+    float3 c11 = comp_linear_full_rgb(inLinear, x1, y1, C);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_full(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 srcPos,
+                                                   constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    // Camera-like lens flare approximation:
+    // 1) local sensor bloom, 2) global lens ghosts mirrored around image center,
+    // 3) weak aperture starburst, 4) slight chromatic dispersion along ghost axis.
+    float2 frame = float2(max(float(C.fullInputWidth - 1u), 1.0), max(float(C.fullInputHeight - 1u), 1.0));
+    float2 center = 0.5 * frame;
+    float2 v = srcPos - center;
+    float vLen = length(v);
+    float2 axis = (vLen > 1e-6) ? (v / vLen) : float2(1.0, 0.0);
+    float2 tangent = float2(-axis.y, axis.x);
+    float rNorm = length(v / max(frame, float2(1.0)));
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    float rNear = 1.4 + 0.5 * s;
+    float3 local = float3(0.0);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirX * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirX * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos + dirY * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, srcPos - dirY * rNear, C), C);
+    local *= 0.25;
+
+    float3 ghosts = float3(0.0);
+    for (uint i = 0u; i < 4u; ++i) {
+        float k = (i == 0u) ? 0.42 : ((i == 1u) ? 0.68 : ((i == 2u) ? 1.05 : 1.55));
+        float w = (i == 0u) ? 0.34 : ((i == 1u) ? 0.26 : ((i == 2u) ? 0.20 : 0.14));
+        float3 tint = (i == 0u)
+            ? float3(1.00, 0.93, 0.84)
+            : ((i == 1u) ? float3(0.85, 0.95, 1.00)
+                         : ((i == 2u) ? float3(1.00, 0.90, 0.95)
+                                      : float3(0.80, 0.90, 1.00)));
+        float dispPx = (0.45 + 0.32 * float(i)) * (0.6 + 0.8 * s);
+        float2 samplePos = center - v / max(k, 1e-5);
+        samplePos += tangent * ((float(i) - 1.5) * (0.35 + 0.2 * s));
+        float3 cMid = comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, samplePos, C), C);
+        float3 cRp = comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, samplePos + axis * dispPx, C), C);
+        float3 cBm = comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, samplePos - axis * dispPx, C), C);
+        float3 cDisp = float3(cRp.x, cMid.y, cBm.z);
+        float2 edgeUv = abs((samplePos - center) / max(center, float2(1.0)));
+        float edge = max(edgeUv.x, edgeUv.y);
+        float vign = clamp(1.0 - edge, 0.0, 1.0);
+        vign = vign * vign * (3.0 - 2.0 * vign);
+        ghosts += cDisp * tint * (w * vign);
+    }
+
+    float2 starPos = center - 1.03 * v;
+    float3 starSrc = comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, starPos, C), C);
+    float theta = atan2(axis.y, axis.x);
+    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
+    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
+    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+
+    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    return base + (0.006 + 0.030 * s) * flare;
+}
+
+static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
+                                                 uint srcX,
+                                                 uint srcY,
+                                                 constant ComposeParams& C)
+{
+    float3 center = comp_linear_full_rgb(inLinear, srcX, srcY, C);
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (srcX > 0u) ? (srcX - 1u) : 0u;
+    uint xR = min(srcX + 1u, C.fullInputWidth - 1u);
+    uint yD = (srcY > 0u) ? (srcY - 1u) : 0u;
+    uint yU = min(srcY + 1u, C.fullInputHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    sum += (comp_linear_full_rgb(inLinear, xL, srcY, C)
+          + comp_linear_full_rgb(inLinear, xR, srcY, C)
+          + comp_linear_full_rgb(inLinear, srcX, yD, C)
+          + comp_linear_full_rgb(inLinear, srcX, yU, C)) * w1;
+    wSum += 4.0 * w1;
+
+    sum += (comp_linear_full_rgb(inLinear, xL, yD, C)
+          + comp_linear_full_rgb(inLinear, xL, yU, C)
+          + comp_linear_full_rgb(inLinear, xR, yD, C)
+          + comp_linear_full_rgb(inLinear, xR, yU, C)) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
+}
+
+static inline float3 comp_linear_tile_rgb(device const float4* inLinear,
+                                          uint lx,
+                                          uint ly,
+                                          constant ComposeParams& C)
+{
+    uint lidx = ly * C.tileWidth + lx;
+    float4 rgbw = inLinear[lidx];
+    if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
+    if (rgbw.w < 0.0) return float3(0.0);
+    float3 rgb = rgbw.xyz;
+    if (C.analysisMode == 0u) {
+        rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);
+    }
+    return rgb;
+}
+
+static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.tileWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.tileHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.tileWidth - 1u);
+    uint y1 = min(y0 + 1u, C.tileHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = comp_linear_tile_rgb(inLinear, x0, y0, C);
+    float3 c10 = comp_linear_tile_rgb(inLinear, x1, y0, C);
+    float3 c01 = comp_linear_tile_rgb(inLinear, x0, y1, C);
+    float3 c11 = comp_linear_tile_rgb(inLinear, x1, y1, C);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_tile(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 localPos,
+                                                   constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    float2 frame = float2(max(float(C.tileWidth - 1u), 1.0), max(float(C.tileHeight - 1u), 1.0));
+    float2 center = 0.5 * frame;
+    float2 v = localPos - center;
+    float vLen = length(v);
+    float2 axis = (vLen > 1e-6) ? (v / vLen) : float2(1.0, 0.0);
+    float2 tangent = float2(-axis.y, axis.x);
+    float rNorm = length(v / max(frame, float2(1.0)));
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    float rNear = 1.4 + 0.5 * s;
+    float3 local = float3(0.0);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirX * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirX * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos + dirY * rNear, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, localPos - dirY * rNear, C), C);
+    local *= 0.25;
+
+    float3 ghosts = float3(0.0);
+    for (uint i = 0u; i < 4u; ++i) {
+        float k = (i == 0u) ? 0.42 : ((i == 1u) ? 0.68 : ((i == 2u) ? 1.05 : 1.55));
+        float w = (i == 0u) ? 0.34 : ((i == 1u) ? 0.26 : ((i == 2u) ? 0.20 : 0.14));
+        float3 tint = (i == 0u)
+            ? float3(1.00, 0.93, 0.84)
+            : ((i == 1u) ? float3(0.85, 0.95, 1.00)
+                         : ((i == 2u) ? float3(1.00, 0.90, 0.95)
+                                      : float3(0.80, 0.90, 1.00)));
+        float dispPx = (0.45 + 0.32 * float(i)) * (0.6 + 0.8 * s);
+        float2 samplePos = center - v / max(k, 1e-5);
+        samplePos += tangent * ((float(i) - 1.5) * (0.35 + 0.2 * s));
+        float3 cMid = comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, samplePos, C), C);
+        float3 cRp = comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, samplePos + axis * dispPx, C), C);
+        float3 cBm = comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, samplePos - axis * dispPx, C), C);
+        float3 cDisp = float3(cRp.x, cMid.y, cBm.z);
+        float2 edgeUv = abs((samplePos - center) / max(center, float2(1.0)));
+        float edge = max(edgeUv.x, edgeUv.y);
+        float vign = clamp(1.0 - edge, 0.0, 1.0);
+        vign = vign * vign * (3.0 - 2.0 * vign);
+        ghosts += cDisp * tint * (w * vign);
+    }
+
+    float2 starPos = center - 1.03 * v;
+    float3 starSrc = comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, starPos, C), C);
+    float theta = atan2(axis.y, axis.x);
+    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
+    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
+    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+
+    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    return base + (0.006 + 0.030 * s) * flare;
+}
+
+static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
+                                                 uint lx,
+                                                 uint ly,
+                                                 constant ComposeParams& C)
+{
+    float3 center = comp_linear_tile_rgb(inLinear, lx, ly, C);
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (lx > 0u) ? (lx - 1u) : 0u;
+    uint xR = min(lx + 1u, C.tileWidth - 1u);
+    uint yD = (ly > 0u) ? (ly - 1u) : 0u;
+    uint yU = min(ly + 1u, C.tileHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    sum += (comp_linear_tile_rgb(inLinear, xL, ly, C)
+          + comp_linear_tile_rgb(inLinear, xR, ly, C)
+          + comp_linear_tile_rgb(inLinear, lx, yD, C)
+          + comp_linear_tile_rgb(inLinear, lx, yU, C)) * w1;
+    wSum += 4.0 * w1;
+
+    sum += (comp_linear_tile_rgb(inLinear, xL, yD, C)
+          + comp_linear_tile_rgb(inLinear, xL, yU, C)
+          + comp_linear_tile_rgb(inLinear, xR, yD, C)
+          + comp_linear_tile_rgb(inLinear, xR, yU, C)) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
+}
+
+static inline float3 comp_collision_tile_rgb(device const CollisionInfo* inInfo,
+                                             uint lx,
+                                             uint ly,
+                                             constant Params& P,
+                                             constant ComposeParams& C)
+{
+    uint lidx = ly * C.tileWidth + lx;
+    CollisionInfo rec = inInfo[lidx];
+    if (rec.hit == 0u) return comp_background_linear(rec.direct_world.xyz, C);
+    return comp_linear_rgb(rec, P, C);
+}
+
+static inline float3 comp_sample_collision_tile_bilinear(device const CollisionInfo* inInfo,
+                                                         float2 pos,
+                                                         constant Params& P,
+                                                         constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.tileWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.tileHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.tileWidth - 1u);
+    uint y1 = min(y0 + 1u, C.tileHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float3 c00 = comp_collision_tile_rgb(inInfo, x0, y0, P, C);
+    float3 c10 = comp_collision_tile_rgb(inInfo, x1, y0, P, C);
+    float3 c01 = comp_collision_tile_rgb(inInfo, x0, y1, P, C);
+    float3 c11 = comp_collision_tile_rgb(inInfo, x1, y1, P, C);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float3 comp_add_cinematic_flare_collision(float3 base,
+                                                        device const CollisionInfo* inInfo,
+                                                        float2 localPos,
+                                                        constant Params& P,
+                                                        constant ComposeParams& C)
+{
+    float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    float2 frame = float2(max(float(C.tileWidth - 1u), 1.0), max(float(C.tileHeight - 1u), 1.0));
+    float2 center = 0.5 * frame;
+    float2 v = localPos - center;
+    float vLen = length(v);
+    float2 axis = (vLen > 1e-6) ? (v / vLen) : float2(1.0, 0.0);
+    float2 tangent = float2(-axis.y, axis.x);
+    float rNorm = length(v / max(frame, float2(1.0)));
+
+    const float2 dirX = float2(1.0, 0.0);
+    const float2 dirY = float2(0.0, 1.0);
+    float rNear = 1.4 + 0.5 * s;
+    float3 local = float3(0.0);
+    local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirX * rNear, P, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirX * rNear, P, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos + dirY * rNear, P, C), C);
+    local += comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, localPos - dirY * rNear, P, C), C);
+    local *= 0.25;
+
+    float3 ghosts = float3(0.0);
+    for (uint i = 0u; i < 4u; ++i) {
+        float k = (i == 0u) ? 0.42 : ((i == 1u) ? 0.68 : ((i == 2u) ? 1.05 : 1.55));
+        float w = (i == 0u) ? 0.34 : ((i == 1u) ? 0.26 : ((i == 2u) ? 0.20 : 0.14));
+        float3 tint = (i == 0u)
+            ? float3(1.00, 0.93, 0.84)
+            : ((i == 1u) ? float3(0.85, 0.95, 1.00)
+                         : ((i == 2u) ? float3(1.00, 0.90, 0.95)
+                                      : float3(0.80, 0.90, 1.00)));
+        float dispPx = (0.45 + 0.32 * float(i)) * (0.6 + 0.8 * s);
+        float2 samplePos = center - v / max(k, 1e-5);
+        samplePos += tangent * ((float(i) - 1.5) * (0.35 + 0.2 * s));
+        float3 cMid = comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, samplePos, P, C), C);
+        float3 cRp = comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, samplePos + axis * dispPx, P, C), C);
+        float3 cBm = comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, samplePos - axis * dispPx, P, C), C);
+        float3 cDisp = float3(cRp.x, cMid.y, cBm.z);
+        float2 edgeUv = abs((samplePos - center) / max(center, float2(1.0)));
+        float edge = max(edgeUv.x, edgeUv.y);
+        float vign = clamp(1.0 - edge, 0.0, 1.0);
+        vign = vign * vign * (3.0 - 2.0 * vign);
+        ghosts += cDisp * tint * (w * vign);
+    }
+
+    float2 starPos = center - 1.03 * v;
+    float3 starSrc = comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, starPos, P, C), C);
+    float theta = atan2(axis.y, axis.x);
+    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
+    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
+    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+
+    float3 flare = 0.34 * local + ghosts + 0.45 * star;
+    return base + (0.006 + 0.030 * s) * flare;
+}
+
+static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* inInfo,
+                                                    uint lx,
+                                                    uint ly,
+                                                    constant Params& P,
+                                                    constant ComposeParams& C)
+{
+    float3 center = comp_collision_tile_rgb(inInfo, lx, ly, P, C);
+    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
+    float sigma = max(C.cameraPsfSigmaPx, 1e-3);
+    float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
+    float w0 = 1.0;
+    float w1 = exp(-1.0 * inv2s2);
+    float w2 = exp(-2.0 * inv2s2);
+
+    uint xL = (lx > 0u) ? (lx - 1u) : 0u;
+    uint xR = min(lx + 1u, C.tileWidth - 1u);
+    uint yD = (ly > 0u) ? (ly - 1u) : 0u;
+    uint yU = min(ly + 1u, C.tileHeight - 1u);
+
+    float3 sum = center * w0;
+    float wSum = w0;
+
+    sum += (comp_collision_tile_rgb(inInfo, xL, ly, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, ly, P, C)
+          + comp_collision_tile_rgb(inInfo, lx, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, lx, yU, P, C)) * w1;
+    wSum += 4.0 * w1;
+
+    sum += (comp_collision_tile_rgb(inInfo, xL, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, xL, yU, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, yD, P, C)
+          + comp_collision_tile_rgb(inInfo, xR, yU, P, C)) * w2;
+    wSum += 4.0 * w2;
+
+    float3 out = sum / max(wSum, 1e-8);
+    return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
+}
+
+static inline float3 comp_shade(const CollisionInfo rec,
+                                constant Params& P,
+                                constant ComposeParams& C)
+{
+    if (rec.hit == 0u) return float3(0.0);
+    float3 rgb = comp_linear_rgb(rec, P, C);
+    float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
+    float lumTm = comp_tonemap_luma(lum, C.look);
+    float scale = lumTm / max(lum, 1e-12);
+    float3 rgbTm = rgbExp * scale;
+    if (C.look != 4u) {
+        float shoulder = smoothstep(0.55, 1.0, lumTm);
+        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
+        float desat;
+        if (C.preserveHighlightColor != 0u) {
+            desat = (C.look == 5u) ? 0.03 : 0.08;
+        } else {
+            desat = (C.look == 5u) ? 0.08 : 0.24;
+        }
+        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
+    }
+    rgbTm = comp_apply_look(rgbTm, C.look);
+    float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
+    return srgb;
+}
+
+static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
+{
+    float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
+    float lumTm = comp_tonemap_luma(lum, C.look);
+    float scale = lumTm / max(lum, 1e-12);
+    float3 rgbTm = rgbExp * scale;
+    if (C.look != 4u) {
+        float shoulder = smoothstep(0.55, 1.0, lumTm);
+        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
+        float desat;
+        if (C.preserveHighlightColor != 0u) {
+            desat = (C.look == 5u) ? 0.03 : 0.08;
+        } else {
+            desat = (C.look == 5u) ? 0.08 : 0.24;
+        }
+        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
+    }
+    rgbTm = comp_apply_look(rgbTm, C.look);
+    float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
+    return srgb;
+}

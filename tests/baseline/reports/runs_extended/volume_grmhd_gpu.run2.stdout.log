@@ -1,0 +1,41 @@
+
+== Preprocess - HDF5 Sample ==
+  output           /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
+  nr,nth,nphi      96,64,192
+  cache            hit
+
+== Preprocess - GRMHD Volumes ==
+  input            /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
+  vol0             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol0.bin
+  vol1             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol1.bin
+  meta             /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.meta.json
+  nr,nphi,nz       128,256,72
+  native3d         auto
+  cache            hit
+
+== Pipeline ==
+  metric           schwarzschild
+  pipeline_mode    gpu-only
+  gpu_strategy     canonical-gpu-compose
+  debug_outputs    off
+  ssaa             1
+  output_size      256x256
+  render_size      256x256
+  tile_size        full-frame
+  eta_output       errors
+  eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
+  disk_vol0        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol0.bin
+  disk_vol1        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.vol1.bin
+  disk_meta        /tmp/blackhole_cache/grmhd_0a131b91c4cd06c204e22adb89f50c266e6280f2720543dcef33cce9d8b13b8b.meta.json
+  hdf5_sample      /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5 (temporary)
+  image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/volume_grmhd_gpu.run2.png
+
+== Build ==
+  status           skipped (--no-build)
+  binary           /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/.DerivedData/Build/Products/Release/Blackhole
+
+== Stage 1/1 - Swift ==
+
+== Outputs ==
+  image            /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/volume_grmhd_gpu.run2.png
+  cleanup          temporary collisions removed

@@ -58,10 +58,10 @@ The target should be:
 Highest ROI for visible image accuracy.
 
 Current touchpoints:
-- `Blackhole/Metal/volume_rt.metal:1275` `trace_single_ray`
-- `Blackhole/Metal/volume_rt.metal:1361` and nearby Schwarzschild disk crossing logic
-- `Blackhole/Metal/volume_rt.metal:1578` and nearby Kerr disk crossing logic
-- `segment_enter_disk(...)` call sites in the same file
+- `Blackhole/Metal/volume_rt.metal`: `trace_single_ray` and mode-specific crossing orchestration
+- `Blackhole/Metal/VolumeTransport/legacy.metal`: legacy surface/volume transport helpers
+- `Blackhole/Metal/VolumeTransport/grmhd.metal`: GRMHD volume transport helpers
+- `segment_enter_disk(...)` call sites in the trace/transport files
 
 Planned change:
 - keep the current accepted geodesic step
@@ -83,9 +83,9 @@ Current GRMHD visible path already carries three representative visible bins in-
 Legacy/perlin/thin paths still rely more on post-colorization.
 
 Current touchpoints:
-- `Blackhole/Metal/volume_rt.metal:670-813` visible multispectral GRMHD loop
+- `Blackhole/Metal/VolumeTransport/grmhd.metal`: visible multispectral GRMHD loop
 - `Blackhole/Metal/spectrum_visible.metal`
-- `Blackhole/Metal/post_compose.metal:176+` compose-side color mapping
+- `Blackhole/Metal/Compose/helpers.metalh`: compose-side color mapping helpers
 
 Planned change:
 - move thin/perlin visible color generation closer to in-loop transport
@@ -105,9 +105,9 @@ Current code already carries `IVisNu`, `QVisNu`, `UVisNu`, `VVisNu` and performs
 That is the exact place where `ipole` and `RAPTOR II` are relevant.
 
 Current touchpoints:
-- `Blackhole/Metal/volume_rt.metal:670-813`
-- `Blackhole/Metal/volume_rt.metal:1170+` `trace_commit_volume_hit`
-- `Blackhole/Metal/post_compose.metal` debug / inspection branches that consume the packed Stokes-like payload
+- `Blackhole/Metal/VolumeTransport/grmhd.metal`
+- `Blackhole/Metal/VolumeTransport/commit.metal`
+- `Blackhole/Metal/Compose/helpers.metalh` debug / inspection branches that consume the packed Stokes-like payload
 
 Planned change:
 - implement a constant-coefficient analytic update for one transport step, or a hybrid explicit/implicit switch for stiff cells

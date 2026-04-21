@@ -1,0 +1,23 @@
+
+== Pipeline ==
+  metric           schwarzschild
+  pipeline_mode    gpu-only
+  gpu_strategy     canonical-gpu-compose
+  debug_outputs    off
+  ssaa             1
+  output_size      256x256
+  render_size      256x256
+  tile_size        full-frame
+  eta_output       errors
+  eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
+  image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/precision_thin_gpu.run2.png
+
+== Build ==
+  status           skipped (--no-build)
+  binary           /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/.DerivedData/Build/Products/Release/Blackhole
+
+== Stage 1/1 - Swift ==
+
+== Outputs ==
+  image            /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/precision_thin_gpu.run2.png
+  cleanup          temporary collisions removed

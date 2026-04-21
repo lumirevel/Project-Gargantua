@@ -36,6 +36,10 @@ struct ComposeParams {
     float backgroundStarStrength;
     float backgroundNebulaStrength;
     uint  preserveHighlightColor; // 1=reduce highlight desaturation to keep visible chroma
+    uint  diskNoiseModel; // 0=streamline, 1=perlin soft, 2/3=legacy perlin variants
+    uint  _pad0;
+    uint  _pad1;
+    uint  _pad2;
 };
 
 struct ComposeSolveParams {
@@ -227,6 +231,7 @@ static inline void comp_visible_xyz_from_spectrum(float T_emit,
     Z = 0.0;
     yLum = 0.0;
     peakLamNm = 380.0;
+    float peakIlam = 0.0;
 
     float g = clamp(g_total, 1e-4, 1e4);
     float te = max(T_emit, 1.0);
@@ -236,7 +241,6 @@ static inline void comp_visible_xyz_from_spectrum(float T_emit,
     float dLamNm = (n > 1u) ? ((lamMax - lamMin) / float(n - 1u)) : 0.0;
     float dLamM = dLamNm * 1e-9;
     float g3 = g * g * g;
-    float peakIlam = 0.0;
     for (uint i = 0u; i < 128u; ++i) {
         if (i >= n) break;
         float lamNm = lamMin + dLamNm * float(i);
@@ -246,6 +250,67 @@ static inline void comp_visible_xyz_from_spectrum(float T_emit,
         float iNuEm = comp_visible_iNu_emit(nuEm, te, P);
         float iNuObs = g3 * iNuEm;
         float iLamObs = iNuObs * P.c / max(lamM * lamM, 1e-30);
+
+        float xBar, yBar, zBar;
+        comp_cie_xyz_bar(lamNm, xBar, yBar, zBar);
+        X += iLamObs * xBar * dLamM;
+        Y += iLamObs * yBar * dLamM;
+        Z += iLamObs * zBar * dLamM;
+        yLum += iLamObs * dLamM;
+        if (iLamObs > peakIlam) {
+            peakIlam = iLamObs;
+            peakLamNm = lamNm;
+        }
+    }
+}
+
+static inline void comp_visible_xyz_from_three_band_inu(float3 iNuVisObs,
+                                                        float colorDilution,
+                                                        constant Params& P,
+                                                        thread float& X,
+                                                        thread float& Y,
+                                                        thread float& Z,
+                                                        thread float& yLum,
+                                                        thread float& peakLamNm)
+{
+    X = 0.0;
+    Y = 0.0;
+    Z = 0.0;
+    yLum = 0.0;
+    peakLamNm = 380.0;
+    float peakIlam = 0.0;
+
+    float3 iNuClamped = max(iNuVisObs, float3(0.0));
+    if (dot(iNuClamped, float3(1.0)) <= 1e-30) {
+        return;
+    }
+
+    const float3 lamNm3 = float3(650.0, 550.0, 450.0);
+    const float3 lamM3 = lamNm3 * 1e-9;
+    float3 iLam3 = iNuClamped * P.c / max(lamM3 * lamM3, float3(1e-30));
+
+    float xR = log(lamNm3.x);
+    float xG = log(lamNm3.y);
+    float xB = log(lamNm3.z);
+    float yR = log(max(iLam3.x, 1e-38));
+    float yG = log(max(iLam3.y, 1e-38));
+    float yB = log(max(iLam3.z, 1e-38));
+    float slopeBG = (yG - yB) / max(xG - xB, 1e-12);
+    float slopeGR = (yR - yG) / max(xR - xG, 1e-12);
+
+    uint n = clamp(P.visibleSamples, 8u, 128u);
+    float lamMin = 380.0;
+    float lamMax = 780.0;
+    float dLamNm = (n > 1u) ? ((lamMax - lamMin) / float(n - 1u)) : 0.0;
+    float dLamM = dLamNm * 1e-9;
+    for (uint i = 0u; i < 128u; ++i) {
+        if (i >= n) break;
+        float lamNm = lamMin + dLamNm * float(i);
+        float xLam = log(max(lamNm, 1e-9));
+        float logILam = (lamNm <= lamNm3.y)
+            ? (yB + slopeBG * (xLam - xB))
+            : (yG + slopeGR * (xLam - xG));
+        float iLamObs = exp(clamp(logILam, -90.0, 90.0)) * colorDilution;
 
         float xBar, yBar, zBar;
         comp_cie_xyz_bar(lamNm, xBar, yBar, zBar);

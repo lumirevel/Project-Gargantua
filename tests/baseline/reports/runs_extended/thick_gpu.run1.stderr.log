@@ -1,0 +1,4 @@
+[eta] mode=runtime-linear prior=00.4s
+[eta-phase] group=trace done 1/1 (tiles) elapsed=00.6s task=trace tile=1/1
+[eta-phase] group=compose done 1/1 (tiles) elapsed=00.2s task=compose gpu tiled tile=1/1
+[eta] done elapsed 00.9s pred 00.9s err  0.1% task=compose gpu tiled tile=1/1

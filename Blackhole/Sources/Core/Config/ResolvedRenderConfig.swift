@@ -85,6 +85,7 @@ struct ResolvedRenderConfig {
     var diskAtlasRMax: Double = 0.0
     var diskAtlasRWarp: Double = 1.0
     var diskAtlasData: Data = Data()
+    var uploadedDiskAssetBytes: Int = 0
 
     var diskVolumeEnabled: Bool = false
     var diskVolumeLegacyEnabled: Bool = false

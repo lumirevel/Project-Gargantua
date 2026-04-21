@@ -1,0 +1,38 @@
+
+== Preprocess - HDF5 Sample ==
+  output           /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
+  nr,nth,nphi      96,64,192
+  cache            hit
+
+== Preprocess - HDF5 ==
+  input            /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5
+  preset           auto
+  atlas_out        /tmp/blackhole_hdf5_atlas.SLX48L.bin
+saved atlas: /private/tmp/blackhole_hdf5_atlas.SLX48L.bin (1024x512)
+saved meta: /private/tmp/blackhole_hdf5_atlas.SLX48L.bin.json
+
+== Pipeline ==
+  metric           schwarzschild
+  pipeline_mode    gpu-only
+  gpu_strategy     canonical-gpu-compose
+  debug_outputs    off
+  ssaa             1
+  output_size      256x256
+  render_size      256x256
+  tile_size        full-frame
+  eta_output       errors
+  eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
+  hdf5_atlas       /tmp/blackhole_hdf5_atlas.SLX48L.bin (temporary)
+  hdf5_sample      /tmp/blackhole_cache/hdf5_sample_2e18698f4ba80c0a44cf63bec2f03247aba98e0b08e18dfc47e2ada7ac5bb2a1.h5 (temporary)
+  image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/atlas_gpu.run1.png
+
+== Build ==
+  status           skipped (--no-build)
+  binary           /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/.DerivedData/Build/Products/Release/Blackhole
+
+== Stage 1/1 - Swift ==
+
+== Outputs ==
+  image            /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs_extended/atlas_gpu.run1.png
+  cleanup          temporary collisions removed
+  cleanup          temporary HDF5 atlas removed

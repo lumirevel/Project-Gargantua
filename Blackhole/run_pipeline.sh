@@ -140,7 +140,10 @@ COMPOSE_BACKEND="python"
 MATCH_CPU=1
 GPU_FULL_COMPOSE=0
 GPU_STREAM_LINEAR32=0
+HDR_INTERMEDIATE_REQUESTED=0
+HDR_INTERMEDIATE_AUTO=0
 LINEAR32_OUT=""
+LINEAR32_OUT_EXPLICIT=0
 LEGACY_COMPOSE_OVERRIDE=""
 DISK_MODEL_VALUE="auto"
 DISK_MODEL_SET=0
@@ -167,6 +170,40 @@ STOKES_PITCH_DEG=""
 STOKES_INTENSITY_MODEL=""
 STOKES_NU_OBS_HZ=""
 
+resolve_no_build_binary_path() {
+  local candidate=""
+  local selected=""
+  local selected_mtime=-1
+  local mtime=0
+
+  for candidate in \
+    "$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/Blackhole" \
+    "$ROOT_DIR/.DerivedData/Build/Products/$CONFIGURATION/Blackhole"
+  do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in \
+    "$HOME"/Library/Developer/Xcode/DerivedData/Blackhole-*/Build/Products/"$CONFIGURATION"/Blackhole
+  do
+    [[ -x "$candidate" ]] || continue
+    mtime="$(stat -f '%m' "$candidate" 2>/dev/null || printf '0')"
+    if (( mtime > selected_mtime )); then
+      selected="$candidate"
+      selected_mtime="$mtime"
+    fi
+  done
+
+  if [[ -n "$selected" ]]; then
+    printf '%s\n' "$selected"
+  else
+    printf '%s\n' "$BIN_PATH"
+  fi
+}
+
 case "$ETA_RELAY" in
   always|errors|none) ;;
   *)
@@ -179,7 +216,7 @@ cleanup_temp_artifacts() {
   if [[ -n "${TEMP_COLLISIONS:-}" ]]; then
     rm -f "${TEMP_COLLISIONS}" "${TEMP_COLLISIONS}.json"
   fi
-  if [[ -n "${LINEAR32_OUT:-}" && "${GPU_STREAM_LINEAR32:-0}" -eq 1 && -n "${TEMP_COLLISIONS:-}" ]]; then
+  if [[ -n "${LINEAR32_OUT:-}" && "${GPU_STREAM_LINEAR32:-0}" -eq 1 && "${LINEAR32_OUT_EXPLICIT:-0}" -eq 0 && -n "${TEMP_COLLISIONS:-}" ]]; then
     rm -f "${LINEAR32_OUT}" "${LINEAR32_OUT}.json"
   fi
   if [[ -n "${TEMP_HDF5_ATLAS:-}" ]]; then
@@ -538,7 +575,7 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --camera-model --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
@@ -582,11 +619,13 @@ Routing rules:
   - GPU compose is always used.
   - Intermediate buffers are managed automatically in memory by the Swift/Metal runtime.
   - High-resolution runs may fall back to tiled GPU buffers automatically; no file spill is used in the normal path.
+  - --hdr-intermediate enables an explicit memory-priority HDR32 file intermediate fallback.
+  - Large perlin-family or thick renders may auto-select the HDR32 intermediate fallback when debug collisions are not requested.
 - Debug outputs:
   - --debug: keep collisions.bin (+meta) for inspection/analysis
   - --collisions-out <path>: optional explicit path for debug collision output; implies --debug
 - Deprecated compatibility aliases are still accepted and ignored where possible:
-  - --pipeline, --cpu-mixed, --gpu-only, --compose, --collisions, --hdr-intermediate, --hdr-out, --temp-collisions, --keep-collisions, --discard-collisions, --fast
+  - --pipeline, --cpu-mixed, --gpu-only, --compose, --temp-collisions, --keep-collisions, --discard-collisions, --fast
 - Default runtime keeps collision intermediates temporary/in-memory; use --debug to persist them.
 - Intermediate artifacts are auto-managed by default (temporary files are created and cleaned automatically).
 - Explicit output paths keep artifacts only when explicitly requested (e.g. --collisions-out, --disk-hdf5-out, --disk-hdf5-sample-out).
@@ -685,10 +724,10 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
-    --hdr-out)
+    --hdr-out|--linear32-out)
       need_value "$arg" "$@"
       LINEAR32_OUT="$1"
-      echo "warn: --hdr-out is deprecated and ignored; hdr32 file intermediates are no longer part of the normal runtime path." >&2
+      LINEAR32_OUT_EXPLICIT=1
       shift
       continue
       ;;
@@ -1211,12 +1250,14 @@ while [[ "$#" -gt 0 ]]; do
         linear32)
           COLLISIONS_MODE="auto"
           MODE="fast"
-          echo "warn: --collisions linear32 is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
+          HDR_INTERMEDIATE_REQUESTED=1
+          echo "warn: --collisions linear32 is deprecated; using --hdr-intermediate." >&2
           ;;
         hdr)
           COLLISIONS_MODE="auto"
           MODE="fast"
-          echo "warn: --collisions hdr is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
+          HDR_INTERMEDIATE_REQUESTED=1
+          echo "warn: --collisions hdr is deprecated; using --hdr-intermediate." >&2
           ;;
         none)
           COLLISIONS_MODE="auto"
@@ -1242,8 +1283,8 @@ while [[ "$#" -gt 0 ]]; do
       esac
       continue
       ;;
-    --hdr-intermediate)
-      echo "warn: --hdr-intermediate is deprecated and ignored; hdr32 file intermediates are no longer used in the normal path." >&2
+    --hdr-intermediate|--linear32-intermediate)
+      HDR_INTERMEDIATE_REQUESTED=1
       continue
       ;;
     --temp-collisions)
@@ -1376,6 +1417,20 @@ while [[ "$#" -gt 0 ]]; do
       TILE_SIZE_VALUE="$1"
       TILE_SIZE_EXPLICIT=1
       shift
+      continue
+      ;;
+    --trace-hdr-direct|--trace-linear-hdr)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      case "$val" in
+        auto|on|off) ;;
+        *)
+          echo "error: $arg must be one of auto, on, off" >&2
+          exit 2
+          ;;
+      esac
+      SWIFT_ARGS+=("$arg" "$val")
       continue
       ;;
   esac
@@ -1585,12 +1640,12 @@ while [[ "$#" -gt 0 ]]; do
       SWIFT_ARGS+=("$arg" "$val")
       PY_ARGS+=("$arg" "$val")
       ;;
-    --maxSteps)
+    --maxSteps|--max-steps)
       need_value "$arg" "$@"
       val="$1"
       shift
       MAX_STEPS_VALUE="$val"
-      SWIFT_ARGS+=("$arg" "$val")
+      SWIFT_ARGS+=(--maxSteps "$val")
       ;;
     --kerr-substeps)
       need_value "$arg" "$@"
@@ -2636,6 +2691,13 @@ case "$COLLISIONS_MODE" in
     ;;
 esac
 
+if [[ "$HDR_INTERMEDIATE_REQUESTED" -eq 1 ]]; then
+  COLLISIONS_POLICY="temp"
+  COLLISIONS_MODE="auto"
+  GPU_FULL_COMPOSE=0
+  GPU_STREAM_LINEAR32=1
+fi
+
 if [[ "$DISK_VOLUME_SET" -eq 1 ]]; then
   SWIFT_ARGS+=(--disk-volume "$DISK_VOLUME_VALUE")
 fi
@@ -2695,11 +2757,35 @@ if [[ "$COMPOSE_BACKEND" == "gpu" && "$SSAA" -gt 1 ]]; then
   SWIFT_ARGS+=(--downsample "$SSAA")
 fi
 if [[ -z "$TILE_SIZE_VALUE" ]]; then
-  if (( RENDER_WIDTH * RENDER_HEIGHT > 8000000 )); then
+  AUTO_TILE_COLLISION_BYTES=$((RENDER_WIDTH * RENDER_HEIGHT * 64))
+  if (( AUTO_TILE_COLLISION_BYTES >= 192 * 1024 * 1024 )); then
     TILE_SIZE_VALUE=1024
     TILE_SIZE_EXPLICIT=1
   fi
 fi
+
+AUTO_TILE_COLLISION_BYTES=$((RENDER_WIDTH * RENDER_HEIGHT * 64))
+if [[ "$GPU_STREAM_LINEAR32" -eq 0 && "$COLLISIONS_MODE" == "auto" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 && -z "$STOKES_OUT" ]]; then
+  AUTO_HDR_INTERMEDIATE_REASON=""
+  case "$DISK_MODEL_VALUE" in
+    perlin|perlin-ec7|perlin-legacy|perlin-classic|perlin-f552)
+      AUTO_HDR_INTERMEDIATE_REASON="large perlin-family render"
+      ;;
+  esac
+  if [[ "$DISK_PHYSICS_MODE_VALUE" == "thick" ]]; then
+    if [[ -n "$AUTO_HDR_INTERMEDIATE_REASON" ]]; then
+      AUTO_HDR_INTERMEDIATE_REASON="large perlin-family/thick render"
+    else
+      AUTO_HDR_INTERMEDIATE_REASON="large thick render"
+    fi
+  fi
+  if [[ -n "$AUTO_HDR_INTERMEDIATE_REASON" ]] && (( AUTO_TILE_COLLISION_BYTES >= 192 * 1024 * 1024 )); then
+    GPU_FULL_COMPOSE=0
+    GPU_STREAM_LINEAR32=1
+    HDR_INTERMEDIATE_AUTO=1
+  fi
+fi
+
 if [[ "$TILE_SIZE_EXPLICIT" -eq 1 && -n "$TILE_SIZE_VALUE" ]]; then
   SWIFT_ARGS+=(--tile-size "$TILE_SIZE_VALUE")
 fi
@@ -2727,7 +2813,7 @@ if [[ "$COLLISIONS_MODE" == "auto" ]]; then
     if (( EST_TOTAL_BYTES > SAFE_BUDGET_BYTES )); then
       EST_GIB="$(to_gib "$EST_TOTAL_BYTES")"
       MEM_GIB="$(to_gib "$PHYS_MEM_BYTES")"
-      echo "info: wrapper estimated ${EST_GIB} GiB working set on a ${MEM_GIB} GiB machine; keeping gpu-full-compose and delegating memory fallback to the Swift/Metal runtime." >&2
+      echo "info: wrapper estimated ${EST_GIB} GiB working set on a ${MEM_GIB} GiB machine; keeping GPU compose and delegating memory fallback to the Swift/Metal runtime." >&2
     fi
   fi
 fi
@@ -2747,6 +2833,16 @@ if [[ "$COLLISIONS_POLICY" == "temp" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 ]]; the
   COLLISIONS_OUT="$TEMP_COLLISIONS"
 fi
 
+if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+  if [[ -z "$LINEAR32_OUT" ]]; then
+    LINEAR32_OUT="${COLLISIONS_OUT}.linear32f32"
+  fi
+  SWIFT_ARGS+=(--hdr-intermediate --hdr-out "$LINEAR32_OUT")
+  if [[ "$HDR_INTERMEDIATE_AUTO" -eq 1 ]]; then
+    echo "info: auto-selected --hdr-intermediate for ${AUTO_HDR_INTERMEDIATE_REASON:-large render} to reduce collision64 memory pressure." >&2
+  fi
+fi
+
 log_section "Pipeline"
 log_item "metric" "$METRIC_VALUE"
 if [[ "$MATCH_CPU" -eq 0 ]]; then
@@ -2755,7 +2851,10 @@ else
   PIPELINE_MODE_LABEL="cpu-mixed"
 fi
 log_item "pipeline_mode" "$PIPELINE_MODE_LABEL"
-log_item "gpu_strategy" "gpu-full-compose"
+log_item "gpu_strategy" "canonical-gpu-compose"
+if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
+  log_item "hdr_intermediate" "$LINEAR32_OUT"
+fi
 log_item "debug_outputs" "$([[ "$COLLISIONS_MODE" == "debug" ]] && printf 'on' || printf 'off')"
 log_item "ssaa" "$SSAA"
 log_item "output_size" "${TARGET_WIDTH}x${TARGET_HEIGHT}"
@@ -2857,12 +2956,15 @@ if [[ "$NO_BUILD" -eq 0 ]]; then
 else
   log_section "Build"
   log_item "status" "skipped (--no-build)"
+  BIN_PATH="$(resolve_no_build_binary_path)"
 fi
 
 if [[ ! -x "$BIN_PATH" ]]; then
   echo "binary not found: $BIN_PATH" >&2
   exit 1
 fi
+
+log_item "binary" "$BIN_PATH"
 
 RUNNER=("$BIN_PATH")
 if [[ -n "${BH_FORCE_ARCH:-}" ]]; then
@@ -2880,8 +2982,7 @@ else
   SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}")
 fi
 
-ETA_VARIANT_SWIFT="swift-trace"
-ETA_VARIANT_SWIFT="swift-gpu-full-compose"
+ETA_VARIANT_SWIFT="swift-gpu-compose"
 ETA_VARIANT_PY="python-compose"
 
 log_section "Stage 1/1 - Swift"

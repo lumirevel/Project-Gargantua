@@ -64,6 +64,7 @@ extension Resources {
         config: ResolvedRenderConfig,
         params: PackedParams,
         policy: RenderResourcePolicy,
+        useDirectLinear: Bool,
         useInMemoryCollisions: Bool,
         useLinear32Intermediate: Bool,
         width: Int,
@@ -91,10 +92,13 @@ extension Resources {
         traceInFlightOverrideArg: Int
     ) -> RenderFrameResources {
         let directLinearTraceBuf: MTLBuffer? =
-            policy.directLinearAllowed()
-            ? device.makeBuffer(length: policy.linearOutSize, options: .storageModeShared)
+            useDirectLinear
+            ? device.makeBuffer(length: policy.linearOutSize, options: .storageModePrivate)
             : nil
         let directLinearEnabled = directLinearTraceBuf != nil
+        if useDirectLinear, directLinearTraceBuf == nil {
+            fail("failed to allocate direct HDR trace buffer (\(policy.linearOutSize) bytes)")
+        }
         let directLinearHitCountBuf: MTLBuffer? = directLinearEnabled
             ? device.makeBuffer(length: MemoryLayout<UInt32>.stride, options: .storageModeShared)
             : nil
@@ -168,7 +172,11 @@ extension Resources {
                 backgroundStarDensity: backgroundStarDensityArg,
                 backgroundStarStrength: backgroundStarStrengthArg,
                 backgroundNebulaStrength: backgroundNebulaStrengthArg,
-                preserveHighlightColor: preserveHighlightColor
+                preserveHighlightColor: preserveHighlightColor,
+                diskNoiseModel: params.diskNoiseModel,
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0
             )
             directLinearParamBuf = device.makeBuffer(bytes: &directLinearParams, length: MemoryLayout<ComposeParams>.stride, options: [])
             if directLinearParamBuf == nil {
@@ -189,8 +197,9 @@ extension Resources {
         let slotTraceTileBytes = maxTraceTilePixels * traceStride
         let slotLinearParamBytes = useLinear32Intermediate ? MemoryLayout<ComposeParams>.stride : 0
         let slotLinearTileBytes = useLinear32Intermediate ? (maxTraceTilePixels * policy.linearStride) : 0
+        let needsTraceTile = !(useInMemoryCollisions && !useLinear32Intermediate) && !directLinearEnabled
         let slotBytes = slotTraceParamBytes
-            + ((useInMemoryCollisions && !useLinear32Intermediate) ? 0 : slotTraceTileBytes)
+            + (needsTraceTile ? slotTraceTileBytes : 0)
             + slotLinearParamBytes
             + slotLinearTileBytes
 
@@ -201,6 +210,8 @@ extension Resources {
         }
         if traceInFlightOverrideArg > 0 {
             maxInFlight = traceInFlightOverrideArg
+        } else if useLinear32Intermediate {
+            maxInFlight = min(maxInFlight, 2)
         }
         maxInFlight = min(maxInFlight, traceTileTotal)
         maxInFlight = max(1, maxInFlight)
@@ -211,7 +222,6 @@ extension Resources {
             guard let traceParamBuf = device.makeBuffer(length: slotTraceParamBytes, options: .storageModeShared) else {
                 fail("failed to allocate trace param buffer slot")
             }
-            let needsTraceTile = !(useInMemoryCollisions && !useLinear32Intermediate) && !directLinearEnabled
             let traceTileBuf: MTLBuffer?
             if needsTraceTile {
                 guard let buf = device.makeBuffer(length: slotTraceTileBytes, options: .storageModeShared) else {

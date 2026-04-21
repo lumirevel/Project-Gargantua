@@ -2,21 +2,19 @@
 == Pipeline ==
   metric           schwarzschild
   pipeline_mode    gpu-only
-  gpu_strategy     in-memory
-  collisions_mode  auto
-  collisions_policy temp
-  compose          gpu
+  gpu_strategy     canonical-gpu-compose
+  debug_outputs    off
   ssaa             1
   output_size      1200x1200
   render_size      1200x1200
   tile_size        full-frame
   eta_output       errors
   eta_history      /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/pipeline_eta_history.json
-  collisions_out   /tmp/blackhole_discard.UTPSG6 (temporary)
   image_out        /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/tests/baseline/reports/runs/medium_gpu_perf.perf4.png
 
 == Build ==
   status           skipped (--no-build)
+  binary           /Users/kimryeong-gyo/Documents/개인 프로젝트/Blackhole/.DerivedData/Build/Products/Release/Blackhole
 
 == Stage 1/1 - Swift ==
 

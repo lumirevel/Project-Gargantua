@@ -14,6 +14,7 @@ struct RenderResourcePolicy {
     let useInMemoryCollisions: Bool
     let collisionLite32Safe: Bool
     let directLinearTraceSafe: Bool
+    let directLinearUnsafeReason: String
     let workingSetCap: Int
     let outWidth: Int
     let outHeight: Int
@@ -39,6 +40,17 @@ struct RenderResourcePolicy {
             !config.visibleModeEnabled &&
             config.composeAnalysisMode == 0 &&
             config.diskGrmhdDebugID == 0
+        let directLinearModelSafe =
+            (config.diskPhysicsModeID == 0 && (config.diskModelResolved == "flow" || config.diskModelResolved == "atlas")) ||
+            (config.diskPhysicsModeID == 3 && params.diskVolumeFormat == 1 && params.diskVolumeMode != 0)
+        directLinearUnsafeReason = {
+            if config.rayBundleActive { return "ray bundle requires collision fields" }
+            if config.visibleModeEnabled { return "visible mode requires collision fields" }
+            if config.composeAnalysisMode != 0 { return "analysis mode requires collision fields" }
+            if config.diskGrmhdDebugID != 0 { return "GRMHD debug output requires collision fields" }
+            if !directLinearModelSafe { return "disk model is not validated for direct HDR" }
+            return ""
+        }()
         directLinearTraceSafe =
             useInMemoryCollisions &&
             config.discardCollisionOutput &&
@@ -46,18 +58,17 @@ struct RenderResourcePolicy {
             !config.visibleModeEnabled &&
             config.composeAnalysisMode == 0 &&
             config.diskGrmhdDebugID == 0 &&
-            (
-                config.diskPhysicsModeID <= 2 ||
-                (config.diskPhysicsModeID == 3 && params.diskVolumeFormat == 1 && params.diskVolumeMode != 0)
-            )
+            directLinearModelSafe
         workingSetCap = Int(min(device.recommendedMaxWorkingSetSize, UInt64(Int.max)))
         outWidth = config.width / config.downsampleArg
         outHeight = config.height / config.downsampleArg
         linearOutSize = count * linearStride
         outSize = count * stride
         fullComposeOutBytes = outWidth * outHeight * MemoryLayout<UInt32>.stride
-        approxTextureBytes = config.diskAtlasData.count + config.diskVolume0Data.count + config.diskVolume1Data.count
-        directLinearThresholdBytes = 512 * 1024 * 1024
+        approxTextureBytes = config.uploadedDiskAssetBytes > 0
+            ? config.uploadedDiskAssetBytes
+            : (config.diskAtlasData.count + config.diskVolume0Data.count + config.diskVolume1Data.count)
+        directLinearThresholdBytes = 256 * 1024 * 1024
         let grmhdScalarDirectDefault =
             (config.diskPhysicsModeID == 3 && !config.visibleModeEnabled && config.diskGrmhdDebugID == 0)
         directLinearPreferred =
@@ -112,6 +123,7 @@ struct RenderResourcePolicy {
         directLinearEnabled: Bool,
         collisionLite32Enabled: Bool,
         inMemoryCollisionLiteEnabled: Bool,
+        effectiveUseInMemoryCollisions: Bool,
         useLinear32Intermediate: Bool
     ) -> String {
         if directLinearEnabled {
@@ -126,7 +138,7 @@ struct RenderResourcePolicy {
             }
             return "lite32 tiled trace"
         }
-        if useInMemoryCollisions {
+        if effectiveUseInMemoryCollisions {
             return "collision64 full-frame"
         }
         if useLinear32Intermediate {
