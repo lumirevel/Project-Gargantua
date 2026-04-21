@@ -171,6 +171,183 @@ static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
     return max(out, rgb * floor);
 }
 
+struct ThinHybridRealismConfig {
+    float perturbAmp;
+    float atmosphereTau;
+    float coronaStrength;
+    float beamingStrength;
+    float innerBoost;
+    float outerFadeStart;
+    float outerFadeEnd;
+    float3 atmosphereTint;
+    float3 coronaTint;
+};
+
+struct ThinHybridRealismSample {
+    float rNorm;
+    float phi;
+    float g;
+    float emissivity;
+    float perturb;
+    float beaming;
+    float innerWeight;
+    float outerFade;
+    float3 photosphere;
+    float3 atmosphere;
+    float3 corona;
+    float3 finalRgb;
+};
+
+static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
+    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.look == 6u);
+}
+
+static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
+    return (C.analysisMode >= 31u && C.analysisMode <= 38u);
+}
+
+static inline bool comp_linear_rgb_is_final_sentinel(float w) {
+    return w > 1.25;
+}
+
+static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P,
+                                                             constant ComposeParams& C)
+{
+    ThinHybridRealismConfig cfg;
+    float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
+    cfg.perturbAmp = (C.look == 6u) ? clamp(0.26 + 0.34 * turbulence, 0.18, 0.72) : turbulence;
+    cfg.atmosphereTau = (C.look == 6u) ? 0.24 : 0.0;
+    cfg.coronaStrength = (C.look == 6u) ? 0.055 : 0.0;
+    cfg.beamingStrength = (C.look == 6u) ? 0.46 : 0.0;
+    cfg.innerBoost = (C.look == 6u) ? 0.86 : 0.0;
+    cfg.outerFadeStart = 0.58;
+    cfg.outerFadeEnd = 0.97;
+    cfg.atmosphereTint = float3(1.04, 0.99, 0.91);
+    cfg.coronaTint = float3(0.72, 0.88, 1.18);
+    return cfg;
+}
+
+static inline float comp_emit_radius_norm(const CollisionInfo rec, constant Params& P) {
+    if (rec.emit_r_norm > 1e-5) return max(rec.emit_r_norm, 1.0 + 1e-5);
+    if (rec.v_disk.y > P.rs * 0.5) return max(rec.v_disk.y / max(P.rs, 1e-6), 1.0 + 1e-5);
+    return max(disk_inner_radius_m(P) / max(P.rs, 1e-6), 1.0 + 1e-5);
+}
+
+static inline float comp_emit_phi(const CollisionInfo rec) {
+    if (abs(rec.emit_phi) > 1e-7) return rec.emit_phi;
+    float3 d = rec.direct_world.xyz;
+    return atan2(d.y, d.x);
+}
+
+static inline float comp_thin_nt_emissivity_norm(float rNorm, constant Params& P) {
+    float rs = max(P.rs, 1e-6);
+    float massLen = max(0.5 * rs, 1e-12);
+    float r = max(rNorm * rs, rs * 1.0001);
+    float rIn = max(disk_inner_radius_m(P), rs * 1.0001);
+    float rM = r / massLen;
+    float rInM = rIn / massLen;
+    float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+    float f = disk_nt_flux_shape(rM, rInM, a);
+    float rPeakM = max(rInM * 1.58, rInM + 0.35);
+    float fRef = max(disk_nt_flux_shape(rPeakM, rInM, a), 1e-30);
+    float e = clamp(f / fRef, 0.0, 3.0);
+    return isfinite(e) ? e : 0.0;
+}
+
+static inline float comp_thin_shear_perturb(float rNorm,
+                                            float phi,
+                                            constant Params& P,
+                                            ThinHybridRealismConfig cfg)
+{
+    float rr = max(rNorm, 1.0001);
+    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
+    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
+    float shear = phi - omega * timeRs;
+    float radialPhase = 0.73 * rr + 0.55 * sin(0.37 * rr);
+    float m3 = cos(3.0 * shear + radialPhase);
+    float m7 = cos(7.0 * (phi - 1.42 * omega * timeRs) + 1.7 * sin(0.21 * rr));
+    float m13 = cos(13.0 * (phi - 2.15 * omega * timeRs) + 0.31 * rr);
+    float spiral = (0.52 * m3 + 0.30 * m7 + 0.18 * m13) / 1.0;
+    float fine = fbm(float3(0.16 * rr, 1.35 * phi - 0.55 * omega * timeRs, 0.047 * timeRs));
+    float p = 0.5 + 0.5 * clamp(0.78 * spiral + 0.44 * (fine - 0.5), -1.0, 1.0);
+    float innerGain = 1.0 + cfg.perturbAmp * (1.0 - smoothstep(3.5, 8.0, rr));
+    return clamp(0.5 + (p - 0.5) * innerGain, 0.0, 1.0);
+}
+
+static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
+                                                             const CollisionInfo rec,
+                                                             constant Params& P,
+                                                             constant ComposeParams& C,
+                                                             float cloudRaw)
+{
+    ThinHybridRealismConfig cfg = comp_thin_hybrid_config(P, C);
+    ThinHybridRealismSample s;
+    s.rNorm = comp_emit_radius_norm(rec, P);
+    s.phi = comp_emit_phi(rec);
+    s.g = clamp(rec.v_disk.x, 0.05, 6.0);
+
+    float rInNorm = max(disk_inner_radius_m(P) / max(P.rs, 1e-6), 1.0001);
+    float rSpan = max(P.re / max(P.rs, 1e-6) - rInNorm, 1e-4);
+    float uOuter = clamp((s.rNorm - rInNorm) / rSpan, 0.0, 1.0);
+    s.outerFade = 1.0 - smoothstep(cfg.outerFadeStart, cfg.outerFadeEnd, uOuter);
+    s.emissivity = comp_thin_nt_emissivity_norm(s.rNorm, P);
+    s.innerWeight = exp(-pow(max((s.rNorm - rInNorm) / 3.2, 0.0), 0.82));
+
+    s.perturb = comp_thin_shear_perturb(s.rNorm, s.phi, P, cfg);
+    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
+    float density = 1.0 + cfg.perturbAmp * (0.92 * (s.perturb - 0.5) + 0.28 * (cloudNorm - 0.5));
+    density = clamp(density, 0.34, 1.88);
+
+    float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
+    float radialLum = (0.62 + cfg.innerBoost * s.innerWeight) * (0.42 + 0.78 * s.emissivity);
+    s.beaming = clamp(pow(s.g, cfg.beamingStrength), 0.46, 1.86);
+    s.photosphere = rgb * density * radialLum * s.beaming * s.outerFade * edgeGate;
+
+    float3 d = rec.direct_world.xyz;
+    float mu = abs(d.z) / max(length(d), 1e-30);
+    float tau = cfg.atmosphereTau
+              * (0.45 + 0.75 * s.innerWeight)
+              * (0.55 + 0.45 * density)
+              / max(mu, 0.22);
+    tau = clamp(tau, 0.0, 1.35);
+    float trans = exp(-tau);
+    float absorbed = 1.0 - trans;
+    float3 warmSource = s.photosphere * cfg.atmosphereTint * (0.28 + 0.42 * s.perturb);
+    s.atmosphere = warmSource * absorbed * (0.34 + 0.66 * s.outerFade);
+
+    float coronaGeom = pow(clamp(s.innerWeight, 0.0, 1.0), 1.55) * pow(1.0 - clamp(mu, 0.0, 1.0), 0.55);
+    float coronaLum = dot(s.photosphere, float3(0.2126, 0.7152, 0.0722));
+    s.corona = cfg.coronaTint * coronaLum * cfg.coronaStrength * coronaGeom * (0.65 + 0.35 * s.beaming);
+
+    s.finalRgb = max(s.photosphere * trans + s.atmosphere + s.corona, float3(0.0));
+    return s;
+}
+
+static inline float3 comp_debug_ramp(float t) {
+    t = clamp(t, 0.0, 1.0);
+    return clamp(float3(1.65 * t - 0.20,
+                        1.35 - abs(2.35 * t - 1.05),
+                        1.30 * (1.0 - t) + 0.18 * t), 0.0, 1.0);
+}
+
+static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
+                                                constant ComposeParams& C)
+{
+    if (C.analysisMode == 31u) { // raw g-factor / red-blue shift
+        float t = clamp((log(max(s.g, 1e-6)) * 0.4342944819032518 + 0.70) / 1.40, 0.0, 1.0);
+        return comp_debug_ramp(t);
+    }
+    if (C.analysisMode == 32u) return float3(clamp(s.emissivity / 2.2, 0.0, 1.0)); // NT radial emissivity
+    if (C.analysisMode == 33u) return comp_debug_ramp(clamp((s.beaming - 0.46) / 1.40, 0.0, 1.0)); // approach/recede
+    if (C.analysisMode == 34u) return s.photosphere;
+    if (C.analysisMode == 35u) return s.atmosphere * 3.0;
+    if (C.analysisMode == 36u) return s.corona * 8.0;
+    if (C.analysisMode == 37u) return float3(s.perturb);
+    float lum = dot(s.finalRgb, float3(0.2126, 0.7152, 0.0722)); // pre-tone HDR luminance
+    float t = clamp((log(max(lum, 1e-30)) * 0.4342944819032518 - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
+    return comp_debug_ramp(t);
+}
+
 static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                               constant Params& P,
                                               constant ComposeParams& C)
@@ -340,6 +517,15 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
     }
 
     float T_emit = max(rec.T, 1.0);
+    if ((comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
+        float rNorm = comp_emit_radius_norm(rec, P);
+        float ntT = thin_teff(rNorm, P) * 1.42;
+        if (ntT > 1.0 && isfinite(ntT)) {
+            // Realistic look uses the existing geodesic hit, but switches the thin surface
+            // spectrum to an NT-like color-temperature backbone instead of the legacy scalar T.
+            T_emit = ntT;
+        }
+    }
     float T_obs = max(T_emit * g_total, 1.0);
     float colorDilution = 1.0;
     if (FC_PHYSICS_MODE == 2u) {
@@ -537,6 +723,13 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
         if (C.analysisMode == 1u) return rgb;
         return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
     }
+    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+        ThinHybridRealismSample thin = comp_thin_hybrid_sample(rgb, rec, P, C, cloudRaw);
+        if (comp_thin_hybrid_debug_active(C)) {
+            return comp_thin_hybrid_debug_rgb(thin, C);
+        }
+        return thin.finalRgb;
+    }
     if (C.analysisMode != 0u) return rgb;
     if (P.diskNoiseModel == 1u) {
         // Perlin mode targets a softer cloud look: avoid strong stripe amplification.
@@ -560,6 +753,9 @@ static inline float3 comp_apply_linear_cloud_from_raw(float3 rgb,
                                                       float cloudRaw,
                                                       constant ComposeParams& C)
 {
+    if (comp_linear_rgb_is_final_sentinel(cloudRaw)) {
+        return rgb;
+    }
     float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
     if (FC_PHYSICS_MODE == 0u && C.diskNoiseModel == 1u) {
         float core = precise::pow(cloud, 1.06);
@@ -727,6 +923,7 @@ static inline float3 comp_linear_full_rgb(device const float4* inLinear,
     float4 rgbw = inLinear[gidx];
     if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
     if (rgbw.w < 0.0) return float3(0.0);
+    if (comp_linear_rgb_is_final_sentinel(rgbw.w)) return max(rgbw.xyz, 0.0);
     float3 rgb = rgbw.xyz;
     if (C.analysisMode == 0u) {
         rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);
@@ -864,6 +1061,7 @@ static inline float3 comp_linear_tile_rgb(device const float4* inLinear,
     float4 rgbw = inLinear[lidx];
     if (rgbw.w <= -1.5) return max(rgbw.xyz, 0.0); // background sky sentinel
     if (rgbw.w < 0.0) return float3(0.0);
+    if (comp_linear_rgb_is_final_sentinel(rgbw.w)) return max(rgbw.xyz, 0.0);
     float3 rgb = rgbw.xyz;
     if (C.analysisMode == 0u) {
         rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);

@@ -170,13 +170,51 @@ enum ParamsBuilderVisual {
             cameraShotNoiseArg: cameraShotNoiseArg,
             cameraFlareStrengthArg: cameraFlareStrengthArg
         )
+        let realismDebugName = stringArg("--realism-debug", default: "off").lowercased()
+        let realismDebugID: UInt32
+        switch realismDebugName {
+        case "off", "none":
+            realismDebugID = 0
+        case "g", "gfactor", "g-factor", "redshift":
+            realismDebugID = 31
+        case "emissivity", "radial", "nt":
+            realismDebugID = 32
+        case "beaming", "asymmetry", "approach":
+            realismDebugID = 33
+        case "photosphere", "surface":
+            realismDebugID = 34
+        case "atmosphere", "absorption":
+            realismDebugID = 35
+        case "corona":
+            realismDebugID = 36
+        case "perturbation", "turbulence", "disk-noise":
+            realismDebugID = 37
+        case "hdr", "pretonemap", "pre-tone", "pre-tone-map":
+            realismDebugID = 38
+        default:
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr")
+        }
+        if realismDebugID != 0 && composeLookID != 6 {
+            FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
+        }
+        if realismDebugID != 0 && composePolicy.composeAnalysisMode != 0 {
+            FileHandle.standardError.write(Data("warn: --realism-debug ignored because another analysis/debug mode is active\n".utf8))
+        }
+        let composeAnalysisMode = (composePolicy.composeAnalysisMode == 0) ? realismDebugID : composePolicy.composeAnalysisMode
+        let composeCameraModelID = (composeAnalysisMode == 0) ? composePolicy.composeCameraModelID : 0
+        let composeCameraPsfSigmaArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraPsfSigmaArg : 0.0
+        let composeCameraReadNoiseArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraReadNoiseArg : 0.0
+        let composeCameraShotNoiseArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraShotNoiseArg : 0.0
+        let composeCameraFlareStrengthArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraFlareStrengthArg : 0.0
 
         let autoExposureEnabled: Bool = {
+            if composeAnalysisMode != 0 { return false }
             if exposureArg > 0 { return false }
             if exposureModeID == 1 { return false }
             return true
         }()
         let composeExposureBase: Float = {
+            if composeAnalysisMode != 0 { return 1.0 }
             if exposureArg > 0 { return exposureArg }
             if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
             switch composeLookID {
@@ -211,12 +249,12 @@ enum ParamsBuilderVisual {
             exposureEVArg: exposureEVArg,
             composePrecisionName: composePrecisionName,
             composePrecisionID: composePrecisionID,
-            composeAnalysisMode: composePolicy.composeAnalysisMode,
-            composeCameraModelID: composePolicy.composeCameraModelID,
-            composeCameraPsfSigmaArg: composePolicy.composeCameraPsfSigmaArg,
-            composeCameraReadNoiseArg: composePolicy.composeCameraReadNoiseArg,
-            composeCameraShotNoiseArg: composePolicy.composeCameraShotNoiseArg,
-            composeCameraFlareStrengthArg: composePolicy.composeCameraFlareStrengthArg,
+            composeAnalysisMode: composeAnalysisMode,
+            composeCameraModelID: composeCameraModelID,
+            composeCameraPsfSigmaArg: composeCameraPsfSigmaArg,
+            composeCameraReadNoiseArg: composeCameraReadNoiseArg,
+            composeCameraShotNoiseArg: composeCameraShotNoiseArg,
+            composeCameraFlareStrengthArg: composeCameraFlareStrengthArg,
             autoExposureEnabled: autoExposureEnabled,
             composeExposureBase: composeExposureBase,
             spectralEncodingID: spectralEncodingID,

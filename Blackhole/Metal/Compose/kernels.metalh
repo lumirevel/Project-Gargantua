@@ -28,7 +28,10 @@ kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
                 float3 bg = comp_background_linear(rec.direct_world.xyz, C);
                 outLinear[gidx] = float4(bg, -2.0);
             } else {
-                if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+                if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+                    float3 rgb = comp_linear_rgb(rec, P, C);
+                    outLinear[gidx] = float4(rgb, 2.0);
+                } else if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
                     float cloudRaw = 0.0;
                     float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
                                                              rec.v_disk.xyz,
@@ -91,6 +94,11 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
+    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+        float3 rgb = comp_linear_rgb(rec, P, C);
+        outLinear[gidx] = float4(rgb, 2.0);
+        return;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
     if (FC_PHYSICS_MODE == 2u) {
@@ -127,6 +135,11 @@ kernel void composeLinearRGBLite(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
+    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+        float3 rgb = comp_linear_rgb(rec, P, C);
+        outLinear[gidx] = float4(rgb, 2.0);
+        return;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
     outLinear[gidx] = float4(rgbBase, cloudRaw);
@@ -144,6 +157,11 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
     if (rec.hit == 0u) {
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
+        return;
+    }
+    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+        float3 rgb = comp_linear_rgb(rec, P, C);
+        outLinear[gid] = float4(rgb, 2.0);
         return;
     }
     float cloudRaw = comp_cloud_raw(rec, P, C);
@@ -172,6 +190,11 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
     if (rec.hit == 0u) {
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
+        return;
+    }
+    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+        float3 rgb = comp_linear_rgb(rec, P, C);
+        outLinear[gid] = float4(rgb, 2.0);
         return;
     }
     float cloudRaw = comp_cloud_raw(rec, P, C);
@@ -278,7 +301,7 @@ kernel void composeLumHistLinear(constant ComposeParams& C [[buffer(0)]],
     float4 rgbw = inLinear[gidx];
     if (rgbw.w < 0.0) return;
     float3 rgb = rgbw.xyz;
-    if (C.analysisMode == 0u) {
+    if (C.analysisMode == 0u && !comp_linear_rgb_is_final_sentinel(rgbw.w)) {
         rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);
     }
     float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
@@ -299,7 +322,7 @@ kernel void composeLumHistLinearTileCloud(constant ComposeParams& C [[buffer(0)]
     float4 rgbw = inLinear[gid];
     if (rgbw.w < 0.0) return;
     float3 rgb = rgbw.xyz;
-    if (C.analysisMode == 0u) {
+    if (C.analysisMode == 0u && !comp_linear_rgb_is_final_sentinel(rgbw.w)) {
         rgb = comp_apply_linear_cloud_from_raw(rgbw.xyz, clamp(rgbw.w, 0.0, 1.0), C);
     }
     float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));

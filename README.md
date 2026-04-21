@@ -78,7 +78,28 @@ More natural observational profile:
 ./run_pipeline.sh --width 1200 --height 1200 --preset realistic --output blackhole_realistic.png
 ```
 
-The `realistic` preset uses a narrower camera view, neutral filmic tone mapping, weak scientific camera blur/noise, and a modest lensed star background.
+The `realistic` preset keeps the existing geodesic/lensing path but changes thin-disk image formation:
+- NT-like thin-disk color temperature is used for the surface spectrum.
+- Relativistic `g` is preserved in spectral accumulation and receives a modest extra photographic beaming emphasis.
+- Disk-space shear perturbations are evaluated from `(r, phi, time)`, not from image coordinates.
+- A thin atmosphere and faint inner corona are blended in compose, without making the disk a thick torus.
+- The camera path uses neutral filmic tone mapping, weak scientific PSF/noise, and a modest lensed star background.
+
+Realism debug maps:
+```bash
+./run_pipeline.sh --preset realistic --realism-debug g --output debug_g.png
+./run_pipeline.sh --preset realistic --realism-debug emissivity --output debug_emissivity.png
+./run_pipeline.sh --preset realistic --realism-debug beaming --output debug_beaming.png
+./run_pipeline.sh --preset realistic --realism-debug perturbation --output debug_perturbation.png
+```
+
+Debug values:
+- `g`: raw frequency-shift factor map.
+- `emissivity`: normalized Novikov-Thorne-like radial emissivity.
+- `beaming`: approaching/receding weighting.
+- `photosphere`, `atmosphere`, `corona`: component-only contributions.
+- `perturbation`: disk-coordinate turbulence/shear field.
+- `hdr`: pre-tone-map HDR luminance map.
 
 ## Kerr Render
 
