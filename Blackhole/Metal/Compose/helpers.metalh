@@ -243,7 +243,7 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
         cfg.beamingStrength = 0.0;
         cfg.innerBoost = 0.84;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
-        cfg.perturbAmp = clamp(0.42 + 0.16 * turbulence, 0.30, 0.68);
+        cfg.perturbAmp = clamp(0.50 + 0.20 * turbulence, 0.38, 0.74);
         cfg.atmosphereTau = 0.17;
         cfg.coronaStrength = 0.024;
         cfg.beamingStrength = 0.0;
@@ -327,7 +327,9 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     float rr = max(rNorm, rInNorm + 1e-4);
     float dr = max(rr - rInNorm, 0.0);
     float rs = max(P.rs, 1e-6);
-    float timeRs = P.c * P.diskFlowTime / rs;
+    // Match the rest of the flow model: diskFlowTime is a dimensionless
+    // animation/orbital phase control, not wall-clock seconds.
+    float timeRs = P.diskFlowTime;
     float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
     float shear = phi - omega * timeRs;
     float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
@@ -360,9 +362,9 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddyNoise);
 
     float cloudCentered = cloudNorm - 0.5;
-    float raw = 0.42 * f.channel
+    float raw = 0.52 * f.channel
               + 0.24 * f.zonal
-              + 0.28 * (f.filament - 0.5)
+              + 0.34 * (f.filament - 0.5)
               + 0.16 * (eddyNoise - 0.5)
               + 0.10 * cloudCentered;
     f.densityContrast = clamp(raw * innerGain * innerActivity, -1.0, 1.0);
@@ -446,7 +448,7 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     float densityBase = comp_thin_optical_depth_density(rr, rInNorm, m.perturb, cloudNorm, cfg);
     float cloudCentered = cloudNorm - 0.5;
     float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
-    float contrast = 0.52 * mri.densityContrast
+    float contrast = 0.62 * mri.densityContrast
                    + 0.22 * cloudCentered
                    + 0.30 * (m.filament - 0.5)
                    + 0.12 * mri.zonal
@@ -459,12 +461,12 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
 
     // Small temperature variations follow disk-space structures; this preserves the
     // NT radial backbone while breaking the overly uniform ribbon look.
-    float tempContrast = cfg.perturbAmp * (0.24 * (m.perturb - 0.5)
-                         + 0.13 * (m.filament - 0.5)
+    float tempContrast = cfg.perturbAmp * (0.30 * (m.perturb - 0.5)
+                         + 0.16 * (m.filament - 0.5)
                          + 0.08 * cloudCentered
                          + 0.06 * (m.density - 1.0)
-                         + 0.05 * innerTaper * mri.channel);
-    m.tempShift = clamp(exp(tempContrast), 0.84, 1.22);
+                         + 0.08 * innerTaper * mri.channel);
+    m.tempShift = clamp(exp(tempContrast), 0.78, 1.30);
     m.opacity = clamp(radialTau * m.density
                     * (0.82 + 0.30 * m.filament)
                     * (0.90 + 0.16 * innerTaper), 0.18, 2.90);
@@ -622,7 +624,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     // optically thick thermal surface emission approaches B_nu(T).
     float surfaceTau = clamp(1.20 * micro.opacity * (0.72 + 0.28 * clamp(s.density / 1.6, 0.0, 1.0)), 0.0, 6.0);
     float surfaceEscape = 1.0 - exp(-surfaceTau / max(mu, 0.24));
-    float surfaceCover = 0.70 + 0.30 * clamp(s.density / 1.75, 0.0, 1.0);
+    float surfaceCover = 0.62 + 0.38 * clamp(s.density / 1.65, 0.0, 1.0);
     s.beaming = clamp(pow(max(s.g, 1e-4), 3.0), 0.02, 16.0);
     s.photosphere = rgb * surfaceEscape * surfaceCover * s.outerFade * edgeGate;
 
