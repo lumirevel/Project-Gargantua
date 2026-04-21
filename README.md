@@ -78,12 +78,14 @@ More natural observational profile:
 ./run_pipeline.sh --width 1200 --height 1200 --preset realistic --output blackhole_realistic.png
 ```
 
-The `realistic` preset keeps the existing geodesic/lensing path but changes thin-disk image formation:
-- NT-like thin-disk color temperature is used for the surface spectrum.
-- Relativistic `g` is preserved in spectral accumulation and receives a modest extra photographic beaming emphasis.
-- Disk-space shear perturbations are evaluated from `(r, phi, time)`, not from image coordinates.
-- A thin atmosphere and faint inner corona are blended in compose, without making the disk a thick torus.
-- The camera path uses neutral filmic tone mapping, weak scientific PSF/noise, and a modest lensed star background.
+The `realistic` preset keeps the existing geodesic/lensing path scientific by default:
+- `--realism-profile physical` uses an NT-like thin-disk color-temperature backbone without extra artistic beaming, atmosphere, or corona.
+- `--realism-profile observational` enables modest disk-space perturbation/atmosphere/corona approximations for visual exploration.
+- `--realism-profile cinematic` is the stronger look-development profile, not the strict science baseline.
+- `--camera-profile scientific` applies the default lens/sensor response after ray tracing and HDR composition.
+- `--camera-profile cinema-digital` or `full-frame` shifts realism toward camera/lens/sensor behavior rather than modifying geodesic tracing.
+- `--camera-profile-json path/to/profile.json` overrides the built-in camera response with explicit calibration parameters.
+- `docs/camera_profile.example.json` is a starting point for a measured or hand-fit camera response profile.
 
 Realism debug maps:
 ```bash
@@ -100,6 +102,9 @@ Debug values:
 - `photosphere`, `atmosphere`, `corona`: component-only contributions.
 - `perturbation`: disk-coordinate turbulence/shear field.
 - `hdr`: pre-tone-map HDR luminance map.
+- `--camera-profile {ideal|scientific|cinema-digital|full-frame}`: post-render camera/lens/sensor response profile.
+- `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json`. Supported keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.
+- `--realism-profile {off|physical|observational|cinematic}`: thin-disk look-development profile; `physical` is the realistic preset default.
 
 ## Kerr Render
 
@@ -373,7 +378,7 @@ Physical disk controls:
 - `--disk-ic-amp <>=0>`: HDF5 초기조건 섭동 강도(현상론적 seeded perturbation, default `0`, 비활성)
 - `--disk-ic-seed <int>`: HDF5 초기조건 섭동 시드 (default `1337`)
 - `--disk-ic-scale <cells>`: HDF5 초기조건 섭동 상관 길이(셀 단위, default `12`)
-- `--background {off|stars}`: miss ray 배경 (default: cinematic/realistic profile에서 `stars`, 나머지는 `off`)
+- `--background {off|stars}`: miss ray 배경 (default: cinematic/realistic look에서 `stars`, 나머지는 `off`)
 - `--bg-stars {on|off}`: `--background`의 on/off 별칭
 - `--bg-star-density <0..4>`: 별 밀도
 - `--bg-star-strength <0..4>`: 별 밝기

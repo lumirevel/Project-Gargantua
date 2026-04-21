@@ -1,9 +1,158 @@
 import Foundation
+import simd
+
+struct CameraCalibration {
+    var profileName: String
+    var profileID: UInt32
+    var jsonPath: String
+    var sceneR: SIMD4<Float>
+    var sceneG: SIMD4<Float>
+    var sceneB: SIMD4<Float>
+    var displayR: SIMD4<Float>
+    var displayG: SIMD4<Float>
+    var displayB: SIMD4<Float>
+    var sensorParams: SIMD4<Float>
+    var noiseParams: SIMD4<Float>
+    var colorParams: SIMD4<Float>
+}
+
+private struct CameraCalibrationJSON: Decodable {
+    var name: String?
+    var sceneMatrix: [[Double]]?
+    var displayMatrix: [[Double]]?
+    var sensorGain: Double?
+    var fullWell: Double?
+    var shoulderMix: Double?
+    var blackLevel: Double?
+    var vignette: Double?
+    var chromaNoiseMix: Double?
+    var rowNoise: Double?
+    var toeStrength: Double?
+    var saturation: Double?
+    var displayShoulder: Double?
+}
+
+private enum CameraCalibrationFactory {
+    static func identity(profileName: String, profileID: UInt32, jsonPath: String = "") -> CameraCalibration {
+        CameraCalibration(
+            profileName: profileName,
+            profileID: profileID,
+            jsonPath: jsonPath,
+            sceneR: SIMD4<Float>(1, 0, 0, 0),
+            sceneG: SIMD4<Float>(0, 1, 0, 0),
+            sceneB: SIMD4<Float>(0, 0, 1, 0),
+            displayR: SIMD4<Float>(1, 0, 0, 0),
+            displayG: SIMD4<Float>(0, 1, 0, 0),
+            displayB: SIMD4<Float>(0, 0, 1, 0),
+            sensorParams: SIMD4<Float>(1, 0, 0, 0),
+            noiseParams: .zero,
+            colorParams: SIMD4<Float>(1, 0, 0, 0)
+        )
+    }
+
+    static func builtin(profileName: String, profileID: UInt32) -> CameraCalibration {
+        switch profileID {
+        case 1:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(0.992, 0.006, 0.002, 0)
+            c.sceneG = SIMD4<Float>(0.006, 0.991, 0.003, 0)
+            c.sceneB = SIMD4<Float>(0.002, 0.010, 0.988, 0)
+            c.displayR = SIMD4<Float>(0.985, 0.012, 0.003, 0)
+            c.displayG = SIMD4<Float>(0.010, 0.985, 0.005, 0)
+            c.displayB = SIMD4<Float>(0.004, 0.016, 0.980, 0)
+            c.noiseParams = SIMD4<Float>(0.045, 0.12, 0.08, 0.0)
+            c.colorParams = SIMD4<Float>(0.98, 0.0, 0, 0)
+            return c
+        case 2:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(1.020, 0.000, 0.000, 0)
+            c.sceneG = SIMD4<Float>(0.000, 0.995, 0.000, 0)
+            c.sceneB = SIMD4<Float>(0.000, 0.000, 0.970, 0)
+            c.displayR = SIMD4<Float>(1.035, 0.014, -0.012, 0)
+            c.displayG = SIMD4<Float>(0.012, 0.995, 0.004, 0)
+            c.displayB = SIMD4<Float>(-0.006, 0.026, 0.965, 0)
+            c.sensorParams = SIMD4<Float>(1.0, 7.0, 0.20, 0.0)
+            c.noiseParams = SIMD4<Float>(0.10, 0.24, 0.08, 0.0)
+            c.colorParams = SIMD4<Float>(1.035, 0.55, 0, 0)
+            return c
+        case 3:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(1.030, 0.000, 0.000, 0)
+            c.sceneG = SIMD4<Float>(0.000, 1.005, 0.000, 0)
+            c.sceneB = SIMD4<Float>(0.000, 0.000, 0.985, 0)
+            c.displayR = SIMD4<Float>(1.055, 0.010, -0.018, 0)
+            c.displayG = SIMD4<Float>(0.006, 1.008, 0.000, 0)
+            c.displayB = SIMD4<Float>(-0.010, 0.020, 0.990, 0)
+            c.sensorParams = SIMD4<Float>(1.0, 8.5, 0.14, 0.0)
+            c.noiseParams = SIMD4<Float>(0.18, 0.42, 0.20, 0.16)
+            c.colorParams = SIMD4<Float>(1.08, 0.0, 0, 0)
+            return c
+        default:
+            return identity(profileName: profileName, profileID: profileID)
+        }
+    }
+
+    static func loadJSON(path: String, fallback: CameraCalibration) -> CameraCalibration {
+        do {
+            let url = URL(fileURLWithPath: path)
+            let data = try Data(contentsOf: url)
+            let raw = try JSONDecoder().decode(CameraCalibrationJSON.self, from: data)
+            var c = fallback
+            c.profileName = raw.name ?? "json"
+            c.profileID = 4
+            c.jsonPath = path
+            if let m = raw.sceneMatrix {
+                (c.sceneR, c.sceneG, c.sceneB) = rows(from: m)
+            }
+            if let m = raw.displayMatrix {
+                (c.displayR, c.displayG, c.displayB) = rows(from: m)
+            }
+            c.sensorParams.x = Float(raw.sensorGain ?? Double(c.sensorParams.x))
+            c.sensorParams.y = Float(raw.fullWell ?? Double(c.sensorParams.y))
+            c.sensorParams.z = Float(raw.shoulderMix ?? Double(c.sensorParams.z))
+            c.sensorParams.w = Float(raw.blackLevel ?? Double(c.sensorParams.w))
+            c.noiseParams.x = Float(raw.vignette ?? Double(c.noiseParams.x))
+            c.noiseParams.y = Float(raw.chromaNoiseMix ?? Double(c.noiseParams.y))
+            c.noiseParams.z = Float(raw.rowNoise ?? Double(c.noiseParams.z))
+            c.noiseParams.w = Float(raw.toeStrength ?? Double(c.noiseParams.w))
+            c.colorParams.x = Float(raw.saturation ?? Double(c.colorParams.x))
+            c.colorParams.y = Float(raw.displayShoulder ?? Double(c.colorParams.y))
+            return c
+        } catch {
+            fail("failed to read --camera-profile-json \(path): \(error.localizedDescription)")
+        }
+    }
+
+    private static func rows(from matrix: [[Double]]) -> (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) {
+        guard matrix.count == 3, matrix.allSatisfy({ $0.count == 3 }) else {
+            fail("camera matrix must be a 3x3 array")
+        }
+        return (
+            SIMD4<Float>(Float(matrix[0][0]), Float(matrix[0][1]), Float(matrix[0][2]), 0),
+            SIMD4<Float>(Float(matrix[1][0]), Float(matrix[1][1]), Float(matrix[1][2]), 0),
+            SIMD4<Float>(Float(matrix[2][0]), Float(matrix[2][1]), Float(matrix[2][2]), 0)
+        )
+    }
+}
 
 struct VisualSettings {
     let composeDitherArg: Float
     let cameraModelName: String
     let cameraModelID: UInt32
+    let cameraProfileName: String
+    let cameraProfileID: UInt32
+    let realismProfileName: String
+    let realismProfileID: UInt32
+    let cameraProfileJSONPath: String
+    let cameraSceneR: SIMD4<Float>
+    let cameraSceneG: SIMD4<Float>
+    let cameraSceneB: SIMD4<Float>
+    let cameraDisplayR: SIMD4<Float>
+    let cameraDisplayG: SIMD4<Float>
+    let cameraDisplayB: SIMD4<Float>
+    let cameraSensorParams: SIMD4<Float>
+    let cameraNoiseParams: SIMD4<Float>
+    let cameraColorParams: SIMD4<Float>
     let cameraPsfSigmaArg: Float
     let cameraReadNoiseArg: Float
     let cameraShotNoiseArg: Float
@@ -74,30 +223,89 @@ enum ParamsBuilderVisual {
             fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic")
         }
 
-        let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
+        let cameraProfileName = stringArg("--camera-profile", default: {
+            if composeLookID == 6 { return "scientific" }
             switch cameraModelID {
+            case 1: return "scientific"
+            case 2: return "cinema-digital"
+            default: return "ideal"
+            }
+        }()).lowercased()
+        let cameraProfileID: UInt32
+        switch cameraProfileName {
+        case "ideal", "none", "off":
+            cameraProfileID = 0
+        case "scientific", "science", "linear-sensor":
+            cameraProfileID = 1
+        case "cinema", "cinematic", "cinema-digital", "arri-like":
+            cameraProfileID = 2
+        case "photo", "full-frame", "fullframe", "dslr", "mirrorless":
+            cameraProfileID = 3
+        default:
+            fail("invalid --camera-profile \(cameraProfileName). use one of: ideal, scientific, cinema-digital, full-frame")
+        }
+        let cameraProfileJSONPath = stringArg("--camera-profile-json", default: "")
+        var cameraCalibration = CameraCalibrationFactory.builtin(profileName: cameraProfileName, profileID: cameraProfileID)
+        if !cameraProfileJSONPath.isEmpty {
+            cameraCalibration = CameraCalibrationFactory.loadJSON(path: cameraProfileJSONPath, fallback: cameraCalibration)
+        }
+
+        let realismProfileName = stringArg("--realism-profile", default: {
+            if composeLookID == 6 { return "physical" }
+            return "off"
+        }()).lowercased()
+        let realismProfileID: UInt32
+        switch realismProfileName {
+        case "off", "none", "legacy":
+            realismProfileID = 0
+        case "physical", "science", "scientific":
+            realismProfileID = 1
+        case "observational", "observed", "hybrid":
+            realismProfileID = 2
+        case "cinematic", "cinema":
+            realismProfileID = 3
+        default:
+            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic")
+        }
+
+        let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
+            switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.42 : 0.55
-            case 2: return 0.35
-            default: return 0.0
+            case 2: return 0.38
+            case 3: return 0.32
+            default:
+                switch cameraModelID {
+                case 1: return (composeLookID == 6) ? 0.42 : 0.55
+                case 2: return 0.35
+                default: return 0.0
+                }
             }
         }())))
         let cameraReadNoiseArg = Float(max(0.0, doubleArg("--camera-read-noise", default: {
-            switch cameraModelID {
-            case 1: return (composeLookID == 6) ? 0.0015 : 0.0025
-            case 2: return 0.0012
+            switch cameraProfileID {
+            case 1: return (composeLookID == 6) ? 0.0013 : 0.0023
+            case 2: return 0.0011
+            case 3: return 0.0018
             default: return 0.0
             }
         }())))
         let cameraShotNoiseArg = Float(max(0.0, doubleArg("--camera-shot-noise", default: {
-            switch cameraModelID {
-            case 1: return (composeLookID == 6) ? 0.006 : 0.010
+            switch cameraProfileID {
+            case 1: return (composeLookID == 6) ? 0.0055 : 0.009
             case 2: return 0.006
+            case 3: return 0.008
             default: return 0.0
             }
         }())))
-        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg("--camera-flare", default: (cameraModelID == 2 ? 0.20 : 0.0)))))
-        if cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
-            FileHandle.standardError.write(Data("warn: --camera-flare is only active in --camera-model cinematic\n".utf8))
+        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg("--camera-flare", default: {
+            switch cameraProfileID {
+            case 2: return 0.16
+            case 3: return 0.05
+            default: return (cameraModelID == 2 ? 0.20 : 0.0)
+            }
+        }()))))
+        if cameraProfileID < 2 && cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
+            FileHandle.standardError.write(Data("warn: --camera-flare is only active for cinematic/photo camera profiles\n".utf8))
         }
 
         let backgroundRawArg = stringArg("--background", default: "").lowercased()
@@ -230,6 +438,20 @@ enum ParamsBuilderVisual {
             composeDitherArg: composeDitherArg,
             cameraModelName: cameraModelName,
             cameraModelID: cameraModelID,
+            cameraProfileName: cameraCalibration.profileName,
+            cameraProfileID: cameraCalibration.profileID,
+            realismProfileName: realismProfileName,
+            realismProfileID: realismProfileID,
+            cameraProfileJSONPath: cameraProfileJSONPath,
+            cameraSceneR: cameraCalibration.sceneR,
+            cameraSceneG: cameraCalibration.sceneG,
+            cameraSceneB: cameraCalibration.sceneB,
+            cameraDisplayR: cameraCalibration.displayR,
+            cameraDisplayG: cameraCalibration.displayG,
+            cameraDisplayB: cameraCalibration.displayB,
+            cameraSensorParams: cameraCalibration.sensorParams,
+            cameraNoiseParams: cameraCalibration.noiseParams,
+            cameraColorParams: cameraCalibration.colorParams,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,

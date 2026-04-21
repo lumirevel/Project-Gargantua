@@ -75,6 +75,8 @@ extension Resources {
         composePrecisionID: UInt32,
         composeAnalysisMode: UInt32,
         composeCameraModelID: UInt32,
+        cameraProfileID: UInt32,
+        realismProfileID: UInt32,
         composeCameraPsfSigmaArg: Float,
         composeCameraReadNoiseArg: Float,
         composeCameraShotNoiseArg: Float,
@@ -174,9 +176,18 @@ extension Resources {
                 backgroundNebulaStrength: backgroundNebulaStrengthArg,
                 preserveHighlightColor: preserveHighlightColor,
                 diskNoiseModel: params.diskNoiseModel,
-                _pad0: 0,
-                _pad1: 0,
-                _pad2: 0
+                cameraProfile: cameraProfileID,
+                realismProfile: realismProfileID,
+                cameraFlags: 0,
+                cameraSceneR: config.cameraSceneR,
+                cameraSceneG: config.cameraSceneG,
+                cameraSceneB: config.cameraSceneB,
+                cameraDisplayR: config.cameraDisplayR,
+                cameraDisplayG: config.cameraDisplayG,
+                cameraDisplayB: config.cameraDisplayB,
+                cameraSensorParams: config.cameraSensorParams,
+                cameraNoiseParams: config.cameraNoiseParams,
+                cameraColorParams: config.cameraColorParams
             )
             directLinearParamBuf = device.makeBuffer(bytes: &directLinearParams, length: MemoryLayout<ComposeParams>.stride, options: [])
             if directLinearParamBuf == nil {

@@ -197,9 +197,18 @@ struct ComposeParams {
     var backgroundNebulaStrength: Float
     var preserveHighlightColor: UInt32
     var diskNoiseModel: UInt32
-    var _pad0: UInt32
-    var _pad1: UInt32
-    var _pad2: UInt32
+    var cameraProfile: UInt32
+    var realismProfile: UInt32
+    var cameraFlags: UInt32
+    var cameraSceneR: SIMD4<Float>
+    var cameraSceneG: SIMD4<Float>
+    var cameraSceneB: SIMD4<Float>
+    var cameraDisplayR: SIMD4<Float>
+    var cameraDisplayG: SIMD4<Float>
+    var cameraDisplayB: SIMD4<Float>
+    var cameraSensorParams: SIMD4<Float>
+    var cameraNoiseParams: SIMD4<Float>
+    var cameraColorParams: SIMD4<Float>
 }
 
 struct ComposeSolveParams {

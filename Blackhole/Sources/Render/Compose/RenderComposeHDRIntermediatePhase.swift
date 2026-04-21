@@ -33,6 +33,8 @@ enum RenderComposeHDRIntermediatePhase {
         let composePrecisionID = config.composePrecisionID
         let composeAnalysisMode = config.composeAnalysisMode
         let composeCameraModelID = config.composeCameraModelID
+        let cameraProfileID = (composeAnalysisMode == 0) ? config.cameraProfileID : 0
+        let realismProfileID = config.realismProfileID
         let composeCameraPsfSigmaArg = config.composeCameraPsfSigmaArg
         let composeCameraReadNoiseArg = config.composeCameraReadNoiseArg
         let composeCameraShotNoiseArg = config.composeCameraShotNoiseArg
@@ -86,9 +88,18 @@ enum RenderComposeHDRIntermediatePhase {
             backgroundStarDensity: backgroundStarDensityArg, backgroundStarStrength: backgroundStarStrengthArg,
             backgroundNebulaStrength: backgroundNebulaStrengthArg, preserveHighlightColor: preserveHighlightColor,
             diskNoiseModel: input.params.diskNoiseModel,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0
+            cameraProfile: cameraProfileID,
+            realismProfile: realismProfileID,
+            cameraFlags: 0,
+            cameraSceneR: config.cameraSceneR,
+            cameraSceneG: config.cameraSceneG,
+            cameraSceneB: config.cameraSceneB,
+            cameraDisplayR: config.cameraDisplayR,
+            cameraDisplayG: config.cameraDisplayG,
+            cameraDisplayB: config.cameraDisplayB,
+            cameraSensorParams: config.cameraSensorParams,
+            cameraNoiseParams: config.cameraNoiseParams,
+            cameraColorParams: config.cameraColorParams
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))

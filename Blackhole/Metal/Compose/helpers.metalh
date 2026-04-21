@@ -198,8 +198,12 @@ struct ThinHybridRealismSample {
     float3 finalRgb;
 };
 
+static inline bool comp_thin_physical_active(constant ComposeParams& C) {
+    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 1u);
+}
+
 static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
-    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.look == 6u);
+    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 2u);
 }
 
 static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
@@ -215,11 +219,25 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
 {
     ThinHybridRealismConfig cfg;
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
-    cfg.perturbAmp = (C.look == 6u) ? clamp(0.26 + 0.34 * turbulence, 0.18, 0.72) : turbulence;
-    cfg.atmosphereTau = (C.look == 6u) ? 0.24 : 0.0;
-    cfg.coronaStrength = (C.look == 6u) ? 0.055 : 0.0;
-    cfg.beamingStrength = (C.look == 6u) ? 0.46 : 0.0;
-    cfg.innerBoost = (C.look == 6u) ? 0.86 : 0.0;
+    if (C.realismProfile >= 3u) {
+        cfg.perturbAmp = clamp(0.26 + 0.34 * turbulence, 0.18, 0.72);
+        cfg.atmosphereTau = 0.24;
+        cfg.coronaStrength = 0.055;
+        cfg.beamingStrength = 0.30;
+        cfg.innerBoost = 0.78;
+    } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
+        cfg.perturbAmp = clamp(0.18 + 0.22 * turbulence, 0.12, 0.44);
+        cfg.atmosphereTau = 0.12;
+        cfg.coronaStrength = 0.024;
+        cfg.beamingStrength = 0.12;
+        cfg.innerBoost = 0.36;
+    } else {
+        cfg.perturbAmp = 0.0;
+        cfg.atmosphereTau = 0.0;
+        cfg.coronaStrength = 0.0;
+        cfg.beamingStrength = 0.0;
+        cfg.innerBoost = 0.0;
+    }
     cfg.outerFadeStart = 0.58;
     cfg.outerFadeEnd = 0.97;
     cfg.atmosphereTint = float3(1.04, 0.99, 0.91);
@@ -517,12 +535,11 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
     }
 
     float T_emit = max(rec.T, 1.0);
-    if ((comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
+    if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
         float rNorm = comp_emit_radius_norm(rec, P);
-        float ntT = thin_teff(rNorm, P) * 1.42;
+        float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
+        float ntT = thin_teff(rNorm, P) * fCol;
         if (ntT > 1.0 && isfinite(ntT)) {
-            // Realistic look uses the existing geodesic hit, but switches the thin surface
-            // spectrum to an NT-like color-temperature backbone instead of the legacy scalar T.
             T_emit = ntT;
         }
     }
@@ -793,6 +810,10 @@ static inline float comp_hash_signed_u32(uint x, uint y, uint salt) {
     return 2.0 * comp_hash01_u32(x, y, salt) - 1.0;
 }
 
+static inline float3 comp_mul_rows(float3 v, float4 r0, float4 r1, float4 r2) {
+    return float3(dot(v, r0.xyz), dot(v, r1.xyz), dot(v, r2.xyz));
+}
+
 static inline float3 comp_background_starfield_display(float3 dir, constant ComposeParams& C) {
     if (C.backgroundMode == 0u) return float3(0.0);
 
@@ -879,23 +900,86 @@ static inline float3 comp_apply_camera_sensor(float3 color,
                                               constant ComposeParams& C)
 {
     float3 out = clamp(color, 0.0, 1.0);
-    if (C.cameraModel == 0u) return out;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u && C.cameraModel == 0u) return out;
+
+    float outW = max(float(max(C.fullInputWidth / max(C.downsample, 1u), 1u)), 1.0);
+    float outH = max(float(max(C.fullInputHeight / max(C.downsample, 1u), 1u)), 1.0);
+    float2 uv = (float2(float(globalOutX) + 0.5, float(globalOutY) + 0.5) / float2(outW, outH)) - 0.5;
+    uv.x *= outW / max(outH, 1.0);
+    float r2 = dot(uv, uv);
+    float vignetteStrength = max(C.cameraNoiseParams.x, 0.0);
+    if (vignetteStrength > 1e-6) {
+        float vignette = 1.0 - vignetteStrength * r2 - 0.22 * vignetteStrength * r2 * r2;
+        out *= clamp(vignette, 0.62, 1.0);
+    }
 
     float lum = dot(out, float3(0.2126, 0.7152, 0.0722));
     float shot = max(C.cameraShotNoise, 0.0) * sqrt(max(lum, 1e-6));
     float read = max(C.cameraReadNoise, 0.0);
     float sigma = shot + read;
     if (sigma > 1e-8) {
-        float3 n = float3(
-            comp_hash_signed_u32(globalOutX, globalOutY, 17u),
-            comp_hash_signed_u32(globalOutX, globalOutY, 59u),
-            comp_hash_signed_u32(globalOutX, globalOutY, 101u)
+        float common = 0.5 * (comp_hash_signed_u32(globalOutX, globalOutY, 11u)
+                            + comp_hash_signed_u32(globalOutX, globalOutY, 37u));
+        float3 chroma = float3(
+            0.5 * (comp_hash_signed_u32(globalOutX, globalOutY, 17u) + comp_hash_signed_u32(globalOutX, globalOutY, 19u)),
+            0.5 * (comp_hash_signed_u32(globalOutX, globalOutY, 59u) + comp_hash_signed_u32(globalOutX, globalOutY, 61u)),
+            0.5 * (comp_hash_signed_u32(globalOutX, globalOutY, 101u) + comp_hash_signed_u32(globalOutX, globalOutY, 103u))
         );
+        float chromaMix = clamp(C.cameraNoiseParams.y, 0.0, 1.0);
+        float rowPattern = comp_hash_signed_u32(globalOutY, 0u, 149u) * max(C.cameraNoiseParams.z, 0.0);
+        float3 n = mix(float3(common), chroma, chromaMix) + rowPattern;
         out = clamp(out + sigma * n, 0.0, 1.0);
-        lum = dot(out, float3(0.2126, 0.7152, 0.0722));
     }
 
     return out;
+}
+
+static inline float3 comp_apply_camera_scene_response(float3 rgbExp,
+                                                      constant ComposeParams& C)
+{
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u) return rgbExp;
+
+    float3 out = comp_mul_rows(max(rgbExp, 0.0), C.cameraSceneR, C.cameraSceneG, C.cameraSceneB);
+    out = max(out * max(C.cameraSensorParams.x, 0.0), 0.0);
+    float fullWell = max(C.cameraSensorParams.y, 0.0);
+    float shoulderMix = clamp(C.cameraSensorParams.z, 0.0, 1.0);
+    float blackLevel = max(C.cameraSensorParams.w, 0.0);
+    if (!(fullWell > 1e-6) || !(shoulderMix > 1e-6)) {
+        out = max(out - blackLevel, 0.0);
+        return max(out, 0.0);
+    }
+    float lum = dot(out, float3(0.2126, 0.7152, 0.0722));
+    float shoulder = smoothstep(1.0, fullWell, lum);
+    float3 well = fullWell * (1.0 - exp(-out / max(fullWell, 1e-6)));
+    out = mix(out, well, shoulderMix * shoulder);
+    return max(out - blackLevel, 0.0);
+}
+
+static inline float3 comp_apply_camera_color_pipeline(float3 rgbTm,
+                                                      constant ComposeParams& C)
+{
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u) return rgbTm;
+
+    float3 out = clamp(comp_mul_rows(clamp(rgbTm, 0.0, 1.0), C.cameraDisplayR, C.cameraDisplayG, C.cameraDisplayB), 0.0, 1.0);
+    float y = dot(out, float3(0.2126, 0.7152, 0.0722));
+    float toeStrength = clamp(C.cameraNoiseParams.w, 0.0, 1.0);
+    if (toeStrength > 1e-6) {
+        float toe = smoothstep(0.0, 0.18, y);
+        out = mix(out * (1.0 - toeStrength), out, toe);
+        y = dot(out, float3(0.2126, 0.7152, 0.0722));
+    }
+    float displayShoulder = clamp(C.cameraColorParams.y, 0.0, 1.0);
+    if (displayShoulder > 1e-6) {
+        float shoulder = smoothstep(0.72, 1.0, y);
+        out = mix(out, out / (1.0 + 0.20 * out), displayShoulder * shoulder);
+        y = dot(out, float3(0.2126, 0.7152, 0.0722));
+    }
+    float saturation = max(C.cameraColorParams.x, 0.0);
+    out = mix(float3(y), out, saturation);
+    return clamp(out, 0.0, 1.0);
 }
 
 static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant ComposeParams& C) {
@@ -957,7 +1041,8 @@ static inline float3 comp_add_cinematic_flare_full(float3 base,
                                                    constant ComposeParams& C)
 {
     float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
-    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : 0u);
+    if (profile < 2u || !(s > 1e-6)) return base;
     // Camera-like lens flare approximation:
     // 1) local sensor bloom, 2) global lens ghosts mirrored around image center,
     // 3) weak aperture starburst, 4) slight chromatic dispersion along ghost axis.
@@ -1020,7 +1105,8 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
                                                  constant ComposeParams& C)
 {
     float3 center = comp_linear_full_rgb(inLinear, srcX, srcY, C);
-    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
     float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
@@ -1095,7 +1181,8 @@ static inline float3 comp_add_cinematic_flare_tile(float3 base,
                                                    constant ComposeParams& C)
 {
     float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
-    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : 0u);
+    if (profile < 2u || !(s > 1e-6)) return base;
     float2 frame = float2(max(float(C.tileWidth - 1u), 1.0), max(float(C.tileHeight - 1u), 1.0));
     float2 center = 0.5 * frame;
     float2 v = localPos - center;
@@ -1155,7 +1242,8 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
                                                  constant ComposeParams& C)
 {
     float3 center = comp_linear_tile_rgb(inLinear, lx, ly, C);
-    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
     float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
@@ -1227,7 +1315,8 @@ static inline float3 comp_add_cinematic_flare_collision(float3 base,
                                                         constant ComposeParams& C)
 {
     float s = clamp(C.cameraFlareStrength, 0.0, 1.0);
-    if (C.cameraModel != 2u || !(s > 1e-6)) return base;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : 0u);
+    if (profile < 2u || !(s > 1e-6)) return base;
     float2 frame = float2(max(float(C.tileWidth - 1u), 1.0), max(float(C.tileHeight - 1u), 1.0));
     float2 center = 0.5 * frame;
     float2 v = localPos - center;
@@ -1288,7 +1377,8 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
                                                     constant ComposeParams& C)
 {
     float3 center = comp_collision_tile_rgb(inInfo, lx, ly, P, C);
-    if (C.cameraModel == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
     float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
@@ -1327,6 +1417,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
     if (rec.hit == 0u) return float3(0.0);
     float3 rgb = comp_linear_rgb(rec, P, C);
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    rgbExp = comp_apply_camera_scene_response(rgbExp, C);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
@@ -1343,6 +1434,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
         rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
     }
     rgbTm = comp_apply_look(rgbTm, C.look);
+    rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     return srgb;
 }
@@ -1350,6 +1442,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
 static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
 {
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    rgbExp = comp_apply_camera_scene_response(rgbExp, C);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
@@ -1366,6 +1459,7 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
         rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
     }
     rgbTm = comp_apply_look(rgbTm, C.look);
+    rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     return srgb;
 }

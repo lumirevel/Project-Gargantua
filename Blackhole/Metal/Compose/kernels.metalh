@@ -28,7 +28,7 @@ kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
                 float3 bg = comp_background_linear(rec.direct_world.xyz, C);
                 outLinear[gidx] = float4(bg, -2.0);
             } else {
-                if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+                if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
                     float3 rgb = comp_linear_rgb(rec, P, C);
                     outLinear[gidx] = float4(rgb, 2.0);
                 } else if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
@@ -94,7 +94,7 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gidx] = float4(rgb, 2.0);
         return;
@@ -135,7 +135,7 @@ kernel void composeLinearRGBLite(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gidx] = float4(rgb, 2.0);
         return;
@@ -159,7 +159,7 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
         outLinear[gid] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gid] = float4(rgb, 2.0);
         return;
@@ -192,7 +192,7 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
         outLinear[gid] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gid] = float4(rgb, 2.0);
         return;

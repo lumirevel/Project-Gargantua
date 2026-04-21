@@ -301,6 +301,11 @@ enum ParamsBuilder {
     let composeDitherArg = visualSettings.composeDitherArg
     let cameraModelName = visualSettings.cameraModelName
     let cameraModelID = visualSettings.cameraModelID
+    let cameraProfileName = visualSettings.cameraProfileName
+    let cameraProfileID = visualSettings.cameraProfileID
+    let realismProfileName = visualSettings.realismProfileName
+    let realismProfileID = visualSettings.realismProfileID
+    let cameraProfileJSONPath = visualSettings.cameraProfileJSONPath
     let cameraPsfSigmaArg = visualSettings.cameraPsfSigmaArg
     let cameraReadNoiseArg = visualSettings.cameraReadNoiseArg
     let cameraShotNoiseArg = visualSettings.cameraShotNoiseArg
@@ -516,6 +521,20 @@ enum ParamsBuilder {
         config.cameraModelName = cameraModelName
         config.cameraModelID = cameraModelID
         config.composeCameraModelID = composeCameraModelID
+        config.cameraProfileName = cameraProfileName
+        config.cameraProfileID = cameraProfileID
+        config.realismProfileName = realismProfileName
+        config.realismProfileID = realismProfileID
+        config.cameraProfileJSONPath = cameraProfileJSONPath
+        config.cameraSceneR = visualSettings.cameraSceneR
+        config.cameraSceneG = visualSettings.cameraSceneG
+        config.cameraSceneB = visualSettings.cameraSceneB
+        config.cameraDisplayR = visualSettings.cameraDisplayR
+        config.cameraDisplayG = visualSettings.cameraDisplayG
+        config.cameraDisplayB = visualSettings.cameraDisplayB
+        config.cameraSensorParams = visualSettings.cameraSensorParams
+        config.cameraNoiseParams = visualSettings.cameraNoiseParams
+        config.cameraColorParams = visualSettings.cameraColorParams
         config.cameraPsfSigmaArg = cameraPsfSigmaArg
         config.cameraReadNoiseArg = cameraReadNoiseArg
         config.cameraShotNoiseArg = cameraShotNoiseArg
@@ -689,6 +708,8 @@ enum ParamsBuilder {
             rayBundleJacobianStrengthArg: rayBundleJacobianStrengthArg,
             rayBundleFootprintClampArg: rayBundleFootprintClampArg,
             cameraModelName: cameraModelName,
+            cameraProfileName: cameraProfileName,
+            realismProfileName: realismProfileName,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,
