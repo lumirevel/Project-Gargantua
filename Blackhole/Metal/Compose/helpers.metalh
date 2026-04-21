@@ -297,6 +297,17 @@ static inline float comp_thin_nt_emissivity_norm(float rNorm, constant Params& P
     return isfinite(e) ? e : 0.0;
 }
 
+static inline float comp_thin_outer_flux_taper(float rNorm, constant Params& P) {
+    float rs = max(P.rs, 1e-6);
+    float rInNorm = max(disk_inner_radius_m(P) / rs, 1.0001);
+    float rOutNorm = max(P.re / rs, rInNorm + 1e-4);
+    float u = clamp((rNorm - rInNorm) / max(rOutNorm - rInNorm, 1e-4), 0.0, 1.0);
+    // The geometric disk has a finite outer radius. Treat that boundary as a
+    // smooth thermal truncation so the scientific source does not create a hard
+    // luminous wall at P.re.
+    return 1.0 - smoothstep(0.80, 1.00, u);
+}
+
 static inline float comp_thin_shear_perturb(float rNorm,
                                             float phi,
                                             constant Params& P,
@@ -530,7 +541,8 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
         float rNorm = comp_emit_radius_norm(rec, P);
         float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
-        float ntT = thin_teff(rNorm, P) * fCol;
+        float fluxTaper = comp_thin_outer_flux_taper(rNorm, P);
+        float ntT = thin_teff(rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol;
         if (ntT > 1.0 && isfinite(ntT)) {
             e.tEmit = ntT;
             fColUsed = fCol;
@@ -580,7 +592,8 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
 
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
-    s.observedTemp = max(thin_teff(s.rNorm, P) * fCol * s.g * tempShift, 1.0);
+    float fluxTaper = comp_thin_outer_flux_taper(s.rNorm, P);
+    s.observedTemp = max(thin_teff(s.rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol * s.g * tempShift, 1.0);
     float colorDilution = 1.0 / pow(fCol, 4.0);
 
     float3 d = rec.direct_world.xyz;
@@ -663,7 +676,8 @@ static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
         return comp_debug_ramp(t);
     }
     if (C.analysisMode == 32u) {
-        return float3(clamp(comp_thin_nt_emissivity_norm(rNorm, P) / 2.2, 0.0, 1.0));
+        float e = comp_thin_nt_emissivity_norm(rNorm, P) * comp_thin_outer_flux_taper(rNorm, P);
+        return float3(clamp(e / 2.2, 0.0, 1.0));
     }
     if (C.analysisMode == 33u) { // transport beaming diagnostic, not an extra render multiplier
         float beaming = clamp(pow(max(thin.g, 1e-4), 3.0), 0.02, 16.0);
@@ -1154,7 +1168,7 @@ static inline float3 comp_apply_camera_sensor(float3 color,
                                               constant ComposeParams& C)
 {
     float3 out = clamp(color, 0.0, 1.0);
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
     if (profile == 0u && C.cameraModel == 0u) return out;
 
     float outW = max(float(max(C.fullInputWidth / max(C.downsample, 1u), 1u)), 1.0);
@@ -1192,7 +1206,7 @@ static inline float3 comp_apply_camera_sensor(float3 color,
 static inline float3 comp_apply_camera_scene_response(float3 rgbExp,
                                                       constant ComposeParams& C)
 {
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
     if (profile == 0u) return rgbExp;
 
     float3 out = comp_mul_rows(max(rgbExp, 0.0), C.cameraSceneR, C.cameraSceneG, C.cameraSceneB);
@@ -1214,22 +1228,25 @@ static inline float3 comp_apply_camera_scene_response(float3 rgbExp,
 static inline float3 comp_apply_camera_color_pipeline(float3 rgbTm,
                                                       constant ComposeParams& C)
 {
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
-    if (profile == 0u && C.cameraModel == 3u) {
+    if (C.cameraModel == 3u) {
         float3 out = clamp(rgbTm, 0.0, 1.0);
         float y = dot(out, float3(0.2126, 0.7152, 0.0722));
         // Human-eye presentation: approximate mesopic desaturation in dark regions
-        // and mild cone bleaching for very bright highlights. This is a display
-        // transform only; it does not alter the physical radiance buffer.
-        float mesopic = smoothstep(0.018, 0.20, y);
+        // plus a weak Purkinje-like blue-green shift, and mild cone bleaching
+        // for very bright highlights. This is a display transform only; it
+        // does not alter the physical radiance buffer.
+        float mesopic = smoothstep(0.020, 0.24, y);
+        float scotopic = 1.0 - mesopic;
         float bleach = smoothstep(0.72, 1.0, y);
-        float saturation = mix(0.42, 1.0, mesopic) * mix(1.0, 0.78, bleach);
+        float saturation = mix(0.36, 1.0, mesopic) * mix(1.0, 0.76, bleach);
         float gray = y;
         out = mix(float3(gray), out, saturation);
+        out *= mix(float3(1.0), float3(0.86, 0.98, 1.10), 0.22 * scotopic);
         float3 bleachedWhite = float3(y);
-        out = mix(out, bleachedWhite, 0.12 * bleach);
+        out = mix(out, bleachedWhite, 0.16 * bleach);
         return clamp(out, 0.0, 1.0);
     }
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
     if (profile == 0u) return rgbTm;
 
     float3 out = clamp(comp_mul_rows(clamp(rgbTm, 0.0, 1.0), C.cameraDisplayR, C.cameraDisplayG, C.cameraDisplayB), 0.0, 1.0);
@@ -1270,6 +1287,9 @@ static inline float3 comp_flare_bright_pass_scene(float3 sceneLin, constant Comp
 static inline float comp_psf_wing_strength(uint profile, constant ComposeParams& C) {
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return 0.0;
     float flare = clamp(C.cameraFlareStrength, 0.0, 1.0);
+    if (profile == 4u) {
+        return clamp(0.010 + 0.018 * C.cameraPsfSigmaPx, 0.0, 0.028);
+    }
     float profileBoost = (profile >= 3u) ? 0.018 : ((profile >= 2u) ? 0.012 : 0.004);
     return clamp(profileBoost + 0.010 * C.cameraPsfSigmaPx + 0.050 * flare, 0.0, 0.12);
 }
@@ -1390,7 +1410,7 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
                                                  constant ComposeParams& C)
 {
     float3 center = comp_linear_full_rgb(inLinear, srcX, srcY, C);
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
@@ -1557,7 +1577,7 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
                                                  constant ComposeParams& C)
 {
     float3 center = comp_linear_tile_rgb(inLinear, lx, ly, C);
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
@@ -1722,7 +1742,7 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
                                                     constant ComposeParams& C)
 {
     float3 center = comp_collision_tile_rgb(inInfo, lx, ly, P, C);
-    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);

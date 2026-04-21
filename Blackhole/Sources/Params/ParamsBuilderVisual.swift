@@ -399,6 +399,7 @@ enum ParamsBuilderVisual {
                 switch cameraModelID {
                 case 1: return (composeLookID == 6) ? 0.42 : 0.55
                 case 2: return 0.35
+                case 3: return 0.30
                 default: return 0.0
                 }
             }
