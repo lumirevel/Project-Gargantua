@@ -26,7 +26,7 @@ struct ComposeParams {
     uint  lumBins;
     float lumLogMin;
     float lumLogMax;
-    uint  cameraModel; // 0=legacy, 1=scientific, 2=cinematic
+    uint  cameraModel; // 0=legacy, 1=scientific sensor, 2=cinematic camera, 3=human eye
     float cameraPsfSigmaPx;
     float cameraReadNoise;
     float cameraShotNoise;

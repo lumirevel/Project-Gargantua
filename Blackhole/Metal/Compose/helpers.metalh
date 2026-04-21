@@ -189,7 +189,10 @@ struct ThinHybridRealismSample {
     float g;
     float emissivity;
     float perturb;
+    float density;
     float beaming;
+    float opticalDepth;
+    float observedTemp;
     float innerWeight;
     float outerFade;
     float3 photosphere;
@@ -207,7 +210,7 @@ static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
 }
 
 static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
-    return (C.analysisMode >= 31u && C.analysisMode <= 38u);
+    return (C.analysisMode >= 31u && C.analysisMode <= 41u);
 }
 
 static inline bool comp_linear_rgb_is_final_sentinel(float w) {
@@ -220,17 +223,17 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
     ThinHybridRealismConfig cfg;
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
     if (C.realismProfile >= 3u) {
-        cfg.perturbAmp = clamp(0.58 + 0.18 * turbulence, 0.50, 0.84);
-        cfg.atmosphereTau = 0.24;
+        cfg.perturbAmp = clamp(0.62 + 0.20 * turbulence, 0.54, 0.88);
+        cfg.atmosphereTau = 0.30;
         cfg.coronaStrength = 0.055;
-        cfg.beamingStrength = 0.30;
-        cfg.innerBoost = 0.78;
+        cfg.beamingStrength = 0.34;
+        cfg.innerBoost = 0.84;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
-        cfg.perturbAmp = clamp(0.32 + 0.14 * turbulence, 0.24, 0.58);
-        cfg.atmosphereTau = 0.12;
+        cfg.perturbAmp = clamp(0.42 + 0.16 * turbulence, 0.30, 0.68);
+        cfg.atmosphereTau = 0.17;
         cfg.coronaStrength = 0.024;
-        cfg.beamingStrength = 0.12;
-        cfg.innerBoost = 0.36;
+        cfg.beamingStrength = 0.17;
+        cfg.innerBoost = 0.48;
     } else {
         cfg.perturbAmp = 0.0;
         cfg.atmosphereTau = 0.0;
@@ -331,6 +334,103 @@ static inline float comp_thin_optical_depth_density(float rNorm,
     return clamp(mix(1.0, tau * innerDamping, clamp(cfg.perturbAmp * 1.15, 0.0, 1.0)), 0.38, 1.95);
 }
 
+struct ThinSpectralEmission {
+    float3 rgb;
+    float g;
+    float tEmit;
+    float tObserved;
+    float colorDilution;
+};
+
+static inline float comp_frequency_shift_from_record(const CollisionInfo rec,
+                                                     constant Params& P,
+                                                     constant ComposeParams& C)
+{
+    if (C.spectralEncoding == 1u) {
+        return clamp(rec.v_disk.x, 1e-4, 1e4);
+    }
+
+    float3 v = rec.v_disk.xyz;
+    float3 d = rec.direct_world.xyz;
+    float vNorm = length(v);
+    float dNorm = length(d);
+    float beta = clamp(vNorm / max(P.c, 1e-12), 0.0, 0.999999);
+    float cosTheta = clamp(dot(v, d) / max(vNorm * dNorm, 1e-30), -1.0, 1.0);
+    float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
+    float delta = 1.0 / max(gamma * (1.0 - beta * cosTheta), 1e-9);
+    float rEmitLegacy = (P.G * P.M) / max(vNorm * vNorm, 1e-30);
+    rEmitLegacy = max(rEmitLegacy, P.rs * 1.0001);
+    float rObs = max(length(P.camPos), 1.0001 * P.rs);
+    float gravNum = clamp(1.0 - P.rs / rEmitLegacy, 1e-8, 1.0);
+    float gravDen = clamp(1.0 - P.rs / rObs, 1e-8, 1.0);
+    float gGr = sqrt(clamp(gravNum / gravDen, 1e-8, 4.0));
+    return clamp(delta * gGr, 1e-4, 1e4);
+}
+
+static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionInfo rec,
+                                                               constant Params& P,
+                                                               constant ComposeParams& C)
+{
+    ThinSpectralEmission e;
+    e.g = comp_frequency_shift_from_record(rec, P, C);
+    e.tEmit = max(rec.T, 1.0);
+    if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
+        float rNorm = comp_emit_radius_norm(rec, P);
+        float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
+        float ntT = thin_teff(rNorm, P) * fCol;
+        if (ntT > 1.0 && isfinite(ntT)) {
+            e.tEmit = ntT;
+        }
+    }
+    e.tObserved = max(e.tEmit * e.g, 1.0);
+    e.colorDilution = 1.0;
+    if (FC_PHYSICS_MODE == 2u) {
+        float fCol = max(P.diskColorFactor, 1.0);
+        e.colorDilution = 1.0 / pow(fCol, 4.0);
+    }
+
+    float X = 0.0;
+    float Y = 0.0;
+    float Z = 0.0;
+    float cX = 0.0;
+    float cY = 0.0;
+    float cZ = 0.0;
+    bool kahan = (C.precisionMode != 0u);
+    float step = max(C.spectralStep, 0.25);
+    for (float lam = 380.0; lam <= 750.001; lam += step) {
+        float lamM = lam * 1e-9;
+        float xBar, yBar, zBar;
+        comp_cie_xyz_bar(lam, xBar, yBar, zBar);
+        float b = comp_planck_lambda(lamM, e.tObserved) * e.colorDilution;
+        if (kahan) {
+            float yx = b * xBar - cX;
+            float tx = X + yx;
+            cX = (tx - X) - yx;
+            X = tx;
+
+            float yy = b * yBar - cY;
+            float ty = Y + yy;
+            cY = (ty - Y) - yy;
+            Y = ty;
+
+            float yz = b * zBar - cZ;
+            float tz = Z + yz;
+            cZ = (tz - Z) - yz;
+            Z = tz;
+        } else {
+            X += b * xBar;
+            Y += b * yBar;
+            Z += b * zBar;
+        }
+    }
+
+    e.rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    float3 dWorld = rec.direct_world.xyz;
+    float mu = abs(dWorld.z) / max(length(dWorld), 1e-30);
+    e.rgb *= comp_limb_factor(mu, P);
+    return e;
+}
+
 static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
                                                              const CollisionInfo rec,
                                                              constant Params& P,
@@ -341,7 +441,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     ThinHybridRealismSample s;
     s.rNorm = comp_emit_radius_norm(rec, P);
     s.phi = comp_emit_phi(rec);
-    s.g = clamp(rec.v_disk.x, 0.05, 6.0);
+    s.g = clamp(comp_frequency_shift_from_record(rec, P, C), 0.05, 6.0);
 
     float rInNorm = max(disk_inner_radius_m(P) / max(P.rs, 1e-6), 1.0001);
     float rSpan = max(P.re / max(P.rs, 1e-6) - rInNorm, 1e-4);
@@ -355,11 +455,25 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
     float density = comp_thin_optical_depth_density(s.rNorm, rInNorm, s.phi, s.perturb, cloudNorm, P, cfg);
     density *= clamp(1.0 + cfg.perturbAmp * (0.78 * (s.perturb - 0.5) + 0.22 * (cloudNorm - 0.5)), 0.58, 1.62);
     density = clamp(density, 0.34, 2.15);
+    s.density = density;
+
+    float tempContrast = cfg.perturbAmp * (0.30 * (s.perturb - 0.5)
+                         + 0.14 * (cloudNorm - 0.5)
+                         + 0.11 * (density - 1.0));
+    float tempShift = clamp(1.0 + tempContrast, 0.86, 1.18);
+    float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
+    s.observedTemp = max(thin_teff(s.rNorm, P) * fCol * s.g * tempShift, 1.0);
+    float tempLum = pow(tempShift, 4.0);
+    float hot = clamp((tempShift - 1.0) / 0.18, 0.0, 1.0);
+    float cold = clamp((1.0 - tempShift) / 0.14, 0.0, 1.0);
+    float3 tempTint = float3(1.0 - 0.055 * hot + 0.035 * cold,
+                             1.0 + 0.018 * hot,
+                             1.0 + 0.105 * hot - 0.050 * cold);
 
     float edgeGate = smoothstep(rInNorm * 1.004, rInNorm * 1.045, s.rNorm);
     float radialLum = (0.62 + cfg.innerBoost * s.innerWeight) * (0.42 + 0.78 * s.emissivity);
     s.beaming = clamp(pow(s.g, cfg.beamingStrength), 0.46, 1.86);
-    s.photosphere = rgb * density * radialLum * s.beaming * s.outerFade * edgeGate;
+    s.photosphere = rgb * tempTint * tempLum * density * radialLum * s.beaming * s.outerFade * edgeGate;
 
     float3 d = rec.direct_world.xyz;
     float mu = abs(d.z) / max(length(d), 1e-30);
@@ -368,6 +482,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(float3 rgb,
               * (0.55 + 0.45 * density)
               / max(mu, 0.22);
     tau = clamp(tau, 0.0, 1.35);
+    s.opticalDepth = tau;
     float trans = exp(-tau);
     float absorbed = 1.0 - trans;
     float3 warmSource = s.photosphere * cfg.atmosphereTint * (0.28 + 0.42 * s.perturb);
@@ -401,6 +516,12 @@ static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
     if (C.analysisMode == 35u) return s.atmosphere * 3.0;
     if (C.analysisMode == 36u) return s.corona * 8.0;
     if (C.analysisMode == 37u) return float3(s.perturb);
+    if (C.analysisMode == 39u) {
+        float lt = log(max(s.observedTemp, 1.0)) * 0.4342944819032518;
+        return comp_debug_ramp(clamp((lt - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0));
+    }
+    if (C.analysisMode == 40u) return comp_debug_ramp(clamp(s.opticalDepth / 1.35, 0.0, 1.0));
+    if (C.analysisMode == 41u) return comp_debug_ramp(clamp((s.density - 0.34) / max(2.15 - 0.34, 1e-6), 0.0, 1.0));
     float lum = dot(s.finalRgb, float3(0.2126, 0.7152, 0.0722)); // pre-tone HDR luminance
     float t = clamp((log(max(lum, 1e-30)) * 0.4342944819032518 - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
     return comp_debug_ramp(t);
@@ -552,89 +673,13 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         return float3(iNu);
     }
 
-    float g_total = 1.0;
-    if (C.spectralEncoding == 1u) {
-        g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
-    } else {
-        float3 v = rec.v_disk.xyz;
-        float3 d = rec.direct_world.xyz;
-        float v_norm = length(v);
-        float d_norm = length(d);
-        float dot_vd = dot(v, d);
-        float beta = clamp(v_norm / max(P.c, 1e-12), 0.0, 0.999999);
-        float cos_theta = clamp(dot_vd / max(v_norm * d_norm, 1e-30), -1.0, 1.0);
-        float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 1e-12));
-        float delta = 1.0 / max(gamma * (1.0 - beta * cos_theta), 1e-9);
-        float r_emit_legacy = (P.G * P.M) / max(v_norm * v_norm, 1e-30);
-        r_emit_legacy = max(r_emit_legacy, P.rs * 1.0001);
-        float r_obs = max(length(P.camPos), 1.0001 * P.rs);
-        float grav_num = clamp(1.0 - P.rs / r_emit_legacy, 1e-8, 1.0);
-        float grav_den = clamp(1.0 - P.rs / r_obs, 1e-8, 1.0);
-        float g_gr = sqrt(clamp(grav_num / grav_den, 1e-8, 4.0));
-        g_total = clamp(delta * g_gr, 1e-4, 1e4);
-    }
-
-    float T_emit = max(rec.T, 1.0);
-    if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
-        float rNorm = comp_emit_radius_norm(rec, P);
-        float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.42) : max(P.diskColorFactor, 1.0);
-        float ntT = thin_teff(rNorm, P) * fCol;
-        if (ntT > 1.0 && isfinite(ntT)) {
-            T_emit = ntT;
-        }
-    }
-    float T_obs = max(T_emit * g_total, 1.0);
-    float colorDilution = 1.0;
-    if (FC_PHYSICS_MODE == 2u) {
-        float fCol = max(P.diskColorFactor, 1.0);
-        colorDilution = 1.0 / pow(fCol, 4.0);
-    }
-
-    float X = 0.0;
-    float Y = 0.0;
-    float Z = 0.0;
-    float cX = 0.0;
-    float cY = 0.0;
-    float cZ = 0.0;
-    bool kahan = (C.precisionMode != 0u);
-    float step = max(C.spectralStep, 0.25);
-    for (float lam = 380.0; lam <= 750.001; lam += step) {
-        float lam_m = lam * 1e-9;
-        float x_bar, y_bar, z_bar;
-        comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
-        float b = comp_planck_lambda(lam_m, T_obs) * colorDilution;
-        if (kahan) {
-            float yx = b * x_bar - cX;
-            float tx = X + yx;
-            cX = (tx - X) - yx;
-            X = tx;
-
-            float yy = b * y_bar - cY;
-            float ty = Y + yy;
-            cY = (ty - Y) - yy;
-            Y = ty;
-
-            float yz = b * z_bar - cZ;
-            float tz = Z + yz;
-            cZ = (tz - Z) - yz;
-            Z = tz;
-        } else {
-            X += b * x_bar;
-            Y += b * y_bar;
-            Z += b * z_bar;
-        }
-    }
-
-    float3 rgb = comp_xyz_to_rgb(float3(X, Y, Z));
+    ThinSpectralEmission thin = comp_thin_spectral_emission(rec, P, C);
+    float3 rgb = thin.rgb;
     if (P.diskVolumeMode != 0u && FC_PHYSICS_MODE == 2u) {
         float volAmp = clamp(rec.v_disk.w, 0.0, 1.0);
         rgb *= (0.65 + 2.80 * volAmp);
     }
 
-    float3 d_world = rec.direct_world.xyz;
-    float mu = abs(d_world.z) / max(length(d_world), 1e-30);
-    float limb = comp_limb_factor(mu, P);
-    rgb *= limb;
     if (C.spectralEncoding == 1u && FC_PHYSICS_MODE == 1u) {
         float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
         float rIn = disk_inner_radius_m(P);
@@ -1001,6 +1046,21 @@ static inline float3 comp_apply_camera_color_pipeline(float3 rgbTm,
                                                       constant ComposeParams& C)
 {
     uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u));
+    if (profile == 0u && C.cameraModel == 3u) {
+        float3 out = clamp(rgbTm, 0.0, 1.0);
+        float y = dot(out, float3(0.2126, 0.7152, 0.0722));
+        // Human-eye presentation: approximate mesopic desaturation in dark regions
+        // and mild cone bleaching for very bright highlights. This is a display
+        // transform only; it does not alter the physical radiance buffer.
+        float mesopic = smoothstep(0.018, 0.20, y);
+        float bleach = smoothstep(0.72, 1.0, y);
+        float saturation = mix(0.42, 1.0, mesopic) * mix(1.0, 0.78, bleach);
+        float gray = y;
+        out = mix(float3(gray), out, saturation);
+        float3 bleachedWhite = float3(y);
+        out = mix(out, bleachedWhite, 0.12 * bleach);
+        return clamp(out, 0.0, 1.0);
+    }
     if (profile == 0u) return rgbTm;
 
     float3 out = clamp(comp_mul_rows(clamp(rgbTm, 0.0, 1.0), C.cameraDisplayR, C.cameraDisplayG, C.cameraDisplayB), 0.0, 1.0);

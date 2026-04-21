@@ -214,6 +214,8 @@ private enum CameraCalibrationFactory {
 
 struct VisualSettings {
     let composeDitherArg: Float
+    let presentationModeName: String
+    let presentationModeID: UInt32
     let cameraModelName: String
     let cameraModelID: UInt32
     let cameraProfileName: String
@@ -284,7 +286,36 @@ enum ParamsBuilderVisual {
         }()
         let composeDitherArg = Float(doubleArg("--dither", default: composeDitherDefault))
 
+        let presentationModeRaw = stringArg("--presentation-mode", default: {
+            if composeLookID == 6 { return "eye" }
+            return "legacy"
+        }()).lowercased()
+        let presentationModeName: String
+        let presentationModeID: UInt32
+        switch presentationModeRaw {
+        case "legacy", "auto", "off":
+            presentationModeName = "legacy"
+            presentationModeID = 0
+        case "scientific", "science", "master":
+            presentationModeName = "scientific"
+            presentationModeID = 1
+        case "eye", "human", "experience", "observational":
+            presentationModeName = "eye"
+            presentationModeID = 2
+        case "cinema", "cinematic", "camera":
+            presentationModeName = "cinema"
+            presentationModeID = 3
+        default:
+            fail("invalid --presentation-mode \(presentationModeRaw). use one of: legacy, scientific, eye, cinema")
+        }
+
         let cameraModelName = stringArg("--camera-model", default: {
+            switch presentationModeID {
+            case 1: return "legacy"
+            case 2: return "eye"
+            case 3: return "cinematic"
+            default: break
+            }
             if composeLookID == 6 { return "scientific" }
             return (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? "scientific" : "legacy"
         }()).lowercased()
@@ -296,11 +327,19 @@ enum ParamsBuilderVisual {
             cameraModelID = 1
         case "cinematic", "cinema":
             cameraModelID = 2
+        case "eye", "human", "vision":
+            cameraModelID = 3
         default:
-            fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic")
+            fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic, eye")
         }
 
         let cameraProfileName = stringArg("--camera-profile", default: {
+            switch presentationModeID {
+            case 1: return "ideal"
+            case 2: return "ideal"
+            case 3: return "cinema-digital"
+            default: break
+            }
             if composeLookID == 6 { return "scientific" }
             switch cameraModelID {
             case 1: return "scientific"
@@ -328,6 +367,12 @@ enum ParamsBuilderVisual {
         }
 
         let realismProfileName = stringArg("--realism-profile", default: {
+            switch presentationModeID {
+            case 1: return "physical"
+            case 2: return "observational"
+            case 3: return "cinematic"
+            default: break
+            }
             if composeLookID == 6 { return "physical" }
             return "off"
         }()).lowercased()
@@ -415,6 +460,11 @@ enum ParamsBuilderVisual {
                     fail("invalid --bg-stars \(backgroundStarsRawArg). use on|off")
                 }
             }
+            switch presentationModeID {
+            case 1: return "off"
+            case 2, 3: return "stars"
+            default: break
+            }
             return (cameraModelID == 2 || composeLookID == 6) ? "stars" : "off"
         }()
         let backgroundModeID: UInt32
@@ -492,8 +542,14 @@ enum ParamsBuilderVisual {
             realismDebugID = 37
         case "hdr", "pretonemap", "pre-tone", "pre-tone-map":
             realismDebugID = 38
+        case "temperature", "temp", "teff", "observed-temperature":
+            realismDebugID = 39
+        case "tau", "optical-depth", "opticaldepth":
+            realismDebugID = 40
+        case "density", "rho":
+            realismDebugID = 41
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density")
         }
         if realismDebugID != 0 && composeLookID != 6 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
@@ -529,6 +585,8 @@ enum ParamsBuilderVisual {
 
         return VisualSettings(
             composeDitherArg: composeDitherArg,
+            presentationModeName: presentationModeName,
+            presentationModeID: presentationModeID,
             cameraModelName: cameraModelName,
             cameraModelID: cameraModelID,
             cameraProfileName: cameraCalibration.profileName,

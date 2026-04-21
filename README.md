@@ -75,10 +75,16 @@ Notes:
 
 More natural observational profile:
 ```bash
-./run_pipeline.sh --width 1200 --height 1200 --preset realistic --output blackhole_realistic.png
+./run_pipeline.sh --width 1200 --height 1200 --preset realistic --presentation-mode eye --output blackhole_realistic.png
 ```
 
-The `realistic` preset keeps the existing geodesic/lensing path scientific by default:
+Presentation modes separate physical transport from display intent:
+- `--presentation-mode scientific` is the scientific-master/diagnostic presentation: no sensor model, no flare, no background by default.
+- `--presentation-mode eye` is the recommended human-experience presentation for `--preset realistic`: no camera sensor noise/flare by default, observational thin-disk presentation, restrained human-vision color adaptation, and background context.
+- `--presentation-mode cinema` enables stronger camera/cinematic presentation defaults.
+- `--scientific-master-out master.linear32f32` keeps an HDR32 scientific-master intermediate and defaults presentation to `scientific`.
+
+The `realistic` preset keeps the existing geodesic/lensing path scientific while changing only presentation defaults:
 - `--realism-profile physical` uses an NT-like thin-disk color-temperature backbone without extra artistic beaming, atmosphere, or corona.
 - `--realism-profile observational` enables modest disk-space perturbation/atmosphere/corona approximations for visual exploration.
 - `--realism-profile cinematic` is the stronger look-development profile, not the strict science baseline.
@@ -93,6 +99,9 @@ Realism debug maps:
 ./run_pipeline.sh --preset realistic --realism-debug emissivity --output debug_emissivity.png
 ./run_pipeline.sh --preset realistic --realism-debug beaming --output debug_beaming.png
 ./run_pipeline.sh --preset realistic --realism-debug perturbation --output debug_perturbation.png
+./run_pipeline.sh --preset realistic --realism-debug temperature --output debug_temperature.png
+./run_pipeline.sh --preset realistic --realism-debug tau --output debug_tau.png
+./run_pipeline.sh --preset realistic --realism-debug density --output debug_density.png
 ```
 
 Debug values:
@@ -102,6 +111,9 @@ Debug values:
 - `photosphere`, `atmosphere`, `corona`: component-only contributions.
 - `perturbation`: disk-coordinate turbulence/shear field.
 - `hdr`: pre-tone-map HDR luminance map.
+- `temperature`: observed thin-disk color-temperature proxy after g-factor and disk-space variation.
+- `tau`: thin-atmosphere optical-depth proxy.
+- `density`: disk-space density/opacity modulation proxy.
 - `--camera-profile {ideal|scientific|cinema-digital|full-frame}`: post-render camera/lens/sensor response profile.
 - `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json` or `docs/camera_profiles/imx455_full_frame_astro_like.json`.
 - Direct response keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.

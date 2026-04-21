@@ -174,6 +174,8 @@ struct ResolvedRenderConfig {
     var composeExposure: Float = 0.0
     var preserveHighlightColor: UInt32 = 0
 
+    var presentationModeName: String = "legacy"
+    var presentationModeID: UInt32 = 0
     var cameraModelName: String = "legacy"
     var cameraModelID: UInt32 = 0
     var composeCameraModelID: UInt32 = 0

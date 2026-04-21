@@ -335,6 +335,8 @@ enum ParamsBuilder {
     let composeExposureBase = visualSettings.composeExposureBase
     let spectralEncodingID = visualSettings.spectralEncodingID
     let composeExposure = visualSettings.composeExposure
+    let presentationModeName = visualSettings.presentationModeName
+    let presentationModeID = visualSettings.presentationModeID
     let preserveHighlightColor: UInt32 = (diskPhysicsModeID == 3 && visibleModeEnabled && composeAnalysisMode == 0) ? 1 : 0
     let useLinear32Intermediate = visualSettings.useLinear32Intermediate
     let diskModelResolution = ParamsBuilderPolicy.resolveDiskModel(
@@ -518,6 +520,8 @@ enum ParamsBuilder {
         config.composeExposureBase = composeExposureBase
         config.composeExposure = composeExposure
         config.preserveHighlightColor = preserveHighlightColor
+        config.presentationModeName = presentationModeName
+        config.presentationModeID = presentationModeID
         config.cameraModelName = cameraModelName
         config.cameraModelID = cameraModelID
         config.composeCameraModelID = composeCameraModelID
@@ -707,6 +711,7 @@ enum ParamsBuilder {
             rayBundleJacobianActive: rayBundleJacobianActive,
             rayBundleJacobianStrengthArg: rayBundleJacobianStrengthArg,
             rayBundleFootprintClampArg: rayBundleFootprintClampArg,
+            presentationModeName: presentationModeName,
             cameraModelName: cameraModelName,
             cameraProfileName: cameraProfileName,
             realismProfileName: realismProfileName,

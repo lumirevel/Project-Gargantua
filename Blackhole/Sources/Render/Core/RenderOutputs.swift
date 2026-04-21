@@ -106,6 +106,7 @@ struct RenderMeta: Codable {
     var outputHeight: Int
     var exposure: Double
     var look: String
+    var presentationMode: String
     var cameraModel: String
     var cameraProfile: String
     var cameraProfileJSON: String
@@ -267,6 +268,7 @@ enum RenderOutputs {
             outputHeight: outHeight,
             exposure: Double(composeExposure),
             look: config.composeLook,
+            presentationMode: config.presentationModeName,
             cameraModel: config.cameraModelName,
             cameraProfile: config.cameraProfileName,
             cameraProfileJSON: config.cameraProfileJSONPath,
