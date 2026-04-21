@@ -308,58 +308,90 @@ static inline float comp_thin_outer_flux_taper(float rNorm, constant Params& P) 
     return 1.0 - smoothstep(0.80, 1.00, u);
 }
 
+struct ThinMRIShearingField {
+    float perturb;
+    float filament;
+    float zonal;
+    float channel;
+    float densityContrast;
+};
+
+static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
+                                                               float rInNorm,
+                                                               float phi,
+                                                               float cloudNorm,
+                                                               constant Params& P,
+                                                               ThinHybridRealismConfig cfg)
+{
+    ThinMRIShearingField f;
+    float rr = max(rNorm, rInNorm + 1e-4);
+    float dr = max(rr - rInNorm, 0.0);
+    float rs = max(P.rs, 1e-6);
+    float timeRs = P.c * P.diskFlowTime / rs;
+    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
+    float shear = phi - omega * timeRs;
+    float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
+
+    // Shearing-box-inspired coordinates: azimuthal structures are stretched by
+    // differential rotation, while radial coherence scales with H/r. This is a
+    // constrained turbulence model, not a solved MHD simulation.
+    float hOverR = clamp(P.he / max(rr * rs, 1e-6), 0.003, 0.12);
+    float radialCoherence = clamp(0.20 / hOverR, 2.5, 32.0);
+    float innerActivity = smoothstep(0.15, 2.2, dr) * (1.0 - smoothstep(46.0, 96.0, rr));
+    float innerGain = 0.76 + 0.42 * (1.0 - smoothstep(4.0, 15.0, dr));
+
+    float channel2 = sin(2.0 * shear + 5.2 * logR + 0.24 * sin(0.37 * rr));
+    float channel3 = sin(3.0 * (phi - 1.55 * omega * timeRs) + 8.8 * logR + 0.35 * channel2);
+    float channel5 = sin(5.0 * (phi - 2.15 * omega * timeRs) + 14.0 * logR + 0.13 * rr);
+    f.channel = 0.48 * channel2 + 0.32 * channel3 + 0.20 * channel5;
+
+    float zonalPhase = radialCoherence * logR + 0.035 * timeRs + 0.18 * sin(2.0 * shear);
+    f.zonal = sin(zonalPhase);
+
+    float3 streakCoord = float3(0.35 * radialCoherence * logR,
+                                2.4 * shear + 0.9 * logR,
+                                0.018 * timeRs);
+    float3 eddyCoord = float3(1.25 * radialCoherence * logR,
+                              8.0 * (phi - 2.4 * omega * timeRs) + 0.31 * rr,
+                              0.062 * timeRs);
+    float streakNoise = fbm(streakCoord);
+    float eddyNoise = fbm(eddyCoord);
+    float ridge = 1.0 - abs(2.0 * streakNoise - 1.0);
+    f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddyNoise);
+
+    float cloudCentered = cloudNorm - 0.5;
+    float raw = 0.42 * f.channel
+              + 0.24 * f.zonal
+              + 0.28 * (f.filament - 0.5)
+              + 0.16 * (eddyNoise - 0.5)
+              + 0.10 * cloudCentered;
+    f.densityContrast = clamp(raw * innerGain * innerActivity, -1.0, 1.0);
+
+    float amp = clamp(cfg.perturbAmp, 0.0, 1.0);
+    f.perturb = clamp(0.5 + 0.5 * amp * f.densityContrast, 0.0, 1.0);
+    return f;
+}
+
 static inline float comp_thin_shear_perturb(float rNorm,
                                             float phi,
                                             constant Params& P,
                                             ThinHybridRealismConfig cfg)
 {
-    float rr = max(rNorm, 1.0001);
-    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
-    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
-    float shear = phi - omega * timeRs;
-    float shearFast = phi - 1.92 * omega * timeRs;
-
-    float radialPhase = 0.41 * rr + 0.95 * sin(0.18 * rr);
-    float m2 = cos(2.0 * shear + radialPhase);
-    float m5 = cos(5.0 * shearFast + 1.65 * sin(0.23 * rr));
-    float m11 = cos(11.0 * (phi - 2.75 * omega * timeRs) + 0.19 * rr);
-
-    float waveZone = smoothstep(6.0, 16.0, rr) * (1.0 - smoothstep(42.0, 85.0, rr));
-    float densityWave = sin(23.0 * pow(max(rr - 1.0, 0.0), 0.58) - 2.0 * phi + 0.09 * timeRs);
-    float spiral = 0.42 * m2 + 0.28 * m5 + 0.13 * m11 + 0.17 * waveZone * densityWave;
-
-    float filament = fbm(float3(0.040 * rr, 2.20 * shear, 0.026 * timeRs));
-    float fine = fbm(float3(0.22 * rr, 6.5 * shearFast + 0.8 * sin(0.31 * rr), 0.071 * timeRs));
-    float p = 0.5 + 0.5 * clamp(0.70 * spiral + 0.34 * (filament - 0.5) + 0.20 * (fine - 0.5), -1.0, 1.0);
-    float innerGain = 1.0 + cfg.perturbAmp * (1.0 - smoothstep(3.5, 9.0, rr));
-    return clamp(0.5 + (p - 0.5) * innerGain, 0.0, 1.0);
+    float rInNorm = max(disk_inner_radius_m(P) / max(P.rs, 1e-6), 1.0001);
+    ThinMRIShearingField f = comp_thin_mri_shearing_field(rNorm, rInNorm, phi, 0.5, P, cfg);
+    return f.perturb;
 }
 
 static inline float comp_thin_optical_depth_density(float rNorm,
                                                     float rInNorm,
-                                                    float phi,
                                                     float perturb,
                                                     float cloudNorm,
-                                                    constant Params& P,
                                                     ThinHybridRealismConfig cfg)
 {
     float rr = max(rNorm, 1.0001);
-    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
-    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
-    float shear = phi - omega * timeRs;
-
     float dr = max(rr - rInNorm, 0.0);
-    float ringPhase = 31.0 * pow(dr + 0.15, 0.54) - 2.0 * phi + 0.065 * timeRs;
-    float ringEnvelope = smoothstep(0.8, 4.0, dr) * (1.0 - smoothstep(42.0, 90.0, rr));
-    float ringWave = ringEnvelope * sin(ringPhase);
-
-    float filament = fbm(float3(0.030 * rr, 2.75 * shear, 0.022 * timeRs));
-    float fine = fbm(float3(0.18 * rr, 8.0 * shear + 0.28 * rr, 0.067 * timeRs));
-    float contrast = 0.68 * (perturb - 0.5)
-                   + 0.23 * (cloudNorm - 0.5)
-                   + 0.26 * (filament - 0.5)
-                   + 0.12 * (fine - 0.5)
-                   + 0.20 * ringWave;
+    float contrast = 0.82 * (2.0 * perturb - 1.0)
+                   + 0.24 * (cloudNorm - 0.5);
 
     float sigma = 0.30 + 0.62 * cfg.perturbAmp;
     float tau = exp(clamp(sigma * contrast - 0.5 * sigma * sigma, -0.80, 0.82));
@@ -405,37 +437,20 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     ThinDiskStructureSample m;
     float rr = max(rNorm, 1.0001);
     float dr = max(rr - rInNorm, 0.0);
-    float timeRs = P.c * P.diskFlowTime / max(P.rs, 1e-6);
-    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
-    float shear = phi - omega * timeRs;
-    float shearFast = phi - 2.35 * omega * timeRs;
-    float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
-
-    float spiralA = sin(2.0 * shear + 4.8 * logR + 0.23 * sin(0.21 * rr));
-    float spiralB = sin(5.0 * shearFast + 8.5 * logR + 1.1 * sin(0.17 * rr));
-    float zonal = sin(19.0 * logR - 0.70 * phi + 0.055 * timeRs + 0.35 * spiralA);
-    float filamentNoise = fbm(float3(0.055 * rr, 2.65 * shear + 0.72 * logR, 0.031 * timeRs));
-    float knotNoise = fbm(float3(0.22 * rr, 9.0 * shearFast + 0.32 * rr, 0.083 * timeRs));
-
-    float wake = 0.48 * spiralA + 0.30 * spiralB + 0.22 * zonal;
-    float filamentField = clamp(0.5 + 0.5 * (0.70 * wake
-                         + 0.45 * (filamentNoise - 0.5)
-                         + 0.22 * (knotNoise - 0.5)), 0.0, 1.0);
-    m.filament = smoothstep(0.46, 0.88, filamentField);
-
-    float basePerturb = comp_thin_shear_perturb(rr, phi, P, cfg);
-    m.perturb = clamp(mix(basePerturb, filamentField, 0.42), 0.0, 1.0);
+    ThinMRIShearingField mri = comp_thin_mri_shearing_field(rr, rInNorm, phi, cloudNorm, P, cfg);
+    m.filament = mri.filament;
+    m.perturb = mri.perturb;
 
     float radialTau = comp_thin_alpha_opacity_proxy(rr, rInNorm, P);
     m.radialTau = radialTau;
-    float densityBase = comp_thin_optical_depth_density(rr, rInNorm, phi, m.perturb, cloudNorm, P, cfg);
+    float densityBase = comp_thin_optical_depth_density(rr, rInNorm, m.perturb, cloudNorm, cfg);
     float cloudCentered = cloudNorm - 0.5;
     float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
-    float contrast = 0.48 * (m.perturb - 0.5)
+    float contrast = 0.52 * mri.densityContrast
                    + 0.22 * cloudCentered
                    + 0.30 * (m.filament - 0.5)
-                   + 0.14 * zonal
-                   + 0.11 * innerTaper * spiralB;
+                   + 0.12 * mri.zonal
+                   + 0.10 * innerTaper * mri.channel;
     float sigma = 0.18 + 0.42 * cfg.perturbAmp;
     float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
     float turbulentDensity = densityBase * exp(logDensity);
@@ -448,7 +463,7 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
                          + 0.13 * (m.filament - 0.5)
                          + 0.08 * cloudCentered
                          + 0.06 * (m.density - 1.0)
-                         + 0.05 * innerTaper * spiralA);
+                         + 0.05 * innerTaper * mri.channel);
     m.tempShift = clamp(exp(tempContrast), 0.84, 1.22);
     m.opacity = clamp(radialTau * m.density
                     * (0.82 + 0.30 * m.filament)
