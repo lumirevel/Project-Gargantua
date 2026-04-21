@@ -200,7 +200,7 @@ python3 Blackhole/scripts/export_stage3_bridge.py --input collisions.bin --csv c
 Disk model selector:
 - `--disk-model flow`: force streamline flow disk
 - `--disk-model procedural`: legacy alias for `flow`
-- `--disk-model perlin`: force classic Perlin texture disk (pre-streamline style)
+- `--disk-model perlin`: legacy alias for `perlin-ec7` Perlin texture disk (pre-streamline style)
 - `--disk-model atlas`: force atlas disk (`--disk-atlas` required, non-precision render path)
 - `--disk-model auto`: default. non-precision에서는 atlas 입력이 있으면 atlas를 쓰고, precision에서는 flow로 렌더
 - `--disk-model` (형성 방식)과 `--disk-mode` (물리 모드)는 분리되어 동작

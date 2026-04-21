@@ -323,7 +323,7 @@ canonical_disk_model() {
       printf 'flow'
       ;;
     perlin)
-      printf 'perlin'
+      printf 'perlin-ec7'
       ;;
     perlin-classic|perlin-f552)
       printf 'perlin-classic'

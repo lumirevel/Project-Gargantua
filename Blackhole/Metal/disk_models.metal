@@ -709,8 +709,8 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
         fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
 
         float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
-        float edgeIn = smoothstep(0.00, 0.11, u);
-        float edgeOut = 1.0 - smoothstep(0.82, 1.00, u);
+        float edgeIn = smoothstep(0.01, 0.08, u);
+        float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
         float radialFade = edgeIn * edgeOut;
         float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
         return 0.5 + 0.5 * n;
@@ -743,8 +743,8 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
     float field = mix(coarse, filaments, 0.16);
 
     float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
-    float edgeIn = smoothstep(0.00, 0.12, u);
-    float edgeOut = 1.0 - smoothstep(0.84, 1.00, u);
+    float edgeIn = smoothstep(0.01, 0.08, u);
+    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
     float radialFade = edgeIn * edgeOut;
 
     float centered = 2.0 * field - 1.0;
@@ -782,7 +782,7 @@ static inline float disk_precision_texture_factor(float dxy, float phi, float z,
     float centered = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
     float rsSafe = max(P.rs, 1e-6);
     float rr = dxy / rsSafe;
-    float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(12.0, 22.0, rr));
+    float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(10.0, 18.0, rr));
     float vertical = exp(-abs(z) / max(1.5 * P.he, 1e-6));
     float phaseWave = sin(7.0 * phi + 0.55 * log(max(rr, 1.0)));
     float micro = 0.72 * centered + 0.28 * phaseWave;

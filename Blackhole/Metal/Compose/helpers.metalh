@@ -581,7 +581,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float rSpan = max(P.re / max(P.rs, 1e-6) - rInNorm, 1e-4);
     float uOuter = clamp((s.rNorm - rInNorm) / rSpan, 0.0, 1.0);
     s.outerFade = 1.0 - smoothstep(cfg.outerFadeStart, cfg.outerFadeEnd, uOuter);
-    s.emissivity = comp_thin_nt_emissivity_norm(s.rNorm, P);
+    s.emissivity = comp_thin_nt_emissivity_norm(s.rNorm, P) * comp_thin_outer_flux_taper(s.rNorm, P);
     s.innerWeight = exp(-pow(max((s.rNorm - rInNorm) / 3.2, 0.0), 0.82));
 
     float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
