@@ -158,8 +158,10 @@ enum ParamsBuilderPolicy {
             visibleTeffModelID = 1
         case "nt", "novikov-thorne", "novikov_thorne", "a3":
             visibleTeffModelID = 2
+        case "grmhd-hybrid", "grmhd", "state", "state-driven":
+            visibleTeffModelID = 3
         default:
-            fail("invalid --teff-model \(visibleTeffModelName). use one of: parametric, thin-disk, nt")
+            fail("invalid --teff-model \(visibleTeffModelName). use one of: parametric, thin-disk, nt, grmhd-hybrid")
         }
 
         let visibleExpressiveMode: Bool
@@ -178,8 +180,10 @@ enum ParamsBuilderPolicy {
             visibleEmissionModelID = 0
         case "synchrotron", "powerlaw", "power-law":
             visibleEmissionModelID = 1
+        case "hybrid", "thermal+synch", "thermal-synch", "blackbody+synchrotron":
+            visibleEmissionModelID = 2
         default:
-            fail("invalid --visible-emission-model \(visibleEmissionModelName). use one of: blackbody, synchrotron")
+            fail("invalid --visible-emission-model \(visibleEmissionModelName). use one of: blackbody, synchrotron, hybrid")
         }
 
         var visibleSynchAlphaArg = initialVisibleSynchAlphaArg
@@ -211,7 +215,7 @@ enum ParamsBuilderPolicy {
             if cliArguments.contains("--disk-precision-texture") {
                 effectiveDiskPrecisionTextureArg = diskPrecisionTextureRawArg
             } else {
-                effectiveDiskPrecisionTextureArg = 0.58
+                effectiveDiskPrecisionTextureArg = 0.55
             }
         } else {
             effectiveDiskPrecisionTextureArg = diskPrecisionTextureRawArg
@@ -238,6 +242,7 @@ enum ParamsBuilderPolicy {
     static func resolveRayBundlePolicy(
         cliArguments: [String],
         diskPhysicsModeID: UInt32,
+        visibleTeffModelID: UInt32,
         visibleModeEnabled: Bool,
         diskGrmhdDebugID: UInt32,
         rayBundleName: String,
@@ -274,11 +279,14 @@ enum ParamsBuilderPolicy {
             FileHandle.standardError.write(Data("warn: --ray-bundle jacobian was overridden by explicit --ray-bundle-jacobian off\n".utf8))
         }
 
-        let rayBundleEligible = (diskPhysicsModeID == 3 && visibleModeEnabled && diskGrmhdDebugID == 0)
+        let rayBundleEligible = (
+            (diskPhysicsModeID == 3 && visibleModeEnabled && diskGrmhdDebugID == 0) ||
+            (diskPhysicsModeID == 0 && visibleTeffModelID == 3 && diskGrmhdDebugID == 0)
+        )
         let rayBundleActive = rayBundleEnabled && rayBundleEligible
         let rayBundleJacobianActive = rayBundleActive && rayBundleJacobianEnabled
         if rayBundleEnabled && !rayBundleEligible {
-            FileHandle.standardError.write(Data("warn: --ray-bundle is currently applied only for grmhd visible mode (--disk-mode grmhd --visible-mode on --disk-grmhd-debug off); falling back to single-ray path\n".utf8))
+            FileHandle.standardError.write(Data("warn: --ray-bundle is currently applied only for grmhd visible mode or thin-disk-visible-reference; falling back to single-ray path\n".utf8))
         }
 
         return RayBundlePolicyResolution(
@@ -292,6 +300,7 @@ enum ParamsBuilderPolicy {
     static func resolveComposePolicy(
         diskPhysicsModeID: UInt32,
         diskPrecisionCloudsEnabled: Bool,
+        precisionVolumeEnabled: Bool,
         diskGrmhdDebugID: UInt32,
         cameraModelID: UInt32,
         cameraPsfSigmaArg: Float,
@@ -300,6 +309,10 @@ enum ParamsBuilderPolicy {
         cameraFlareStrengthArg: Float
     ) -> ComposePolicyResolution {
         let composeAnalysisMode: UInt32 = {
+            if diskPhysicsModeID == 2 && precisionVolumeEnabled && diskGrmhdDebugID != 0 {
+                return 10 + diskGrmhdDebugID
+            }
+            if diskPhysicsModeID == 2 && precisionVolumeEnabled { return 0 }
             if diskPhysicsModeID == 2 { return diskPrecisionCloudsEnabled ? 2 : 1 }
             if diskPhysicsModeID == 3 && diskGrmhdDebugID != 0 { return 10 + diskGrmhdDebugID }
             return 0
@@ -344,11 +357,101 @@ enum ParamsBuilderPolicy {
             diskGrmhdDebugID = 8
         case "pol", "polarization", "polfrac":
             diskGrmhdDebugID = 9
+        case "thetae", "electron-temperature", "te":
+            diskGrmhdDebugID = 10
+        case "sigma", "magnetization", "magnetization-proxy":
+            diskGrmhdDebugID = 11
+        case "beta-inv", "betainv", "inverse-beta", "plasma-beta-inv":
+            diskGrmhdDebugID = 12
+        case "speed", "fluid-speed", "beta-mag":
+            diskGrmhdDebugID = 13
+        case "gamma", "lorentz", "lorentz-factor":
+            diskGrmhdDebugID = 14
+        case "tau", "optical-depth":
+            diskGrmhdDebugID = 15
+        case "alpha", "absorption", "opacity":
+            diskGrmhdDebugID = 16
+        case "samples", "sample-count", "hit-count", "active-steps":
+            diskGrmhdDebugID = 17
+        case "invalid", "nan", "nan-inf", "invalid-mask":
+            diskGrmhdDebugID = 18
+        case "beaming", "doppler", "g3", "g-cubed":
+            diskGrmhdDebugID = 19
+        case "raw-log", "log-raw", "log-intensity", "log-inu":
+            diskGrmhdDebugID = 20
+        case "post-exposure", "exposed":
+            diskGrmhdDebugID = 21
+        case "post-tonemap", "tone", "tonemap":
+            diskGrmhdDebugID = 22
+        case "source", "source-function", "snu", "j-over-alpha":
+            diskGrmhdDebugID = 23
+        case "tau1", "tau-one", "tau1-r", "photosphere-r", "tau-one-radius":
+            diskGrmhdDebugID = 24
+        case "tau1-depth", "tau-one-depth", "tau1-path", "photosphere-depth":
+            diskGrmhdDebugID = 25
+        case "tau-wide", "optical-depth-wide":
+            diskGrmhdDebugID = 26
+        case "alpha-wide", "opacity-wide", "absorption-wide":
+            diskGrmhdDebugID = 27
+        case "emission-radius", "emission-r", "weighted-radius", "emission-weighted-radius", "r-emission":
+            diskGrmhdDebugID = 28
+        case "bmag", "b-magnitude", "magnetic-field", "magnetic-field-strength":
+            diskGrmhdDebugID = 29
+        case "epsabs", "eps-abs", "epsilon-abs", "thermalization":
+            diskGrmhdDebugID = 30
+        case "abase", "a-base", "alpha-base", "base-opacity":
+            diskGrmhdDebugID = 31
+        case "acool", "a-cool", "alpha-cool", "cool-opacity":
+            diskGrmhdDebugID = 32
+        case "jthermal", "j-thermal", "thermal-emissivity":
+            diskGrmhdDebugID = 33
+        case "jthin", "j-thin", "jsynch", "j-synch", "thin-emissivity", "synch-emissivity":
+            diskGrmhdDebugID = 34
+        case "source-thermal", "thermal-source", "s-thermal":
+            diskGrmhdDebugID = 35
+        case "source-thin", "thin-source", "source-synch", "synch-source", "s-thin":
+            diskGrmhdDebugID = 36
+        case "branch-ratio", "branch", "thin-ratio", "thin-fraction", "kappa-ratio", "kappa-fraction":
+            diskGrmhdDebugID = 37
+        case "thin-weight", "thin-photosphere-weight", "w-thin":
+            diskGrmhdDebugID = 38
+        case "jthermal-weighted", "j-thermal-weighted", "thermal-emissivity-weighted", "jthermal-post":
+            diskGrmhdDebugID = 39
+        case "thermal-alpha-pre", "thermal-tau-pre", "alpha-thermal-pre", "tau-thermal-pre":
+            diskGrmhdDebugID = 40
+        case "thermal-alpha-post", "thermal-tau-post", "alpha-thermal-post", "tau-thermal-post":
+            diskGrmhdDebugID = 41
+        case "corona-weight", "corona-layer-weight", "w-corona":
+            diskGrmhdDebugID = 42
+        case "jthermal-cloud", "j-thermal-cloud", "thermal-cloud-emissivity", "jcloud", "j-cloud":
+            diskGrmhdDebugID = 43
+        case "thermal-cloud-ratio", "cloud-ratio", "thermal-cloud-fraction", "cloud-fraction":
+            diskGrmhdDebugID = 44
+        case "i-thermal", "ithermal", "thermal-contribution", "thermal-intensity":
+            diskGrmhdDebugID = 48
+        case "i-thermal-cloud", "ithermal-cloud", "cloud-contribution", "cloud-intensity":
+            diskGrmhdDebugID = 49
+        case "i-thermal-body", "ithermal-body", "body-contribution", "body-intensity":
+            diskGrmhdDebugID = 50
+        case "emission-layer", "emission-height", "layer":
+            diskGrmhdDebugID = 51
+        case "body-layer-gate", "smooth-body-gate", "layer-gate":
+            diskGrmhdDebugID = 52
+        case "i-thermal-corona", "ithermal-corona", "corona-contribution", "corona-intensity":
+            diskGrmhdDebugID = 53
+        case "body-proxy", "body-source-proxy", "photosphere-proxy":
+            diskGrmhdDebugID = 54
+        case "path", "path-length", "ray-path", "time-delay", "ct":
+            diskGrmhdDebugID = 45
+        case "impact", "impact-parameter", "b-impact", "ray-impact":
+            diskGrmhdDebugID = 46
+        case "flow-residual", "residual", "phi-residual", "data-residual", "texture-residual":
+            diskGrmhdDebugID = 47
         default:
-            fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak, pol")
+            fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak, pol, thetae, sigma, beta-inv, speed, gamma, tau, alpha, samples, invalid, beaming, raw-log, post-exposure, post-tonemap, source, tau1-r, tau1-depth, tau-wide, alpha-wide, emission-radius, bmag, epsabs, abase, acool, jthermal, jthin, source-thermal, source-thin, branch-ratio, thin-weight, jthermal-weighted, thermal-alpha-pre, thermal-alpha-post, corona-weight, jthermal-cloud, thermal-cloud-ratio, ithermal, ithermal-cloud, ithermal-body, ithermal-corona, emission-layer, body-layer-gate, body-proxy, path, impact, flow-residual")
         }
-        if diskPhysicsModeID != 3 && diskGrmhdDebugID != 0 {
-            FileHandle.standardError.write(Data("warn: --disk-grmhd-debug is only active in grmhd mode\n".utf8))
+        if diskPhysicsModeID != 3 && diskPhysicsModeID != 2 && diskGrmhdDebugID != 0 {
+            FileHandle.standardError.write(Data("warn: --disk-grmhd-debug is only active in grmhd mode or precision volume mode\n".utf8))
         }
 
         let diskPolarizedRTEnabled: Bool
@@ -407,8 +510,14 @@ enum ParamsBuilderPolicy {
     static func resolveDiskModel(
         diskModelArg: String,
         diskPhysicsModeID: UInt32,
+        visibleTeffModelID: UInt32,
         diskAtlasPathArg: String
     ) -> DiskModelResolution {
+        let thinVisibleAtlasSource = (
+            diskPhysicsModeID == 0 &&
+            visibleTeffModelID == 3 &&
+            !diskAtlasPathArg.isEmpty
+        )
         var diskModelResolved: String
         switch diskModelArg {
         case "flow", "procedural", "legacy", "noise":
@@ -422,7 +531,9 @@ enum ParamsBuilderPolicy {
         case "atlas":
             diskModelResolved = "atlas"
         case "auto":
-            diskModelResolved = diskAtlasPathArg.isEmpty ? "flow" : "atlas"
+            // In thin-disk-visible-reference, an atlas is a source perturbation
+            // on the analytic ray/disk photosphere, not the disk model itself.
+            diskModelResolved = (diskAtlasPathArg.isEmpty || thinVisibleAtlasSource) ? "flow" : "atlas"
         default:
             fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-classic, perlin-ec7, atlas, auto (alias: procedural)")
         }
@@ -435,7 +546,7 @@ enum ParamsBuilderPolicy {
         if diskModelResolved == "atlas" && diskAtlasPathArg.isEmpty {
             fail("--disk-model atlas requires --disk-atlas <path>")
         }
-        if diskModelResolved != "atlas" && !diskAtlasPathArg.isEmpty {
+        if diskModelResolved != "atlas" && !diskAtlasPathArg.isEmpty && !thinVisibleAtlasSource {
             FileHandle.standardError.write(Data("warn: --disk-model \(diskModelResolved) ignores --disk-atlas and atlas tuning args at render time\n".utf8))
         }
 
@@ -450,7 +561,7 @@ enum ParamsBuilderPolicy {
 
         return DiskModelResolution(
             diskModelResolved: diskModelResolved,
-            diskAtlasEnabled: (diskModelResolved == "atlas"),
+            diskAtlasEnabled: (diskModelResolved == "atlas" || thinVisibleAtlasSource),
             diskNoiseModel: diskNoiseModel
         )
     }

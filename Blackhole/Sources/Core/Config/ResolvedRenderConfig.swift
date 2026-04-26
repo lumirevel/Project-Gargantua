@@ -113,6 +113,13 @@ struct ResolvedRenderConfig {
     var diskGrmhdVelScaleArg: Double = 0.0
     var diskGrmhdDebugName: String = "off"
     var diskGrmhdDebugID: UInt32 = 0
+    var grmhdBranchIsolationName: String = "off"
+    var grmhdBranchIsolationID: UInt32 = 0
+    var grmhdTransportAlphaScaleArg: Double = 1.0
+    var grmhdSmoothEmissionScaleArg: Double = 1.0
+    var grmhdCloudEmissionScaleArg: Double = 1.0
+    var grmhdSmoothWeightName: String = "constant"
+    var grmhdSmoothWeightModeID: UInt32 = 0
     var diskPolarizedRTEnabled: Bool = false
     var diskPolarizationFracArg: Double = 0.0
     var diskFaradayRotScaleArg: Double = 0.0
@@ -134,7 +141,19 @@ struct ResolvedRenderConfig {
     var visibleEmissionModelName: String = "blackbody"
     var visibleEmissionModelID: UInt32 = 0
     var visibleSynchAlphaArg: Double = 0.0
+    var visibleSynchScaleArg: Double = 1.0
     var visibleKappaArg: Double = 0.0
+    var thinPhotosphereEnabled: Bool = false
+    var thinRadialTaperEnabled: Bool = true
+    var thinHOverRBaseArg: Double = 0.03
+    var thinHOverRInnerArg: Double = 0.02
+    var thinHOverROuterArg: Double = 0.045
+    var thinWeightPowerEmissionArg: Double = 1.0
+    var thinWeightPowerAbsorptionArg: Double = 1.0
+    var coronaLayerEnabled: Bool = false
+    var coronaHOverRArg: Double = 0.12
+    var coronaWeightPowerArg: Double = 1.0
+    var visibleThermalTransferModeID: UInt32 = 0
 
     var coolAbsorptionEnabled: Bool = false
     var coolDustToGasArg: Double = 0.0

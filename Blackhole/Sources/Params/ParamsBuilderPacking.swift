@@ -89,9 +89,9 @@ extension ParamsBuilder {
             diskVolumeR0: UInt32(config.diskVolumeR),
             diskVolumePhi0: UInt32(config.diskVolumePhi),
             diskVolumeZ0: UInt32(config.diskVolumeZ),
-            diskVolumeR1: UInt32(config.diskVolumeR),
-            diskVolumePhi1: UInt32(config.diskVolumePhi),
-            diskVolumeZ1: UInt32(config.diskVolumeZ),
+            diskVolumeR1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumeR) : 1,
+            diskVolumePhi1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumePhi) : 1,
+            diskVolumeZ1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumeZ) : 1,
             diskNuObsHz: Float(config.diskNuObsHzArg),
             diskGrmhdDensityScale: Float(config.diskGrmhdDensityScaleArg),
             diskGrmhdBScale: Float(config.diskGrmhdBScaleArg),
@@ -130,7 +130,24 @@ extension ParamsBuilder {
             coolGasKappa0: Float(config.coolGasKappa0Arg),
             coolGasNuSlope: Float(config.coolGasNuSlopeArg),
             coolClumpStrength: Float(config.coolClumpStrengthArg),
-            coolAbsorptionPad: 0
+            visibleSynchScale: Float(config.visibleSynchScaleArg),
+            thinPhotosphereEnabled: config.thinPhotosphereEnabled ? 1 : 0,
+            thinRadialTaperEnabled: config.thinRadialTaperEnabled ? 1 : 0,
+            thinHOverRBase: Float(config.thinHOverRBaseArg),
+            thinHOverRInner: Float(config.thinHOverRInnerArg),
+            thinHOverROuter: Float(config.thinHOverROuterArg),
+            thinWeightPowerEmission: Float(config.thinWeightPowerEmissionArg),
+            thinWeightPowerAbsorption: Float(config.thinWeightPowerAbsorptionArg),
+            _padThinPhotosphere: 0.0,
+            coronaLayerEnabled: config.coronaLayerEnabled ? 1 : 0,
+            coronaHOverR: Float(config.coronaHOverRArg),
+            coronaWeightPower: Float(config.coronaWeightPowerArg),
+            visibleThermalTransferMode: config.visibleThermalTransferModeID,
+            grmhdBranchIsolationMode: config.grmhdBranchIsolationID,
+            grmhdTransportAlphaScale: Float(config.grmhdTransportAlphaScaleArg),
+            grmhdSmoothEmissionScale: Float(config.grmhdSmoothEmissionScaleArg),
+            grmhdCloudEmissionScale: Float(config.grmhdCloudEmissionScaleArg),
+            grmhdSmoothWeightMode: config.grmhdSmoothWeightModeID
         )
     }
 }

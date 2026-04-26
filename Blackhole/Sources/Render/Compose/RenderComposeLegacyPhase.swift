@@ -60,8 +60,16 @@ enum RenderComposeLegacyPhase {
         let diskPlungeFloorArg = config.diskPlungeFloorArg
         let diskInnerRadiusCompose = config.diskInnerRadiusCompose
         let diskHorizonRadiusCompose = config.diskHorizonRadiusCompose
-        let composeLumLogMin: Float = (diskPhysicsModeID == 3) ? -36.0 : 8.0
-        let composeLumLogMax: Float = (diskPhysicsModeID == 3) ? 4.0 : 20.0
+        let lumRange = composeLuminanceLogRange(diskPhysicsModeID: diskPhysicsModeID)
+        let composeLumLogMin: Float = lumRange.min
+        let composeLumLogMax: Float = lumRange.max
+        let exposureSettings = composeExposureSolveSettings(
+            lookID: composeLookID,
+            presentationModeID: config.presentationModeID,
+            realismProfileID: realismProfileID,
+            diskPhysicsModeID: diskPhysicsModeID,
+            diskVolumeEnabled: diskVolumeEnabled
+        )
         let outWidth = policy.outWidth
         let outHeight = policy.outHeight
         let count = policy.count
@@ -380,16 +388,20 @@ enum RenderComposeLegacyPhase {
             } else {
                 lumSamples.sort()
                 let p50 = percentileSorted(lumSamples, 0.50)
-                let p995 = percentileSorted(lumSamples, 0.995)
-                var targetWhite: Float = composeTargetWhite(
-                    composeLookID,
-                    presentationModeID: config.presentationModeID,
-                    realismProfileID: realismProfileID
+                let p995 = percentileSorted(lumSamples, exposureSettings.highQuantile)
+                let pMid = (exposureSettings.midQuantile > 0.0)
+                    ? percentileSorted(lumSamples, exposureSettings.midQuantile)
+                    : 0.0
+                composeExposure = composeExposureFromLuminanceStats(
+                    pHigh: p995,
+                    pMid: pMid,
+                    settings: exposureSettings
                 )
-                if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
-                let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
-                composeExposure = targetWhite / max(p995, pFloor)
-                print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
+                if exposureSettings.midQuantile > 0.0 {
+                    print("lum p50=\(p50), p\(Int(exposureSettings.midQuantile * 100))=\(pMid), p99.5=\(p995), exposureSamples=\(sampledHits), exposureBoost<=\(exposureSettings.maxExposureBoost)")
+                } else {
+                    print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
+                }
             }
         }
         print("compose cloud normalization q10=\(cloudQ10) q90=\(cloudQ90)")
@@ -518,18 +530,23 @@ enum RenderComposeLegacyPhase {
             }
 
             let p50Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.50, composeLumLogMin, composeLumLogMax) }
-            let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, composeLumLogMin, composeLumLogMax) }
+            let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, exposureSettings.highQuantile, composeLumLogMin, composeLumLogMax) }
+            let pMidLog = (exposureSettings.midQuantile > 0.0)
+                ? lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, exposureSettings.midQuantile, composeLumLogMin, composeLumLogMax) }
+                : p50Log
             let p50 = Float(pow(10.0, Double(p50Log)))
             let gpuP995 = Float(pow(10.0, Double(p995Log)))
-            var targetWhite: Float = composeTargetWhite(
-                composeLookID,
-                presentationModeID: config.presentationModeID,
-                realismProfileID: realismProfileID
+            let gpuPMid = (exposureSettings.midQuantile > 0.0) ? Float(pow(10.0, Double(pMidLog))) : 0.0
+            composeExposure = composeExposureFromLuminanceStats(
+                pHigh: gpuP995,
+                pMid: gpuPMid,
+                settings: exposureSettings
             )
-            if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
-            let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
-            composeExposure = targetWhite / max(gpuP995, pFloor)
-            print("lum(hist) p50=\(p50), p99.5=\(gpuP995), mode=gpu-tiled")
+            if exposureSettings.midQuantile > 0.0 {
+                print("lum(hist) p50=\(p50), p\(Int(exposureSettings.midQuantile * 100))=\(gpuPMid), p99.5=\(gpuP995), mode=gpu-tiled, exposureBoost<=\(exposureSettings.maxExposureBoost)")
+            } else {
+                print("lum(hist) p50=\(p50), p99.5=\(gpuP995), mode=gpu-tiled")
+            }
         }
 
         composeParamsTemplate.exposure = composeExposure

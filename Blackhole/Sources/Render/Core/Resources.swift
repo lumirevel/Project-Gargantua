@@ -26,6 +26,7 @@ struct DiskVolumeMeta: Codable {
     var rNormMin: Double?
     var rNormMax: Double?
     var zNormMax: Double?
+    var rNormWarp: Double?
 }
 
 enum Resources {
@@ -434,7 +435,7 @@ func loadDiskAtlas(path: String, widthOverride: Int, heightOverride: Int) throws
     return (atlasData, width, height, rNormMin, rNormMax, rNormWarp)
 }
 
-func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride: Int, zOverride: Int) throws -> (data: Data, r: Int, phi: Int, z: Int, rNormMin: Double?, rNormMax: Double?, zNormMax: Double?) {
+func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride: Int, zOverride: Int) throws -> (data: Data, r: Int, phi: Int, z: Int, rNormMin: Double?, rNormMax: Double?, zNormMax: Double?, rNormWarp: Double?) {
     let volumeURL = URL(fileURLWithPath: path)
     let volumeData = try Data(contentsOf: volumeURL, options: [.mappedIfSafe])
 
@@ -444,6 +445,7 @@ func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride:
     var rNormMin: Double? = nil
     var rNormMax: Double? = nil
     var zNormMax: Double? = nil
+    var rNormWarp: Double? = nil
 
     let metaURL = URL(fileURLWithPath: metaPath.isEmpty ? (path + ".json") : metaPath)
     if FileManager.default.fileExists(atPath: metaURL.path) {
@@ -461,6 +463,7 @@ func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride:
         rNormMin = meta.rNormMin
         rNormMax = meta.rNormMax
         zNormMax = meta.zNormMax
+        rNormWarp = meta.rNormWarp
     }
 
     if r <= 0 || phi <= 0 || z <= 0 {
@@ -480,5 +483,5 @@ func loadDiskVolume(path: String, metaPath: String, rOverride: Int, phiOverride:
         )
     }
 
-    return (volumeData, r, phi, z, rNormMin, rNormMax, zNormMax)
+    return (volumeData, r, phi, z, rNormMin, rNormMax, zNormMax, rNormWarp)
 }

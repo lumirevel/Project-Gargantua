@@ -132,7 +132,19 @@ enum ParamsBuilderSummary {
         photosphereRhoThresholdResolved: Double,
         visibleEmissionModelName: String,
         visibleSynchAlphaArg: Double,
+        visibleSynchScaleArg: Double,
         visibleKappaArg: Double,
+        thinPhotosphereEnabled: Bool,
+        thinRadialTaperEnabled: Bool,
+        thinHOverRBaseArg: Double,
+        thinHOverRInnerArg: Double,
+        thinHOverROuterArg: Double,
+        thinWeightPowerEmissionArg: Double,
+        thinWeightPowerAbsorptionArg: Double,
+        coronaLayerEnabled: Bool,
+        coronaHOverRArg: Double,
+        coronaWeightPowerArg: Double,
+        visibleThermalTransferModeID: UInt32,
         coolAbsorptionEnabled: Bool,
         coolDustToGasArg: Double,
         coolDustKappaVArg: Double,
@@ -150,6 +162,6 @@ enum ParamsBuilderSummary {
         rayBundleJacobianStrengthArg: Double,
         rayBundleFootprintClampArg: Double
     ) -> String {
-        "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
+        "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), synchScale=\(visibleSynchScaleArg), visibleKappa=\(visibleKappaArg), thinPhotosphere=(enabled=\(thinPhotosphereEnabled),taper=\(thinRadialTaperEnabled),hBase=\(thinHOverRBaseArg),hInner=\(thinHOverRInnerArg),hOuter=\(thinHOverROuterArg),pJ=\(thinWeightPowerEmissionArg),pA=\(thinWeightPowerAbsorptionArg)), coronaLayer=(enabled=\(coronaLayerEnabled),hOverR=\(coronaHOverRArg),power=\(coronaWeightPowerArg)), thermalTransfer=\(visibleThermalTransferModeID == 1 ? "tau-surface" : "volume"), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
     }
 }

@@ -95,6 +95,11 @@ enum ParamsBuilder {
     let diskPhysicsModeID = diskPhysicsSelection.diskPhysicsModeID
     let diskPhysicsModeArg = diskPhysicsSelection.diskPhysicsModeArg
     let diskPhysicsThinProfile = diskPhysicsSelection.diskPhysicsThinProfile
+    if diskPhysicsModeID == 3 && maxStepsArg < 1000 {
+        FileHandle.standardError.write(Data(
+            "warn: GRMHD volume tracing with maxSteps=\(maxStepsArg) may miss the emitting volume and render black; prefer the preset default or >=1000 for validation renders\n".utf8
+        ))
+    }
     let diskMdotEddArg = max(1e-5, doubleArgAny(["--mdot-edd", "--disk-mdot-edd"], default: 0.1))
     let diskRadiativeEfficiencyArg = min(max(doubleArgAny(["--eta", "--disk-radiative-efficiency"], default: 0.1), 0.01), 0.42)
     let hasDiskVolumeArg = diskPhysicsSelection.hasDiskVolumeArg
@@ -240,6 +245,24 @@ enum ParamsBuilder {
     let visiblePolicyName = visibleSettings.visiblePolicyName
     let visibleEmissionModelName = visibleSettings.visibleEmissionModelName
     let visibleKappaArg = visibleSettings.visibleKappaArg
+    let grmhdBranchIsolationName = visibleSettings.grmhdBranchIsolationName
+    let grmhdBranchIsolationID = visibleSettings.grmhdBranchIsolationID
+    let grmhdTransportAlphaScaleArg = visibleSettings.grmhdTransportAlphaScaleArg
+    let grmhdSmoothEmissionScaleArg = visibleSettings.grmhdSmoothEmissionScaleArg
+    let grmhdCloudEmissionScaleArg = visibleSettings.grmhdCloudEmissionScaleArg
+    let grmhdSmoothWeightName = visibleSettings.grmhdSmoothWeightName
+    let grmhdSmoothWeightModeID = visibleSettings.grmhdSmoothWeightModeID
+    let thinPhotosphereEnabled = visibleSettings.thinPhotosphereEnabled
+    let thinRadialTaperEnabled = visibleSettings.thinRadialTaperEnabled
+    let thinHOverRBaseArg = visibleSettings.thinHOverRBaseArg
+    let thinHOverRInnerArg = visibleSettings.thinHOverRInnerArg
+    let thinHOverROuterArg = visibleSettings.thinHOverROuterArg
+    let thinWeightPowerEmissionArg = visibleSettings.thinWeightPowerEmissionArg
+    let thinWeightPowerAbsorptionArg = visibleSettings.thinWeightPowerAbsorptionArg
+    let coronaLayerEnabled = visibleSettings.coronaLayerEnabled
+    let coronaHOverRArg = visibleSettings.coronaHOverRArg
+    let coronaWeightPowerArg = visibleSettings.coronaWeightPowerArg
+    let visibleThermalTransferModeID = visibleSettings.visibleThermalTransferModeID
     let coolDustToGasArg = visibleSettings.coolDustToGasArg
     let coolDustKappaVArg = visibleSettings.coolDustKappaVArg
     let coolDustBetaArg = visibleSettings.coolDustBetaArg
@@ -253,6 +276,7 @@ enum ParamsBuilder {
     let visibleExpressiveMode = visibleSettings.visibleExpressiveMode
     let visibleEmissionModelID = visibleSettings.visibleEmissionModelID
     let visibleSynchAlphaArg = visibleSettings.visibleSynchAlphaArg
+    let visibleSynchScaleArg = visibleSettings.visibleSynchScaleArg
     let coolAbsorptionEnabled = visibleSettings.coolAbsorptionEnabled
     diskPrecisionTextureArg = visibleSettings.effectiveDiskPrecisionTextureArg
     let rayBundleName = stringArg("--ray-bundle", default: "off").lowercased()
@@ -265,6 +289,7 @@ enum ParamsBuilder {
     let rayBundlePolicy = ParamsBuilderPolicy.resolveRayBundlePolicy(
         cliArguments: cliArguments,
         diskPhysicsModeID: diskPhysicsModeID,
+        visibleTeffModelID: visibleTeffModelID,
         visibleModeEnabled: visibleModeEnabled,
         diskGrmhdDebugID: diskGrmhdDebugID,
         rayBundleName: rayBundleName,
@@ -292,6 +317,7 @@ enum ParamsBuilder {
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
         diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
+        precisionVolumeEnabled: !diskVolumePathArg.isEmpty,
         diskGrmhdDebugID: diskGrmhdDebugID,
         composeLookID: composeLookID,
         composeGPU: composeGPU,
@@ -342,6 +368,7 @@ enum ParamsBuilder {
     let diskModelResolution = ParamsBuilderPolicy.resolveDiskModel(
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
+        visibleTeffModelID: visibleTeffModelID,
         diskAtlasPathArg: diskAtlasPathArg
     )
     let diskModelResolved = diskModelResolution.diskModelResolved
@@ -399,6 +426,10 @@ enum ParamsBuilder {
     let diskVolumeRMin = diskVolumeAssembly.diskVolumeRMin
     let diskVolumeRMax = diskVolumeAssembly.diskVolumeRMax
     let diskVolumeZMax = diskVolumeAssembly.diskVolumeZMax
+    let diskVolumeRWarp = diskVolumeAssembly.diskVolumeRWarp
+    // GRMHD volumes may use the existing packed radial-warp slot to avoid an
+    // ABI expansion. Explicit --disk-atlas-r-warp still overrides metadata.
+    let effectiveDiskAtlasRWarp = (diskVolumeGRMHDEnabled && diskAtlasRWarpArg < 0.0) ? diskVolumeRWarp : diskAtlasRWarp
     let photosphereRhoThresholdResolved = diskVolumeAssembly.photosphereRhoThresholdResolved
 
     if composeGPU {
@@ -420,6 +451,24 @@ enum ParamsBuilder {
     let visibleRInMeters = visibleRInRsArg * rsD
     let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
     let diskHorizonRadiusCompose = diskHorizonRadiusM(metric: metricArg, spin: spinArg, rs: rsD) * (1.0 + 2.0e-5)
+    let visiblePhysicalTeffExplicit = cliArguments.contains("--bh-mass") || cliArguments.contains("--mdot")
+    let visibleTeffT0Resolved: Double = {
+        guard diskPhysicsModeID == 3,
+              visibleModeEnabled,
+              visibleTeffModelID == 3,
+              !cliArguments.contains("--teff-T0"),
+              visiblePhysicalTeffExplicit else {
+            return visibleTeffT0Arg
+        }
+        let visibleRs = 2.0 * G * visibleBhMassArg / (c * c)
+        let rInNormForCalibration = (visibleRInRsArg > 0.0) ? visibleRInRsArg : (diskInnerRadiusCompose / max(rsD, 1e-30))
+        return ParamsBuilderVisible.calibratedGRMHDHybridT0(
+            blackHoleMass: visibleBhMassArg,
+            mdot: visibleMdotArg,
+            r0Meters: visibleTeffR0RsArg * visibleRs,
+            rInMeters: rInNormForCalibration * visibleRs
+        ) ?? visibleTeffT0Arg
+    }()
 
     let camPos = SIMD3<Float>(Float(rsD * camXFactor), Float(rsD * camYFactor), Float(rsD * camZFactor))
     let z = normalize(camPos)
@@ -465,7 +514,7 @@ enum ParamsBuilder {
         config.diskAtlasVphiScaleArg = diskAtlasVphiScaleArg
         config.diskAtlasRMin = diskAtlasRMin
         config.diskAtlasRMax = diskAtlasRMax
-        config.diskAtlasRWarp = diskAtlasRWarp
+        config.diskAtlasRWarp = effectiveDiskAtlasRWarp
         config.diskAtlasData = diskAtlasData
         config.diskVolumeEnabled = diskVolumeEnabled
         config.diskVolumeLegacyEnabled = diskVolumeLegacyEnabled
@@ -496,6 +545,13 @@ enum ParamsBuilder {
         config.diskGrmhdEmissionScaleArg = diskGrmhdEmissionScaleArg
         config.diskGrmhdAbsorptionScaleArg = diskGrmhdAbsorptionScaleArg
         config.diskGrmhdVelScaleArg = diskGrmhdVelScaleArg
+        config.grmhdBranchIsolationName = grmhdBranchIsolationName
+        config.grmhdBranchIsolationID = grmhdBranchIsolationID
+        config.grmhdTransportAlphaScaleArg = grmhdTransportAlphaScaleArg
+        config.grmhdSmoothEmissionScaleArg = grmhdSmoothEmissionScaleArg
+        config.grmhdCloudEmissionScaleArg = grmhdCloudEmissionScaleArg
+        config.grmhdSmoothWeightName = grmhdSmoothWeightName
+        config.grmhdSmoothWeightModeID = grmhdSmoothWeightModeID
         config.useLinear32Intermediate = useLinear32Intermediate
         config.rayBundleEnabled = rayBundleEnabled
         config.rayBundleActive = rayBundleActive
@@ -608,7 +664,7 @@ enum ParamsBuilder {
         config.diskFaradayConvScaleArg = diskFaradayConvScaleArg
         config.visibleSamplesArg = visibleSamplesArg
         config.visibleTeffModelID = visibleTeffModelID
-        config.visibleTeffT0Arg = visibleTeffT0Arg
+        config.visibleTeffT0Arg = visibleTeffT0Resolved
         config.visibleTeffR0RsArg = visibleTeffR0RsArg
         config.visibleTeffPArg = visibleTeffPArg
         config.visibleBhMassArg = visibleBhMassArg
@@ -618,7 +674,19 @@ enum ParamsBuilder {
         config.visibleExpressiveMode = visibleExpressiveMode
         config.visibleEmissionModelID = visibleEmissionModelID
         config.visibleSynchAlphaArg = visibleSynchAlphaArg
+        config.visibleSynchScaleArg = visibleSynchScaleArg
         config.visibleKappaArg = visibleKappaArg
+        config.thinPhotosphereEnabled = thinPhotosphereEnabled
+        config.thinRadialTaperEnabled = thinRadialTaperEnabled
+        config.thinHOverRBaseArg = thinHOverRBaseArg
+        config.thinHOverRInnerArg = thinHOverRInnerArg
+        config.thinHOverROuterArg = thinHOverROuterArg
+        config.thinWeightPowerEmissionArg = thinWeightPowerEmissionArg
+        config.thinWeightPowerAbsorptionArg = thinWeightPowerAbsorptionArg
+        config.coronaLayerEnabled = coronaLayerEnabled
+        config.coronaHOverRArg = coronaHOverRArg
+        config.coronaWeightPowerArg = coronaWeightPowerArg
+        config.visibleThermalTransferModeID = visibleThermalTransferModeID
         config.coolAbsorptionEnabled = coolAbsorptionEnabled
         config.coolDustToGasArg = coolDustToGasArg
         config.coolDustKappaVArg = coolDustKappaVArg
@@ -697,7 +765,7 @@ enum ParamsBuilder {
             diskAtlasVphiScaleArg: diskAtlasVphiScaleArg,
             diskAtlasRMin: diskAtlasRMin,
             diskAtlasRMax: diskAtlasRMax,
-            diskAtlasRWarp: diskAtlasRWarp,
+            diskAtlasRWarp: effectiveDiskAtlasRWarp,
             diskVolumeEnabled: diskVolumeEnabled,
             diskVolumeR: diskVolumeR,
             diskVolumePhi: diskVolumePhi,
@@ -754,7 +822,7 @@ enum ParamsBuilder {
                 visiblePolicyName: visiblePolicyName,
                 visibleSamplesArg: visibleSamplesArg,
                 visibleTeffModelName: visibleTeffModelName,
-                visibleTeffT0Arg: visibleTeffT0Arg,
+                visibleTeffT0Arg: visibleTeffT0Resolved,
                 visibleTeffR0RsArg: visibleTeffR0RsArg,
                 visibleTeffPArg: visibleTeffPArg,
                 visibleBhMassArg: visibleBhMassArg,
@@ -763,7 +831,19 @@ enum ParamsBuilder {
                 photosphereRhoThresholdResolved: photosphereRhoThresholdResolved,
                 visibleEmissionModelName: visibleEmissionModelName,
                 visibleSynchAlphaArg: visibleSynchAlphaArg,
+                visibleSynchScaleArg: visibleSynchScaleArg,
                 visibleKappaArg: visibleKappaArg,
+                thinPhotosphereEnabled: thinPhotosphereEnabled,
+                thinRadialTaperEnabled: thinRadialTaperEnabled,
+                thinHOverRBaseArg: thinHOverRBaseArg,
+                thinHOverRInnerArg: thinHOverRInnerArg,
+                thinHOverROuterArg: thinHOverROuterArg,
+                thinWeightPowerEmissionArg: thinWeightPowerEmissionArg,
+                thinWeightPowerAbsorptionArg: thinWeightPowerAbsorptionArg,
+                coronaLayerEnabled: coronaLayerEnabled,
+                coronaHOverRArg: coronaHOverRArg,
+                coronaWeightPowerArg: coronaWeightPowerArg,
+                visibleThermalTransferModeID: visibleThermalTransferModeID,
                 coolAbsorptionEnabled: coolAbsorptionEnabled,
                 coolDustToGasArg: coolDustToGasArg,
                 coolDustKappaVArg: coolDustKappaVArg,
@@ -785,6 +865,12 @@ enum ParamsBuilder {
 
         var params = ParamsBuilder.buildPackedParams(from: config)
         accretionModel.buildPackedFields(into: &params, from: diskPolicy)
+        if diskPhysicsModeID == 3 && visibleModeEnabled {
+            // The accretion-model hook writes precision-mode defaults after the
+            // generic pack step. GRMHD visible uses this field as its state/flow
+            // contrast strength, so preserve the resolved visible policy value.
+            params.diskPrecisionTexture = Float(diskPrecisionTextureArg)
+        }
 
         return BuiltParams(
             rawArguments: logical.rawArguments,

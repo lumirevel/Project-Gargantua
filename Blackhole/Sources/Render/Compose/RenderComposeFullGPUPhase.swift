@@ -48,8 +48,9 @@ enum RenderComposeFullGPUPhase {
         let preserveHighlightColor = config.preserveHighlightColor
         let diskVolumeEnabled = config.diskVolumeEnabled
         let diskPhysicsModeID = config.diskPhysicsModeID
-        let composeLumLogMin: Float = (diskPhysicsModeID == 3) ? -36.0 : 8.0
-        let composeLumLogMax: Float = (diskPhysicsModeID == 3) ? 4.0 : 20.0
+        let lumRange = composeLuminanceLogRange(diskPhysicsModeID: diskPhysicsModeID)
+        let composeLumLogMin: Float = lumRange.min
+        let composeLumLogMax: Float = lumRange.max
         let outWidth = policy.outWidth
         let outHeight = policy.outHeight
         let count = policy.count
@@ -163,23 +164,22 @@ enum RenderComposeFullGPUPhase {
         }
         updateBuffer(composeParamBuf, with: &composeParamsTemplate)
 
+        let exposureSettings = composeExposureSolveSettings(
+            lookID: composeLookID,
+            presentationModeID: config.presentationModeID,
+            realismProfileID: realismProfileID,
+            diskPhysicsModeID: diskPhysicsModeID,
+            diskVolumeEnabled: diskVolumeEnabled
+        )
         var solveParams = ComposeSolveParams(
             cloudQuantileLow: 0.08,
             cloudQuantileHigh: 0.92,
-            lumQuantile: 0.995,
-            targetWhite: {
-                var v = composeTargetWhite(
-                    composeLookID,
-                    presentationModeID: config.presentationModeID,
-                    realismProfileID: realismProfileID
-                )
-                if diskVolumeEnabled && diskPhysicsModeID != 3 { v *= 2.2 }
-                return v
-            }(),
-            pFloor: (diskPhysicsModeID == 3) ? 1e-30 : 1e-12,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0
+            lumQuantile: exposureSettings.highQuantile,
+            targetWhite: exposureSettings.targetWhite,
+            pFloor: exposureSettings.pFloor,
+            lumMidQuantile: exposureSettings.midQuantile,
+            targetMid: exposureSettings.targetMid,
+            maxExposureBoost: exposureSettings.maxExposureBoost
         )
         guard let solveParamBuf = device.makeBuffer(bytes: &solveParams, length: MemoryLayout<ComposeSolveParams>.stride, options: []) else {
             fail("failed to allocate compose solve param buffer")
@@ -429,7 +429,11 @@ enum RenderComposeFullGPUPhase {
 
             let lumResult = solveResultBuf.contents().bindMemory(to: ComposeSolveResult.self, capacity: 1).pointee
             composeExposure = lumResult.exposure
-            print("lum(hist) p50=\(lumResult.p50), p99.5=\(lumResult.p995), samples=\(lumResult.lumSamples)")
+            if exposureSettings.midQuantile > 0.0 {
+                print("lum(hist) p50=\(lumResult.p50), p\(Int(exposureSettings.midQuantile * 100))=\(lumResult.pMid), p99.5=\(lumResult.p995), samples=\(lumResult.lumSamples), exposureBoost<=\(exposureSettings.maxExposureBoost)")
+            } else {
+                print("lum(hist) p50=\(lumResult.p50), p99.5=\(lumResult.p995), samples=\(lumResult.lumSamples)")
+            }
             let lumDone = input.totalPixels + composePrepassOpsTarget
             let lumNow = Date().timeIntervalSince1970
             if lumDone >= nextProgressMark || (lumNow - lastProgressPrint) >= 0.5 {

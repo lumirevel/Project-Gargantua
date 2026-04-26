@@ -29,6 +29,7 @@ struct DiskVolumeResourceResolution {
     let metaRMin: Double?
     let metaRMax: Double?
     let metaZMax: Double?
+    let metaRWarp: Double?
     let vol0PathResolved: String
     let vol1PathResolved: String
 }
@@ -158,6 +159,7 @@ enum ParamsBuilderAssets {
                     metaRMin: loaded.rNormMin,
                     metaRMax: loaded.rNormMax,
                     metaZMax: loaded.zNormMax,
+                    metaRWarp: loaded.rNormWarp,
                     vol0PathResolved: diskVolumePathArg,
                     vol1PathResolved: ""
                 )
@@ -194,6 +196,7 @@ enum ParamsBuilderAssets {
                     metaRMin: loaded0.rNormMin ?? loaded1.rNormMin,
                     metaRMax: loaded0.rNormMax ?? loaded1.rNormMax,
                     metaZMax: loaded0.zNormMax ?? loaded1.zNormMax,
+                    metaRWarp: loaded0.rNormWarp ?? loaded1.rNormWarp,
                     vol0PathResolved: diskVol0PathArg,
                     vol1PathResolved: diskVol1PathArg
                 )
@@ -213,6 +216,7 @@ enum ParamsBuilderAssets {
             metaRMin: nil,
             metaRMax: nil,
             metaZMax: nil,
+            metaRWarp: nil,
             vol0PathResolved: "",
             vol1PathResolved: ""
         )

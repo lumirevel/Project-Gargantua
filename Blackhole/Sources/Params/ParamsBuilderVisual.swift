@@ -269,6 +269,7 @@ enum ParamsBuilderVisual {
         diskModelArg: String,
         diskPhysicsModeID: UInt32,
         diskPrecisionCloudsEnabled: Bool,
+        precisionVolumeEnabled: Bool,
         diskGrmhdDebugID: UInt32,
         composeLookID: UInt32,
         composeGPU: Bool,
@@ -386,8 +387,12 @@ enum ParamsBuilderVisual {
             realismProfileID = 2
         case "cinematic", "cinema":
             realismProfileID = 3
+        case "physical-flow", "photosphere-flow", "flow-photosphere", "thin-flow":
+            realismProfileID = 4
+        case "canonical-visible-disk-v1", "canonical-visible-disk", "plausible-disk-v1", "plausible-disk", "source-plausible-disk-v1", "mri-skin":
+            realismProfileID = 5
         default:
-            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic")
+            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic, physical-flow, canonical-visible-disk-v1")
         }
 
         let cameraPsfSigmaDefault: Double = {
@@ -399,7 +404,7 @@ enum ParamsBuilderVisual {
                 switch cameraModelID {
                 case 1: return (composeLookID == 6) ? 0.42 : 0.55
                 case 2: return 0.35
-                case 3: return 0.30
+                case 3: return 0.38
                 default: return 0.0
                 }
             }
@@ -518,6 +523,7 @@ enum ParamsBuilderVisual {
         let composePolicy = ParamsBuilderPolicy.resolveComposePolicy(
             diskPhysicsModeID: diskPhysicsModeID,
             diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
+            precisionVolumeEnabled: precisionVolumeEnabled,
             diskGrmhdDebugID: diskGrmhdDebugID,
             cameraModelID: cameraModelID,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
@@ -538,11 +544,11 @@ enum ParamsBuilderVisual {
             realismDebugID = 33
         case "photosphere", "surface":
             realismDebugID = 34
-        case "atmosphere", "absorption":
+        case "atmosphere", "absorption", "skin", "hot-skin", "grmhd-skin", "perturbation-only":
             realismDebugID = 35
-        case "corona":
+        case "corona", "atlas-activity":
             realismDebugID = 36
-        case "perturbation", "turbulence", "disk-noise":
+        case "perturbation", "turbulence", "disk-noise", "perturbation-ratio", "skin-ratio":
             realismDebugID = 37
         case "hdr", "pretonemap", "pre-tone", "pre-tone-map":
             realismDebugID = 38
@@ -552,10 +558,10 @@ enum ParamsBuilderVisual {
             realismDebugID = 40
         case "density", "rho":
             realismDebugID = 41
-        case "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+        case "radial-tau", "radialtau", "opacity-baseline", "tau-baseline", "activity", "heating", "heating-field":
             realismDebugID = 42
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density, radial-tau")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density, activity")
         }
         if realismDebugID != 0 && composeLookID != 6 && presentationModeID != 1 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
@@ -571,12 +577,20 @@ enum ParamsBuilderVisual {
         let composeCameraFlareStrengthArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraFlareStrengthArg : 0.0
 
         let autoExposureEnabled: Bool = {
-            if composeAnalysisMode != 0 { return false }
+            if composeAnalysisMode != 0 && composeAnalysisMode != 31 && composeAnalysisMode != 32 { return false }
             if exposureArg > 0 { return false }
             if exposureModeID == 1 { return false }
             return true
         }()
         let composeExposureBase: Float = {
+            // Canonical branch-isolated radiance debug modes are absolute source
+            // outputs. Honor the requested fixed/manual exposure so body/skin/corona
+            // can be compared on the same display scale as the total scientific
+            // image. Unit diagnostic maps such as ratios/activity keep exposure=1.
+            if composeAnalysisMode == 34 || composeAnalysisMode == 35 || composeAnalysisMode == 36 || composeAnalysisMode == 38 {
+                if exposureArg > 0 { return exposureArg }
+                if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
+            }
             if composeAnalysisMode != 0 { return 1.0 }
             if exposureArg > 0 { return exposureArg }
             if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }

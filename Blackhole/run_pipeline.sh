@@ -16,6 +16,7 @@ COLLISIONS_MODE="auto"
 COLLISIONS_POLICY="temp"
 PIPELINE_MODE="gpu-only"
 SSAA=1
+SSAA_EXPLICIT=0
 WIDTH_SET=0
 HEIGHT_SET=0
 WIDTH_VALUE=""
@@ -34,8 +35,17 @@ DISK_ATLAS_R_MIN_VALUE=""
 DISK_ATLAS_R_MAX_VALUE=""
 DISK_ATLAS_R_WARP_VALUE=""
 DISK_HDF5_PATH=""
+DISK_HDF5_NEXT_PATH=""
+DISK_HDF5_TIME_BLEND=""
 DISK_PLUTO_MODE=0
 DISK_HDF5_PRESET="auto"
+DISK_HDF5_ATLAS_MODE="slice"
+DISK_HDF5_PHOTOSPHERE_H_OVER_R=""
+DISK_HDF5_PHOTOSPHERE_CONTRAST=""
+DISK_HDF5_PHOTOSPHERE_MAX_RATIO=""
+DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE=""
+DISK_HDF5_PHOTOSPHERE_CORONA_MIX=""
+DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R=""
 DISK_HDF5_OUT=""
 DISK_HDF5_OUT_EXPLICIT=0
 DISK_HDF5_R_TO_RS=""
@@ -46,6 +56,10 @@ DISK_HDF5_RHO_KEY=""
 DISK_HDF5_TEMP_KEY=""
 DISK_HDF5_VR_KEY=""
 DISK_HDF5_VPHI_KEY=""
+DISK_HDF5_VZ_KEY=""
+DISK_HDF5_BR_KEY=""
+DISK_HDF5_BPHI_KEY=""
+DISK_HDF5_BZ_KEY=""
 DISK_HDF5_THETA_KEY=""
 DISK_HDF5_THETA_INDEX=""
 DISK_HDF5_DENSITY_P_LO=""
@@ -102,9 +116,22 @@ DISK_GRMHD_NR="128"
 DISK_GRMHD_NPHI="256"
 DISK_GRMHD_NZ="72"
 DISK_GRMHD_Z_MAX=""
+DISK_GRMHD_R_WARP="0.65"
 DISK_GRMHD_U_TO_THETAE=""
+DISK_GRMHD_ELECTRON_MODEL="auto"
+DISK_GRMHD_ELECTRON_R_LOW="1.0"
+DISK_GRMHD_ELECTRON_R_HIGH="20.0"
+DISK_GRMHD_ADIABATIC_GAMMA="1.3333333333333333"
 DISK_GRMHD_NATIVE_3D="auto"
+DISK_GRMHD_VELOCITY_MODE="auto"
+DISK_GRMHD_PHI_CONTRAST=""
+DISK_GRMHD_PHI_CONTRAST_MAX_RATIO=""
+DISK_GRMHD_PHI_RESIDUAL_SMOOTH=""
+DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES=""
+DISK_GRMHD_RZ_RESIDUAL_SMOOTH=""
+DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES=""
 DISK_GRMHD_DEBUG=""
+DISK_HDF5_U0_KEY=""
 TEMP_HDF5_ATLAS=""
 TEMP_HDF5_SAMPLE=""
 TEMP_HDF5_FLOW_PROFILE=""
@@ -131,6 +158,7 @@ SWIFT_ARGS=()
 PY_ARGS=()
 PY_MODE=0
 LOOK_SET=0
+LOOK_VALUE=""
 PRESET_VALUE=""
 ETA_SCRIPT="$SCRIPT_DIR/pipeline_eta.py"
 ETA_HISTORY_OLD="$ROOT_DIR/.pipeline_eta_history.json"
@@ -147,6 +175,14 @@ LINEAR32_OUT_EXPLICIT=0
 SCIENTIFIC_MASTER_REQUESTED=0
 PRESENTATION_MODE_VALUE=""
 PRESENTATION_MODE_EXPLICIT=0
+SCIENCE_REGIME_VALUE=""
+SCIENCE_REGIME_SET=0
+SOURCE_MODEL_VALUE=""
+SOURCE_MODEL_SET=0
+SOURCE_QUALITY_VALUE=""
+SOURCE_QUALITY_SET=0
+EXPERIMENTAL_SOURCE_MODE=0
+DEBUG_SOURCE_MODE_VALUE=""
 LEGACY_COMPOSE_OVERRIDE=""
 DISK_MODEL_VALUE="auto"
 DISK_MODEL_SET=0
@@ -171,6 +207,15 @@ STOKES_POL_FRAC=""
 STOKES_FARADAY=""
 STOKES_PITCH_DEG=""
 STOKES_INTENSITY_MODEL=""
+
+ensure_parent_dir() {
+  local path="$1"
+  local dir
+  dir="$(dirname "$path")"
+  if [[ -n "$dir" && "$dir" != "." ]]; then
+    mkdir -p "$dir"
+  fi
+}
 STOKES_NU_OBS_HZ=""
 
 resolve_no_build_binary_path() {
@@ -316,6 +361,42 @@ need_value() {
   fi
 }
 
+swift_arg_present() {
+  local key="$1"
+  local item=""
+  for item in "${SWIFT_ARGS[@]}"; do
+    if [[ "$item" == "$key" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+append_swift_default() {
+  local key="$1"
+  local value="$2"
+  if ! swift_arg_present "$key"; then
+    SWIFT_ARGS+=("$key" "$value")
+  fi
+}
+
+append_shared_default() {
+  local key="$1"
+  local value="$2"
+  if ! swift_arg_present "$key"; then
+    SWIFT_ARGS+=("$key" "$value")
+    PY_ARGS+=("$key" "$value")
+  fi
+}
+
+set_look_arg() {
+  local look="$1"
+  SWIFT_ARGS+=(--look "$look")
+  PY_ARGS+=(--look "$look")
+  LOOK_SET=1
+  LOOK_VALUE="$look"
+}
+
 canonical_disk_model() {
   local model="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$model" in
@@ -384,6 +465,416 @@ canonical_disk_physics_mode() {
       ;;
     *)
       printf '%s' "$mode"
+      ;;
+  esac
+}
+
+set_default_disk_mode() {
+  local mode="$1"
+  if [[ "$DISK_MODE_ARG_PRESENT" -eq 0 ]]; then
+    DISK_PHYSICS_MODE_VALUE="$mode"
+    DISK_MODE_ARG_PRESENT=1
+    SWIFT_ARGS+=(--disk-mode "$mode")
+  fi
+}
+
+set_default_presentation_mode() {
+  local mode="$1"
+  if [[ "$PRESENTATION_MODE_EXPLICIT" -eq 0 && -z "$PRESENTATION_MODE_VALUE" ]]; then
+    PRESENTATION_MODE_VALUE="$mode"
+  fi
+}
+
+presentation_mode_is_scientific() {
+  local mode="$(printf '%s' "$PRESENTATION_MODE_VALUE" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    scientific|science|master)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+set_temperature_flow_default_look() {
+  if [[ "$LOOK_SET" -ne 0 ]]; then
+    return 0
+  fi
+  if presentation_mode_is_scientific; then
+    set_look_arg "linear"
+  else
+    set_look_arg "realistic"
+  fi
+}
+
+canonical_source_model() {
+  local model="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$model" in
+    canonical|canonical-visible|canonical-visible-disk|canonical-visible-disk-v1|visible-disk-v1)
+      printf 'canonical-visible-disk-v1'
+      ;;
+    thin|thin-reference|thin-disk|thin-disk-visible-reference|visible-reference)
+      printf 'thin-disk-visible-reference'
+      ;;
+    grmhd-hot|grmhd-hot-flow|grmhd-structure-flow|grmhd-hot-flow-diagnostic|grmhd-structure-flow-diagnostic)
+      printf 'grmhd-hot-flow-diagnostic'
+      ;;
+    grmhd-temperature|grmhd-temperature-flow|grmhd-temperature-flow-diagnostic|grmhd-visible-temperature-diagnostic)
+      printf 'grmhd-temperature-flow-diagnostic'
+      ;;
+    *)
+      printf '%s' "$model"
+      ;;
+  esac
+}
+
+source_model_to_science_regime() {
+  case "$1" in
+    canonical-visible-disk-v1)
+      printf 'canonical-visible-disk-v1'
+      ;;
+    thin-disk-visible-reference)
+      printf 'thin-disk-visible-reference'
+      ;;
+    grmhd-hot-flow-diagnostic)
+      printf 'grmhd-hot-flow'
+      ;;
+    grmhd-temperature-flow-diagnostic)
+      printf 'grmhd-temperature-flow'
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
+apply_source_model_defaults() {
+  [[ "$SOURCE_MODEL_SET" -eq 1 ]] || return 0
+  SOURCE_MODEL_VALUE="$(canonical_source_model "$SOURCE_MODEL_VALUE")"
+  case "$SOURCE_MODEL_VALUE" in
+    canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-temperature-flow-diagnostic)
+      ;;
+    *)
+      echo "error: --source-model must be one of canonical-visible-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-temperature-flow-diagnostic" >&2
+      echo "       use --science-regime ... --experimental for legacy/debug source families" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$SCIENCE_REGIME_SET" -eq 1 ]]; then
+    local mapped
+    mapped="$(source_model_to_science_regime "$SOURCE_MODEL_VALUE")"
+    if [[ "$SCIENCE_REGIME_VALUE" != "$mapped" && "$SCIENCE_REGIME_VALUE" != "$SOURCE_MODEL_VALUE" ]]; then
+      echo "error: use either --source-model or --science-regime, not both with different models" >&2
+      exit 2
+    fi
+  fi
+  SCIENCE_REGIME_VALUE="$(source_model_to_science_regime "$SOURCE_MODEL_VALUE")"
+  SCIENCE_REGIME_SET=1
+
+  if [[ "$SOURCE_QUALITY_SET" -eq 1 ]]; then
+    case "$SOURCE_QUALITY_VALUE" in
+      preview|standard)
+        ;;
+      hq|high|final)
+        if [[ "$SSAA_EXPLICIT" -eq 0 ]]; then
+          SSAA=2
+        fi
+        ;;
+      *)
+        echo "error: --quality must be one of preview, hq" >&2
+        exit 2
+        ;;
+    esac
+  fi
+}
+
+require_experimental_for_hidden_source() {
+  [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
+  case "$SCIENCE_REGIME_VALUE" in
+    canonical-visible-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
+      return 0
+      ;;
+    *)
+      if [[ "$EXPERIMENTAL_SOURCE_MODE" -eq 0 && -z "$DEBUG_SOURCE_MODE_VALUE" ]]; then
+        echo "error: --science-regime $SCIENCE_REGIME_VALUE is legacy/experimental and no longer part of the recommended public source-model registry." >&2
+        echo "       use --source-model canonical-visible-disk-v1, or add --experimental if you intentionally need this old path." >&2
+        exit 2
+      fi
+      ;;
+  esac
+}
+
+apply_science_regime_defaults() {
+  [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
+
+  case "$SCIENCE_REGIME_VALUE" in
+    canonical-visible-disk-v1|canonical-visible-disk|canonical-visible|canonical)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "scientific"
+      if [[ "$SOURCE_QUALITY_VALUE" == "hq" || "$SOURCE_QUALITY_VALUE" == "high" || "$SOURCE_QUALITY_VALUE" == "final" ]]; then
+        if [[ "$SSAA_EXPLICIT" -eq 0 ]]; then
+          SSAA=2
+        fi
+      fi
+      append_swift_default --realism-profile "canonical-visible-disk-v1"
+      append_swift_default --disk-model "flow"
+      append_swift_default --disk-turbulence "2.0"
+      append_swift_default --disk-precision-texture "0.0"
+      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-optical-depth "0.0"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --teff-T0 "22000"
+      append_swift_default --teff-r0 "4.8"
+      append_swift_default --teff-p "0.72"
+      append_swift_default --fcol "1.25"
+      append_swift_default --background "off"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    thin-visible|visible-thin|thin-science|scientific-thin)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "scientific"
+      append_swift_default --realism-profile "physical"
+      append_swift_default --disk-model "flow"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "scientific"
+      if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
+        SSAA=2
+      fi
+      append_swift_default --realism-profile "physical"
+      append_swift_default --disk-model "flow"
+      append_swift_default --disk-turbulence "0.0"
+      append_swift_default --disk-precision-texture "0.0"
+      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-optical-depth "0.0"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --teff-T0 "11500"
+      append_swift_default --teff-r0 "4.8"
+      append_swift_default --teff-p "0.72"
+      append_swift_default --fcol "1.35"
+      append_swift_default --background "off"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    plausible-disk-v1|plausible-disk|thin-plausible-disk|plausible-disk-v1-hq|plausible-disk-hq|thin-plausible-disk-hq)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "scientific"
+      if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
+        SSAA=2
+      fi
+      append_swift_default --realism-profile "plausible-disk-v1"
+      append_swift_default --disk-model "flow"
+      append_swift_default --disk-turbulence "1.6"
+      append_swift_default --disk-precision-texture "0.0"
+      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-optical-depth "0.0"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --teff-T0 "15000"
+      append_swift_default --teff-r0 "4.8"
+      append_swift_default --teff-p "0.72"
+      append_swift_default --fcol "1.25"
+      append_swift_default --background "off"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    experience|thin-experience|human|human-visible|eye-visible|eye)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "eye"
+      append_swift_default --realism-profile "physical"
+      append_swift_default --disk-model "flow"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "realistic"
+      fi
+      ;;
+    dngr-thin|interstellar-thin|interstellar-physics|gargantua-thin)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "eye"
+      append_swift_default --realism-profile "physical"
+      append_swift_default --disk-model "flow"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "realistic"
+      fi
+      ;;
+    dngr-flow|interstellar-flow|experience-flow|thin-photosphere-flow|photosphere-flow)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "eye"
+      append_swift_default --realism-profile "physical-flow"
+      append_swift_default --disk-model "flow"
+      append_swift_default --disk-turbulence "0.30"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "realistic"
+      fi
+      ;;
+    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin)
+      set_default_disk_mode "precision"
+      set_default_presentation_mode "eye"
+      PIPELINE_MODE="gpu-only"
+      if [[ "$DISK_REPR_SET" -eq 0 ]]; then
+        DISK_REPR_SET=1
+        DISK_REPR_VALUE="3d"
+      fi
+      DISK_VOLUME_REQUESTED=1
+      [[ -z "$DISK_VOLUME_TAU_SCALE" ]] && DISK_VOLUME_TAU_SCALE="0.0015"
+      [[ -z "$DISK_VOLUME_Z_MAX" ]] && DISK_VOLUME_Z_MAX="0.16"
+      append_swift_default --realism-profile "physical-flow"
+      append_swift_default --disk-model "flow"
+      append_swift_default --teff-model "parametric"
+      append_swift_default --teff-T0 "5000"
+      append_swift_default --teff-r0 "5.0"
+      append_swift_default --teff-p "0.75"
+      # The finite 3D photosphere reads as a narrow line from the old
+      # near-midplane realistic camera. Lift the default observer slightly above
+      # the disk so the visible gas volume and lensed secondary images are
+      # present without changing the physical transport. Keep named non-realistic
+      # camera presets intact unless the user explicitly overrides --camZ.
+      case "${PRESET_VALUE:-realistic}" in
+        realistic|natural|observational)
+          append_swift_default --camZ "3.5"
+          ;;
+      esac
+      append_swift_default --exposure-mode "fixed"
+      append_swift_default --exposure-ev "-17"
+      append_swift_default --background "off"
+      append_swift_default --disk-precision-texture "0.20"
+      append_swift_default --disk-cloud-coverage "0.35"
+      append_swift_default --disk-cloud-porosity "0.12"
+      append_swift_default --cloud-tau "0.55"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "realistic"
+      fi
+      ;;
+    grmhd-temperature-flow|grmhd-visible-flow|grmhd-thermal-flow|temperature-flow|grmhd-temperature-flow-hq|grmhd-visible-flow-hq|grmhd-thermal-flow-hq|temperature-flow-hq|grmhd-temperature-flow-scientific|grmhd-temperature-science|grmhd-visible-flow-scientific|grmhd-visible-science|grmhd-temperature-flow-eye|grmhd-temperature-eye|grmhd-temperature-flow-human-visible|grmhd-human-visible-flow)
+      set_default_disk_mode "grmhd"
+      GRMHD_TEMPERATURE_T0_DEFAULT="6500"
+      case "$SCIENCE_REGIME_VALUE" in
+        *scientific*|*science)
+          set_default_presentation_mode "scientific"
+          GRMHD_TEMPERATURE_T0_DEFAULT="6500"
+          ;;
+        *human-visible*|*eye*)
+          set_default_presentation_mode "eye"
+          GRMHD_TEMPERATURE_T0_DEFAULT="5000"
+          ;;
+        *)
+          set_default_presentation_mode "eye"
+          GRMHD_TEMPERATURE_T0_DEFAULT="6500"
+          ;;
+      esac
+      PIPELINE_MODE="gpu-only"
+      if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
+        SSAA=2
+      fi
+      set_temperature_flow_default_look
+      append_swift_default --visible-mode "on"
+      append_swift_default --visible-policy "physical"
+      append_swift_default --visible-emission-model "blackbody"
+      append_swift_default --teff-model "grmhd-hybrid"
+      # Default this regime to a validation/viewing camera that sees the whole
+      # lensed flow. The generic "realistic" preset is a close fly-by camera and
+      # makes the finite GRMHD volume look like a cropped partial sheet.
+      append_swift_default --camX "0"
+      append_swift_default --camY "-18"
+      append_swift_default --camZ "5.5"
+      append_swift_default --fov "58"
+      append_swift_default --thermal-transfer-mode "volume"
+      append_swift_default --thin-photosphere "off"
+      append_swift_default --corona-layer "off"
+      append_swift_default --disk-cool-absorption "off"
+      append_swift_default --visible-kappa "0.0015"
+      append_swift_default --disk-precision-texture "0.70"
+      append_swift_default --teff-T0 "$GRMHD_TEMPERATURE_T0_DEFAULT"
+      append_swift_default --disk-grmhd-emission-scale "1e-10"
+      [[ -z "$DISK_GRMHD_PHI_CONTRAST" ]] && DISK_GRMHD_PHI_CONTRAST="1.8"
+      [[ -z "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" ]] && DISK_GRMHD_PHI_CONTRAST_MAX_RATIO="8.0"
+      [[ -z "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" ]] && DISK_GRMHD_PHI_RESIDUAL_SMOOTH="0.45"
+      [[ -z "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" ]] && DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES="1"
+      [[ -z "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" ]] && DISK_GRMHD_RZ_RESIDUAL_SMOOTH="0.18"
+      [[ -z "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES" ]] && DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES="1"
+      append_swift_default --disk-grmhd-phi-contrast "1.8"
+      append_swift_default --disk-grmhd-phi-contrast-max-ratio "8.0"
+      ;;
+    grmhd-hot-flow|hot-flow|grmhd-flow|grmhd-synchrotron|flow-science|grmhd-structure-flow|structure-flow|grmhd-9band-flow|grmhd-dynamic-flow)
+      set_default_disk_mode "grmhd"
+      set_default_presentation_mode "scientific"
+      PIPELINE_MODE="gpu-only"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "structure"
+      fi
+      append_swift_default --visible-mode "on"
+      append_swift_default --visible-policy "physical"
+      append_swift_default --visible-emission-model "synchrotron"
+      append_swift_default --visible-synch-alpha "0.7"
+      append_swift_default --visible-synch-scale "1.0"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --thin-photosphere "off"
+      append_swift_default --corona-layer "on"
+      append_swift_default --corona-h-over-r "0.18"
+      append_swift_default --thermal-transfer-mode "volume"
+      append_swift_default --disk-cool-absorption "off"
+      ;;
+    grmhd-eye-flow|hot-flow-eye|grmhd-human-flow|human-grmhd-flow)
+      set_default_disk_mode "grmhd"
+      set_default_presentation_mode "eye"
+      PIPELINE_MODE="gpu-only"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "structure"
+      fi
+      append_swift_default --visible-mode "on"
+      append_swift_default --visible-policy "physical"
+      append_swift_default --visible-emission-model "synchrotron"
+      append_swift_default --visible-synch-alpha "0.7"
+      append_swift_default --visible-synch-scale "1.0"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --thin-photosphere "off"
+      append_swift_default --corona-layer "on"
+      append_swift_default --corona-h-over-r "0.18"
+      append_swift_default --thermal-transfer-mode "volume"
+      append_swift_default --disk-cool-absorption "off"
+      ;;
+    grmhd-photosphere-atlas|grmhd-atlas|grmhd-thin-photosphere|grmhd-thin-eye)
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "eye"
+      PIPELINE_MODE="gpu-only"
+      DISK_HDF5_PRESET="grmhd-photosphere"
+      DISK_HDF5_ATLAS_MODE="photosphere"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CONTRAST" ]] && DISK_HDF5_PHOTOSPHERE_CONTRAST="3.2"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_MAX_RATIO" ]] && DISK_HDF5_PHOTOSPHERE_MAX_RATIO="32.0"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CORONA_MIX" ]] && DISK_HDF5_PHOTOSPHERE_CORONA_MIX="0.18"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R" ]] && DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R="0.35"
+      append_swift_default --disk-model "atlas"
+      append_swift_default --realism-profile "observational"
+      append_swift_default --disk-atlas-temp-scale "1.15"
+      append_swift_default --disk-atlas-density-blend "1.0"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "realistic"
+      fi
+      ;;
+    grmhd-photosphere|photosphere-diagnostic|grmhd-visible-photosphere)
+      set_default_disk_mode "grmhd"
+      set_default_presentation_mode "scientific"
+      PIPELINE_MODE="gpu-only"
+      append_swift_default --visible-mode "on"
+      append_swift_default --visible-policy "physical"
+      append_swift_default --visible-emission-model "blackbody"
+      append_swift_default --teff-model "grmhd-hybrid"
+      append_swift_default --thin-photosphere "auto"
+      append_swift_default --thermal-transfer-mode "auto"
+      append_swift_default --visible-kappa "0.02"
+      append_swift_default --disk-cool-absorption "off"
+      echo "warn: --science-regime grmhd-photosphere is a diagnostic photosphere path; use thin-visible/experience for human-visible thin disk renders." >&2
+      ;;
+    *)
+      echo "error: --science-regime must be one of thin-visible, thin-disk-visible-reference, thin-disk-visible-reference-hq, plausible-disk-v1, plausible-disk-v1-hq, experience, dngr-thin, dngr-flow, dngr-volume, grmhd-temperature-flow, grmhd-temperature-flow-scientific, grmhd-temperature-flow-human-visible, grmhd-temperature-flow-hq, grmhd-hot-flow, grmhd-structure-flow, grmhd-eye-flow, grmhd-photosphere-atlas, grmhd-photosphere" >&2
+      exit 2
       ;;
   esac
 }
@@ -578,7 +1069,9 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-kappa --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug
+- Public source interface: --source-model {canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-temperature-flow-diagnostic} --presentation {scientific|eye|cinema} --quality {preview|hq}
+- Legacy/debug source families are hidden from the recommended surface. Use --science-regime <old-name> --experimental only when reproducing an old experiment.
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
@@ -592,28 +1085,40 @@ Routing rules:
 - Precision cloud controls: --disk-precision-clouds {on|off} --disk-cloud-coverage <0..1> --disk-cloud-optical-depth <0..12> --disk-cloud-porosity <0..1> --disk-cloud-shadow-strength <0..1>
 - Precision physics uses the GPU runtime path automatically.
 - Atlas auto path: in non-precision mode, when --disk-model atlas is set and --disk-atlas is omitted, auto-search order is BH_DISK_ATLAS, ./disk_atlas.bin, /tmp/stage3_ab/disk_atlas.bin
-- Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --presentation-mode --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug
-  - look options: balanced(default), realistic, interstellar, eht, agx/filmic, hdr
-  - presentation modes: --presentation-mode {legacy,scientific,eye,cinema}
+- Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug
+  - look options: balanced(default), realistic, interstellar, eht, thin-disk, agx/filmic, hdr, structure
+  - presentation modes: --presentation-mode {legacy,scientific,eye,cinema} (alias: --presentation)
+  - recommended source models: --source-model {canonical-visible-disk-v1,thin-disk-visible-reference,grmhd-hot-flow-diagnostic,grmhd-temperature-flow-diagnostic}
+    canonical-visible-disk-v1 = clean thin-disk visible body + disk-coordinate stochastic heating skin + weak corona, all before scientific/eye/cinema presentation; thin-disk-visible-reference = pure Kerr thin-disk reference with procedural/GRMHD texture disabled; grmhd-hot-flow-diagnostic = GRMHD-native optically thin hot-flow structure diagnostic; grmhd-temperature-flow-diagnostic = 3D GRMHD thermal visible volume RT diagnostic.
+  - legacy science regimes: --science-regime <old-name> --experimental. Old names remain for reproduction but are not recommended final source models.
   - camera profiles: --camera-profile {ideal,scientific,cinema-digital,full-frame}
   - custom camera profile: --camera-profile-json path/to/profile.json
-  - realism profiles: --realism-profile {off,physical,observational,cinematic}
+  - realism profiles: --realism-profile {off,physical,physical-flow,canonical-visible-disk-v1,observational,cinematic}
   - realism debug maps: --realism-debug {off,g,emissivity,beaming,photosphere,atmosphere,corona,perturbation,hdr}
 - PLUTO shortcut: --disk-pluto (auto-discover .h5, fallback to auto sample) or --disk-pluto-path <snapshot.h5>
 - HDF5 auto bridge: --disk-hdf5 <snapshot.h5> [--disk-hdf5-out <atlas.bin>] [--disk-hdf5-r-to-rs <x>] [--disk-hdf5-kepler-gm <x>] [--disk-hdf5-theta-index <i>|--disk-hdf5-theta-average] [--disk-hdf5-density-log]
   - default atlas output is temporary and auto-cleaned; use --disk-hdf5-out to keep it
-- HDF5 mapping preset: --disk-hdf5-preset {auto|pluto}
+  - temporal bridge: --disk-hdf5-next <next.h5> --disk-hdf5-time-blend <0..1> (atlas path blends atlases; GRMHD volume path blends HDF5 state before volume build)
+- HDF5 mapping preset: --disk-hdf5-preset {auto|pluto|grmhd-photosphere}
   - pluto preset defaults: r=x1v phi=x3v rho=rho vr=vx1 vphi=vx3 temp=prs (override with key args)
-- HDF5 key overrides: --disk-hdf5-r-key --disk-hdf5-phi-key --disk-hdf5-rho-key --disk-hdf5-temp-key --disk-hdf5-vr-key --disk-hdf5-vphi-key
+  - grmhd-photosphere builds a thin-surface atlas from vertically weighted GRMHD column/stress structure
+- HDF5 atlas mode: --disk-hdf5-atlas-mode {slice|photosphere}
+  - photosphere controls: --disk-hdf5-photosphere-h-over-r --disk-hdf5-photosphere-contrast --disk-hdf5-photosphere-max-ratio --disk-hdf5-photosphere-velocity-source {none|data} --disk-hdf5-photosphere-corona-mix <0..1> --disk-hdf5-photosphere-corona-h-over-r <x>
+- HDF5 key overrides: --disk-hdf5-r-key --disk-hdf5-phi-key --disk-hdf5-rho-key --disk-hdf5-temp-key --disk-hdf5-u0-key --disk-hdf5-vr-key --disk-hdf5-vphi-key --disk-hdf5-vz-key --disk-hdf5-br-key --disk-hdf5-bphi-key --disk-hdf5-bz-key
 - HDF5 theta key override: --disk-hdf5-theta-key
 - HDF5 flow bridge: --disk-hdf5-flow (force direct flow-profile bridge; precision mode uses this path automatically)
 - HDF5 volume bridge: --disk-volume-hdf5 <snapshot.h5> [--disk-volume-out <volume.bin>] [--disk-volume-nr <n>] [--disk-volume-nphi <n>] [--disk-volume-nz <n>] [--disk-volume-z-max <x>]
   - precision mode with --disk-hdf5/--disk-pluto auto-builds temporary disk volume when --disk-volume is not provided
-- GRMHD volume bridge: --disk-mode grmhd --disk-hdf5 <snapshot.h5> [--disk-grmhd-nr <n>] [--disk-grmhd-nphi <n>] [--disk-grmhd-nz <n>] [--disk-grmhd-z-max <x>]
+- GRMHD volume bridge: --disk-mode grmhd --disk-hdf5 <snapshot.h5> [--disk-grmhd-nr <n>] [--disk-grmhd-nphi <n>] [--disk-grmhd-nz <n>] [--disk-grmhd-z-max <x>] [--disk-grmhd-r-warp <x>]
   - native 3D mapping control: --disk-grmhd-native-3d {auto|on|off}
-  - diagnostic map: --disk-grmhd-debug {off|rho|b2|jnu|inu|teff|g|y|peak|pol}
+  - wide primitive dumps are auto-cropped to the inner emissive radial range unless the prebuilt volume/meta is supplied
+  - velocity interpretation: --disk-grmhd-velocity-mode {auto|beta|four-velocity}
+  - electron temperature: --disk-grmhd-electron-model {auto|single-temp|r-beta} [--disk-grmhd-electron-r-low <x>] [--disk-grmhd-electron-r-high <x>]
+  - phi-structure diagnostic: --disk-grmhd-phi-contrast <x> [--disk-grmhd-phi-contrast-max-ratio <x>] [--disk-grmhd-phi-residual-smooth <0..1>] [--disk-grmhd-phi-residual-smooth-passes <n>] [--disk-grmhd-rz-residual-smooth <0..1>] [--disk-grmhd-rz-residual-smooth-passes <n>] (contrast amplifies existing azimuthal deviations; residual smoothing preserves phi means while reducing coarse-cell striping)
+  - radial sampling: --disk-grmhd-r-warp <x> (<1 allocates more volume texels to the inner flow; default 0.65)
+  - diagnostic map: --disk-grmhd-debug {off|rho|b2|jnu|inu|teff|g|y|peak|pol|thetae|sigma|beta-inv|speed|gamma|tau|alpha|samples|invalid|beaming|raw-log|post-exposure|post-tonemap|source|tau1-r|tau1-depth|tau-wide|alpha-wide|emission-radius|bmag|epsabs|abase|acool|jthermal|jthin|source-thermal|source-thin|branch-ratio|thin-weight|jthermal-weighted|thermal-alpha-pre|thermal-alpha-post|corona-weight|jthermal-cloud|thermal-cloud-ratio|ithermal|ithermal-cloud|ithermal-body|ithermal-corona|emission-layer|body-layer-gate|body-proxy|path|impact|flow-residual}
   - polarized GRRT controls: --disk-polarized-rt {on|off} --disk-pol-frac <0..1> --disk-faraday-rot <x> --disk-faraday-conv <x>
-  - visible controls: --visible-mode {on|off} --visible-samples <N> --visible-emission-model {blackbody|synchrotron} --visible-synch-alpha <a> --visible-kappa <kappa> --teff-model {parametric|thin-disk|nt} --teff-T0 <K> --teff-r0 <rs> --teff-p <p> --bh-mass <kg> --mdot <kg/s> [--r-in <rs>|0(auto)] [--photosphere-rho-threshold <rho>]
+  - visible controls: --visible-mode {on|off} --visible-samples <N> --visible-emission-model {blackbody|synchrotron|hybrid} --visible-synch-alpha <a> --visible-synch-scale <x> --visible-kappa <kappa> --thin-photosphere {auto|on|off} --thin-h-over-r-base <x> --thin-h-over-r-inner <x> --thin-h-over-r-outer <x> --corona-layer {auto|on|off} --corona-h-over-r <x> --corona-weight-power <x> --thermal-transfer-mode {auto|volume|tau-surface} --teff-model {parametric|thin-disk|nt|grmhd-hybrid} --teff-T0 <K> --teff-r0 <rs> --teff-p <p> --bh-mass <kg> --mdot <kg/s> [--r-in <rs>|0(auto)] [--photosphere-rho-threshold <rho>]
   - cool absorber controls (grmhd visible): --disk-cool-absorption {on|off} --disk-cool-dust-to-gas <0..0.2> --disk-cool-dust-kappa-v <cm2/g(dust)> --disk-cool-dust-beta <0..4> --disk-cool-dust-tsub <K> --disk-cool-dust-twidth <K> --disk-cool-gas-kappa0 <cm2/g> --disk-cool-gas-nu-slope <0..6> --disk-cool-clump-strength <0..2>
   - emits temporary vol0/vol1/meta and auto-wires --disk-vol0/--disk-vol1/--disk-meta to Swift
 - HDF5 sample generator (Fishbone-Moncrief torus IC): --disk-hdf5-sample [--disk-hdf5-sample-out <snapshot.h5>] [--disk-hdf5-sample-nr <n>] [--disk-hdf5-sample-nth <n>] [--disk-hdf5-sample-nphi <n>]
@@ -749,6 +1254,38 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --science-regime|--render-regime)
+      need_value "$arg" "$@"
+      SCIENCE_REGIME_VALUE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      SCIENCE_REGIME_SET=1
+      shift
+      continue
+      ;;
+    --source-model)
+      need_value "$arg" "$@"
+      SOURCE_MODEL_VALUE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      SOURCE_MODEL_SET=1
+      shift
+      continue
+      ;;
+    --quality)
+      need_value "$arg" "$@"
+      SOURCE_QUALITY_VALUE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      SOURCE_QUALITY_SET=1
+      shift
+      continue
+      ;;
+    --experimental|--legacy-source-mode)
+      EXPERIMENTAL_SOURCE_MODE=1
+      continue
+      ;;
+    --debug-source-mode)
+      need_value "$arg" "$@"
+      DEBUG_SOURCE_MODE_VALUE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      EXPERIMENTAL_SOURCE_MODE=1
+      shift
+      continue
+      ;;
     --output)
       need_value "$arg" "$@"
       out_path="$1"
@@ -840,6 +1377,18 @@ while [[ "$#" -gt 0 ]]; do
     --disk-hdf5)
       need_value "$arg" "$@"
       DISK_HDF5_PATH="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-next)
+      need_value "$arg" "$@"
+      DISK_HDF5_NEXT_PATH="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-time-blend)
+      need_value "$arg" "$@"
+      DISK_HDF5_TIME_BLEND="$1"
       shift
       continue
       ;;
@@ -970,9 +1519,46 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --disk-grmhd-r-warp)
+      need_value "$arg" "$@"
+      DISK_GRMHD_R_WARP="$1"
+      shift
+      continue
+      ;;
     --disk-grmhd-u-to-thetae)
       need_value "$arg" "$@"
       DISK_GRMHD_U_TO_THETAE="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-electron-model)
+      need_value "$arg" "$@"
+      DISK_GRMHD_ELECTRON_MODEL="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      case "$DISK_GRMHD_ELECTRON_MODEL" in
+        auto|single-temp|r-beta) ;;
+        *)
+          echo "error: --disk-grmhd-electron-model must be one of auto, single-temp, r-beta" >&2
+          exit 2
+          ;;
+      esac
+      continue
+      ;;
+    --disk-grmhd-electron-r-low)
+      need_value "$arg" "$@"
+      DISK_GRMHD_ELECTRON_R_LOW="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-electron-r-high)
+      need_value "$arg" "$@"
+      DISK_GRMHD_ELECTRON_R_HIGH="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-adiabatic-gamma)
+      need_value "$arg" "$@"
+      DISK_GRMHD_ADIABATIC_GAMMA="$1"
       shift
       continue
       ;;
@@ -987,6 +1573,61 @@ while [[ "$#" -gt 0 ]]; do
           exit 2
           ;;
       esac
+      continue
+      ;;
+    --disk-grmhd-velocity-mode)
+      need_value "$arg" "$@"
+      DISK_GRMHD_VELOCITY_MODE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      case "$DISK_GRMHD_VELOCITY_MODE" in
+        auto|beta|four-velocity) ;;
+        *)
+          echo "error: --disk-grmhd-velocity-mode must be one of auto, beta, four-velocity" >&2
+          exit 2
+          ;;
+      esac
+      continue
+      ;;
+    --disk-grmhd-phi-contrast)
+      need_value "$arg" "$@"
+      DISK_GRMHD_PHI_CONTRAST="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-phi-contrast-max-ratio)
+      need_value "$arg" "$@"
+      DISK_GRMHD_PHI_CONTRAST_MAX_RATIO="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-phi-residual-smooth)
+      need_value "$arg" "$@"
+      DISK_GRMHD_PHI_RESIDUAL_SMOOTH="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-phi-residual-smooth-passes)
+      need_value "$arg" "$@"
+      DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-rz-residual-smooth)
+      need_value "$arg" "$@"
+      DISK_GRMHD_RZ_RESIDUAL_SMOOTH="$1"
+      shift
+      continue
+      ;;
+    --disk-grmhd-rz-residual-smooth-passes)
+      need_value "$arg" "$@"
+      DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES="$1"
+      shift
+      continue
+      ;;
+    --hdf5-u0-key|--disk-hdf5-u0-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_U0_KEY="$1"
+      shift
       continue
       ;;
     --disk-grmhd-debug)
@@ -1026,6 +1667,48 @@ while [[ "$#" -gt 0 ]]; do
       shift
       continue
       ;;
+    --disk-hdf5-atlas-mode)
+      need_value "$arg" "$@"
+      DISK_HDF5_ATLAS_MODE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-h-over-r)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_H_OVER_R="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-contrast)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_CONTRAST="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-max-ratio)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_MAX_RATIO="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-velocity-source)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-corona-mix)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_CORONA_MIX="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-photosphere-corona-h-over-r)
+      need_value "$arg" "$@"
+      DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R="$1"
+      shift
+      continue
+      ;;
     --disk-hdf5-r-key)
       need_value "$arg" "$@"
       DISK_HDF5_R_KEY="$1"
@@ -1059,6 +1742,30 @@ while [[ "$#" -gt 0 ]]; do
     --disk-hdf5-vphi-key)
       need_value "$arg" "$@"
       DISK_HDF5_VPHI_KEY="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-vz-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_VZ_KEY="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-br-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_BR_KEY="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-bphi-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_BPHI_KEY="$1"
+      shift
+      continue
+      ;;
+    --disk-hdf5-bz-key)
+      need_value "$arg" "$@"
+      DISK_HDF5_BZ_KEY="$1"
       shift
       continue
       ;;
@@ -1403,6 +2110,7 @@ while [[ "$#" -gt 0 ]]; do
       need_value "$arg" "$@"
       SSAA="$1"
       shift
+      SSAA_EXPLICIT=1
       case "$SSAA" in
         1|2|4) ;;
         *)
@@ -1687,13 +2395,13 @@ while [[ "$#" -gt 0 ]]; do
       echo "error: --kerr-use-u has been removed after validation tests showed no practical gain." >&2
       exit 2
       ;;
-    --presentation-mode)
+	    --presentation-mode|--presentation)
       need_value "$arg" "$@"
       PRESENTATION_MODE_VALUE="$1"
       PRESENTATION_MODE_EXPLICIT=1
       shift
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-kappa|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--exposure-mode|--exposure-ev|--camera-model|--camera-profile|--camera-profile-json|--realism-profile|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare|--background|--bg-stars|--bg-star-density|--bg-star-strength|--bg-nebula-strength|--mdot-edd|--eta|--fcol|--thick-scale|--cloud-tau|--nu-obs-hz|--rt-steps|--visible-policy|--realism-debug)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-grmhd-density-scale|--disk-grmhd-b-scale|--disk-grmhd-emission-scale|--disk-grmhd-absorption-scale|--disk-grmhd-vel-scale|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-synch-scale|--visible-kappa|--grmhd-smooth-weight|--thin-photosphere|--thin-h-over-r-base|--thin-h-over-r-inner|--thin-h-over-r-outer|--thin-radial-taper|--thin-weight-power-emission|--thin-weight-power-absorption|--corona-layer|--corona-h-over-r|--corona-weight-power|--thermal-transfer-mode|--teff-model|--teff-T0|--teff-r0|--teff-p|--bh-mass|--mdot|--r-in|--photosphere-rho-threshold|--disk-cool-absorption|--disk-cool-dust-to-gas|--disk-cool-dust-kappa-v|--disk-cool-dust-beta|--disk-cool-dust-tsub|--disk-cool-dust-twidth|--disk-cool-gas-kappa0|--disk-cool-gas-nu-slope|--disk-cool-clump-strength|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--exposure-mode|--exposure-ev|--camera-model|--camera-profile|--camera-profile-json|--realism-profile|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare|--background|--bg-stars|--bg-star-density|--bg-star-strength|--bg-nebula-strength|--mdot-edd|--eta|--fcol|--thick-scale|--cloud-tau|--nu-obs-hz|--rt-steps|--visible-policy|--realism-debug)
       need_value "$arg" "$@"
       val="$1"
       shift
@@ -1741,6 +2449,7 @@ while [[ "$#" -gt 0 ]]; do
       val="$1"
       shift
       LOOK_SET=1
+      LOOK_VALUE="$val"
       SWIFT_ARGS+=("$arg" "$val")
       PY_ARGS+=("$arg" "$val")
       ;;
@@ -1772,9 +2481,9 @@ fi
 
 if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
   case "$DISK_GRMHD_DEBUG" in
-    off|none|rho|b2|j|jnu|i|inu|intensity|teff|t|g|gfactor|y|luma|luminance|peak|lambda_peak|pol|polarization|polfrac) ;;
+    off|none|rho|b2|j|jnu|i|inu|intensity|teff|t|g|gfactor|y|luma|luminance|peak|lambda_peak|pol|polarization|polfrac|thetae|electron-temperature|te|sigma|magnetization|magnetization-proxy|beta-inv|betainv|inverse-beta|plasma-beta-inv|speed|fluid-speed|beta-mag|gamma|lorentz|lorentz-factor|tau|optical-depth|alpha|absorption|opacity|samples|sample-count|hit-count|active-steps|invalid|nan|nan-inf|invalid-mask|beaming|doppler|g3|g-cubed|raw-log|log-raw|log-intensity|log-inu|post-exposure|exposed|post-tonemap|tone|tonemap|source|source-function|snu|j-over-alpha|tau1|tau-one|tau1-r|photosphere-r|tau-one-radius|tau1-depth|tau-one-depth|tau1-path|photosphere-depth|tau-wide|optical-depth-wide|alpha-wide|opacity-wide|absorption-wide|emission-radius|emission-r|weighted-radius|emission-weighted-radius|r-emission|bmag|b-magnitude|magnetic-field|magnetic-field-strength|epsabs|eps-abs|epsilon-abs|thermalization|abase|a-base|alpha-base|base-opacity|acool|a-cool|alpha-cool|cool-opacity|jthermal|j-thermal|thermal-emissivity|jthin|j-thin|jsynch|j-synch|thin-emissivity|synch-emissivity|source-thermal|thermal-source|s-thermal|source-thin|thin-source|source-synch|synch-source|s-thin|branch-ratio|branch|thin-ratio|thin-fraction|kappa-ratio|kappa-fraction|thin-weight|thin-photosphere-weight|w-thin|jthermal-weighted|j-thermal-weighted|thermal-emissivity-weighted|jthermal-post|thermal-alpha-pre|thermal-tau-pre|alpha-thermal-pre|tau-thermal-pre|thermal-alpha-post|thermal-tau-post|alpha-thermal-post|tau-thermal-post|corona-weight|corona-layer-weight|w-corona|jthermal-cloud|j-thermal-cloud|thermal-cloud-emissivity|jcloud|j-cloud|thermal-cloud-ratio|cloud-ratio|thermal-cloud-fraction|cloud-fraction|i-thermal|ithermal|thermal-contribution|thermal-intensity|i-thermal-cloud|ithermal-cloud|cloud-contribution|cloud-intensity|i-thermal-body|ithermal-body|body-contribution|body-intensity|i-thermal-corona|ithermal-corona|corona-contribution|corona-intensity|emission-layer|emission-height|layer|body-layer-gate|smooth-body-gate|layer-gate|body-proxy|body-source-proxy|photosphere-proxy|path|path-length|ray-path|time-delay|ct|impact|impact-parameter|b-impact|ray-impact|flow-residual|residual|phi-residual|data-residual|texture-residual) ;;
     *)
-      echo "error: --disk-grmhd-debug must be one of off, rho, b2, jnu, inu, teff, g, y, peak, pol" >&2
+      echo "error: --disk-grmhd-debug must be one of off, rho, b2, jnu, inu, teff, g, y, peak, pol, thetae, sigma, beta-inv, speed, gamma, tau, alpha, samples, invalid, beaming, raw-log, post-exposure, post-tonemap, source, tau1-r, tau1-depth, tau-wide, alpha-wide, emission-radius, bmag, epsabs, abase, acool, jthermal, jthin, source-thermal, source-thin, branch-ratio, thin-weight, jthermal-weighted, thermal-alpha-pre, thermal-alpha-post, corona-weight, jthermal-cloud, thermal-cloud-ratio, ithermal, ithermal-cloud, ithermal-body, ithermal-corona, emission-layer, body-layer-gate, body-proxy, path, impact, flow-residual" >&2
       exit 2
       ;;
   esac
@@ -1787,7 +2496,59 @@ if [[ -n "$DISK_GRMHD_DEBUG" ]]; then
     luma|luminance) DISK_GRMHD_DEBUG="y" ;;
     lambda_peak) DISK_GRMHD_DEBUG="peak" ;;
     polarization|polfrac) DISK_GRMHD_DEBUG="pol" ;;
-  esac
+    electron-temperature|te) DISK_GRMHD_DEBUG="thetae" ;;
+    magnetization|magnetization-proxy) DISK_GRMHD_DEBUG="sigma" ;;
+    betainv|inverse-beta|plasma-beta-inv) DISK_GRMHD_DEBUG="beta-inv" ;;
+    fluid-speed|beta-mag) DISK_GRMHD_DEBUG="speed" ;;
+    lorentz|lorentz-factor) DISK_GRMHD_DEBUG="gamma" ;;
+    optical-depth) DISK_GRMHD_DEBUG="tau" ;;
+    absorption|opacity) DISK_GRMHD_DEBUG="alpha" ;;
+    sample-count|hit-count|active-steps) DISK_GRMHD_DEBUG="samples" ;;
+    nan|nan-inf|invalid-mask) DISK_GRMHD_DEBUG="invalid" ;;
+    doppler|g3|g-cubed) DISK_GRMHD_DEBUG="beaming" ;;
+    log-raw|log-intensity|log-inu) DISK_GRMHD_DEBUG="raw-log" ;;
+    exposed) DISK_GRMHD_DEBUG="post-exposure" ;;
+    tone|tonemap) DISK_GRMHD_DEBUG="post-tonemap" ;;
+    source-function|snu|j-over-alpha) DISK_GRMHD_DEBUG="source" ;;
+    tau1|tau-one|photosphere-r|tau-one-radius) DISK_GRMHD_DEBUG="tau1-r" ;;
+    tau-one-depth|tau1-path|photosphere-depth) DISK_GRMHD_DEBUG="tau1-depth" ;;
+    optical-depth-wide) DISK_GRMHD_DEBUG="tau-wide" ;;
+    opacity-wide|absorption-wide) DISK_GRMHD_DEBUG="alpha-wide" ;;
+    emission-r|weighted-radius|emission-weighted-radius|r-emission) DISK_GRMHD_DEBUG="emission-radius" ;;
+    b-magnitude|magnetic-field|magnetic-field-strength) DISK_GRMHD_DEBUG="bmag" ;;
+    eps-abs|epsilon-abs|thermalization) DISK_GRMHD_DEBUG="epsabs" ;;
+    a-base|alpha-base|base-opacity) DISK_GRMHD_DEBUG="abase" ;;
+    a-cool|alpha-cool|cool-opacity) DISK_GRMHD_DEBUG="acool" ;;
+    j-thermal|thermal-emissivity) DISK_GRMHD_DEBUG="jthermal" ;;
+    j-thin|jsynch|j-synch|thin-emissivity|synch-emissivity) DISK_GRMHD_DEBUG="jthin" ;;
+    thermal-source|s-thermal) DISK_GRMHD_DEBUG="source-thermal" ;;
+    thin-source|source-synch|synch-source|s-thin) DISK_GRMHD_DEBUG="source-thin" ;;
+    branch|thin-ratio|thin-fraction|kappa-ratio|kappa-fraction) DISK_GRMHD_DEBUG="branch-ratio" ;;
+    thin-photosphere-weight|w-thin) DISK_GRMHD_DEBUG="thin-weight" ;;
+    j-thermal-weighted|thermal-emissivity-weighted|jthermal-post) DISK_GRMHD_DEBUG="jthermal-weighted" ;;
+    thermal-tau-pre|alpha-thermal-pre|tau-thermal-pre) DISK_GRMHD_DEBUG="thermal-alpha-pre" ;;
+	    thermal-tau-post|alpha-thermal-post|tau-thermal-post) DISK_GRMHD_DEBUG="thermal-alpha-post" ;;
+	    j-thermal-cloud|thermal-cloud-emissivity|jcloud|j-cloud) DISK_GRMHD_DEBUG="jthermal-cloud" ;;
+	    cloud-ratio|thermal-cloud-fraction|cloud-fraction) DISK_GRMHD_DEBUG="thermal-cloud-ratio" ;;
+        i-thermal|thermal-contribution|thermal-intensity) DISK_GRMHD_DEBUG="ithermal" ;;
+        i-thermal-cloud|cloud-contribution|cloud-intensity) DISK_GRMHD_DEBUG="ithermal-cloud" ;;
+        i-thermal-body|ithermal-body|body-contribution|body-intensity) DISK_GRMHD_DEBUG="ithermal-body" ;;
+        i-thermal-corona|ithermal-corona|corona-contribution|corona-intensity) DISK_GRMHD_DEBUG="ithermal-corona" ;;
+        emission-height|layer) DISK_GRMHD_DEBUG="emission-layer" ;;
+        smooth-body-gate|layer-gate) DISK_GRMHD_DEBUG="body-layer-gate" ;;
+        body-proxy|body-source-proxy|photosphere-proxy) DISK_GRMHD_DEBUG="body-proxy" ;;
+	    residual|phi-residual|data-residual|texture-residual) DISK_GRMHD_DEBUG="flow-residual" ;;
+	  esac
+	fi
+
+apply_source_model_defaults
+require_experimental_for_hidden_source
+apply_science_regime_defaults
+
+if [[ "$DISK_PHYSICS_MODE_VALUE" == "grmhd" && -n "$MAX_STEPS_VALUE" ]]; then
+  if awk -v x="$MAX_STEPS_VALUE" 'BEGIN { exit !(x < 1000) }'; then
+    echo "warn: GRMHD volume tracing with maxSteps=$MAX_STEPS_VALUE may miss the emitting volume and render black; use the preset default or >=1000 for validation renders." >&2
+  fi
 fi
 
 if [[ "$DISK_REPR_SET" -eq 1 ]]; then
@@ -1959,8 +2720,7 @@ if [[ -n "$REQUESTED_DISK_MODEL" ]]; then
 fi
 
 if [[ "$LOOK_SET" -eq 0 && -n "$PRESET_VALUE" && "$DISK_PHYSICS_MODE_VALUE" != "precision" && "$DISK_PHYSICS_MODE_VALUE" != "analysis" && "$DISK_PHYSICS_MODE_VALUE" != "pt" && "$DISK_PHYSICS_MODE_VALUE" != "grmhd" ]]; then
-  SWIFT_ARGS+=(--look "$PRESET_VALUE")
-  PY_ARGS+=(--look "$PRESET_VALUE")
+  set_look_arg "$PRESET_VALUE"
 fi
 
 is_precision_mode=0
@@ -2130,8 +2890,34 @@ if [[ -n "$DISK_HDF5_PATH" ]]; then
       [[ -z "$DISK_HDF5_VR_KEY" ]] && DISK_HDF5_VR_KEY="vx1"
       [[ -z "$DISK_HDF5_VPHI_KEY" ]] && DISK_HDF5_VPHI_KEY="vx3"
       ;;
+    grmhd-photosphere|photosphere)
+      DISK_HDF5_ATLAS_MODE="photosphere"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_H_OVER_R" ]] && DISK_HDF5_PHOTOSPHERE_H_OVER_R="0.08"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CONTRAST" ]] && DISK_HDF5_PHOTOSPHERE_CONTRAST="1.55"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_MAX_RATIO" ]] && DISK_HDF5_PHOTOSPHERE_MAX_RATIO="8.0"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE" ]] && DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE="none"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CORONA_MIX" ]] && DISK_HDF5_PHOTOSPHERE_CORONA_MIX="0.0"
+      [[ -z "$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R" ]] && DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R="0.35"
+      ;;
     *)
-      echo "error: --disk-hdf5-preset must be one of auto, pluto" >&2
+      echo "error: --disk-hdf5-preset must be one of auto, pluto, grmhd-photosphere" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+case "$DISK_HDF5_ATLAS_MODE" in
+  slice|photosphere) ;;
+  *)
+    echo "error: --disk-hdf5-atlas-mode must be one of slice, photosphere" >&2
+    exit 2
+    ;;
+esac
+if [[ -n "$DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE" ]]; then
+  case "$DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE" in
+    none|data) ;;
+    *)
+      echo "error: --disk-hdf5-photosphere-velocity-source must be one of none, data" >&2
       exit 2
       ;;
   esac
@@ -2168,9 +2954,100 @@ if [[ "$DISK_VOLUME_SET" -eq 0 && "$DISK_VOL0_SET" -eq 0 && "$DISK_VOL1_SET" -eq
     VOLUME_HDF5_SOURCE="$DISK_HDF5_PATH"
   fi
 fi
+if [[ -n "$DISK_HDF5_PHOTOSPHERE_CORONA_MIX" ]]; then
+  if ! awk -v x="$DISK_HDF5_PHOTOSPHERE_CORONA_MIX" 'BEGIN { exit !(x >= 0.0 && x <= 1.0) }'; then
+    echo "error: --disk-hdf5-photosphere-corona-mix must be in [0,1]" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R" ]]; then
+  if ! awk -v x="$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R" 'BEGIN { exit !(x > 0.0) }'; then
+    echo "error: --disk-hdf5-photosphere-corona-h-over-r must be > 0" >&2
+    exit 2
+  fi
+fi
+if ! awk -v x="$DISK_GRMHD_R_WARP" 'BEGIN { exit !(x > 0.0) }'; then
+  echo "error: --disk-grmhd-r-warp must be > 0" >&2
+  exit 2
+fi
+if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" ]]; then
+  if ! awk -v x="$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" 'BEGIN { exit !(x >= 0.0 && x <= 1.0) }'; then
+    echo "error: --disk-grmhd-phi-residual-smooth must be in [0,1]" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" ]]; then
+  if ! [[ "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" =~ ^[0-9]+$ ]]; then
+    echo "error: --disk-grmhd-phi-residual-smooth-passes must be an integer >= 0" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" ]]; then
+  if ! awk -v x="$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" 'BEGIN { exit !(x >= 0.0 && x <= 1.0) }'; then
+    echo "error: --disk-grmhd-rz-residual-smooth must be in [0,1]" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES" ]]; then
+  if ! [[ "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES" =~ ^[0-9]+$ ]]; then
+    echo "error: --disk-grmhd-rz-residual-smooth-passes must be an integer >= 0" >&2
+    exit 2
+  fi
+fi
 
 if [[ "$DISK_IC_ENABLE" -eq 1 && -z "$DISK_HDF5_PATH" && -z "$VOLUME_HDF5_SOURCE" ]]; then
   echo "warn: --disk-ic-* options were provided but no HDF5 source is active; IC perturbation is skipped." >&2
+fi
+
+if [[ "$DISK_VOLUME_SET" -eq 0 && "$DISK_VOL0_SET" -eq 0 && "$DISK_VOL1_SET" -eq 0 && -z "$VOLUME_HDF5_SOURCE" ]]; then
+  case "$SCIENCE_REGIME_VALUE" in
+    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin)
+      THIN_VOLUME_SCRIPT="$SCRIPT_DIR/build_thin_photosphere_volume.py"
+      if [[ ! -f "$THIN_VOLUME_SCRIPT" ]]; then
+        echo "error: thin photosphere volume script not found: $THIN_VOLUME_SCRIPT" >&2
+        exit 2
+      fi
+      mkdir -p "$CACHE_ROOT"
+      THIN_VOLUME_Z="${DISK_VOLUME_Z_MAX:-0.16}"
+      if [[ "$DISK_VOLUME_OUT_EXPLICIT" -eq 1 ]]; then
+        DISK_VOLUME_VALUE="$DISK_VOLUME_OUT"
+      else
+        THIN_VOLUME_CACHE_KEY="$(compute_cache_key \
+          "$THIN_VOLUME_SCRIPT" "$(file_stamp "$THIN_VOLUME_SCRIPT")" \
+	          "$DISK_VOLUME_NR" "$DISK_VOLUME_NPHI" "$DISK_VOLUME_NZ" "$THIN_VOLUME_Z" \
+	          "r=2.15:22.0" "warp=0.72" "h=0.055:0.045:0.070" "contrast=1.05" "radial-wave=v2" "vortices=v1" "heating=v1" "streams=v1" "continuum=v1")"
+        DISK_VOLUME_VALUE="$CACHE_ROOT/thin_photosphere_${THIN_VOLUME_CACHE_KEY}.bin"
+      fi
+
+      THIN_VOLUME_CMD=(
+        "$PYTHON_BIN" "$THIN_VOLUME_SCRIPT"
+        --output "$DISK_VOLUME_VALUE"
+        --nr "$DISK_VOLUME_NR"
+        --nphi "$DISK_VOLUME_NPHI"
+        --nz "$DISK_VOLUME_NZ"
+	        --z-max "$THIN_VOLUME_Z"
+	        --contrast "1.05"
+	        --continuum-floor "0.26"
+      )
+
+      log_section "Preprocess - Thin Photosphere Volume"
+      log_item "output" "$DISK_VOLUME_VALUE"
+      log_item "nr,nphi,nz" "${DISK_VOLUME_NR},${DISK_VOLUME_NPHI},${DISK_VOLUME_NZ}"
+      log_item "z_max" "$THIN_VOLUME_Z"
+      log_item "model" "surrogate disk-space participating medium"
+      if [[ -f "$DISK_VOLUME_VALUE" && -f "${DISK_VOLUME_VALUE}.json" ]]; then
+        log_item "cache" "hit"
+      else
+        log_item "cache" "miss"
+        run_cached_build "$DISK_VOLUME_VALUE" "${THIN_VOLUME_CMD[@]}"
+      fi
+      if [[ ! -f "$DISK_VOLUME_VALUE" || ! -f "${DISK_VOLUME_VALUE}.json" ]]; then
+        echo "error: thin photosphere volume build did not produce output + metadata." >&2
+        exit 2
+      fi
+      DISK_VOLUME_SET=1
+      ;;
+  esac
 fi
 
 if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
@@ -2202,6 +3079,60 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     fi
     ensure_h5py_python
 
+    if [[ -n "$DISK_HDF5_NEXT_PATH" ]]; then
+      if [[ ! -f "$DISK_HDF5_NEXT_PATH" ]]; then
+        echo "error: --disk-hdf5-next input not found: $DISK_HDF5_NEXT_PATH" >&2
+        exit 2
+      fi
+      GRMHD_TIME_BLEND="${DISK_HDF5_TIME_BLEND:-0.0}"
+      if ! awk -v x="$GRMHD_TIME_BLEND" 'BEGIN { exit !(x >= 0.0 && x <= 1.0) }'; then
+        echo "error: --disk-hdf5-time-blend must be in [0,1]" >&2
+        exit 2
+      fi
+      if awk -v x="$GRMHD_TIME_BLEND" 'BEGIN { exit !(x > 0.0 && x < 1.0) }'; then
+        GRMHD_BLEND_SCRIPT="$SCRIPT_DIR/blend_hdf5_snapshots.py"
+        if [[ ! -f "$GRMHD_BLEND_SCRIPT" ]]; then
+          echo "error: GRMHD HDF5 blend script not found: $GRMHD_BLEND_SCRIPT" >&2
+          exit 2
+        fi
+        mkdir -p "$CACHE_ROOT"
+        GRMHD_BLEND_KEY="$(compute_cache_key \
+          "$GRMHD_BLEND_SCRIPT" "$(file_stamp "$GRMHD_BLEND_SCRIPT")" \
+          "$VOLUME_HDF5_SOURCE" "$(file_stamp "$VOLUME_HDF5_SOURCE")" \
+          "$DISK_HDF5_NEXT_PATH" "$(file_stamp "$DISK_HDF5_NEXT_PATH")" \
+          "$GRMHD_TIME_BLEND")"
+        GRMHD_BLEND_HDF5="$CACHE_ROOT/grmhd_blend_${GRMHD_BLEND_KEY}.h5"
+        log_section "Preprocess - GRMHD HDF5 Temporal Blend"
+        log_item "input" "$VOLUME_HDF5_SOURCE"
+        log_item "input_next" "$DISK_HDF5_NEXT_PATH"
+        log_item "time_blend" "$GRMHD_TIME_BLEND"
+        log_item "output" "$GRMHD_BLEND_HDF5"
+        if [[ -f "$GRMHD_BLEND_HDF5" ]]; then
+          log_item "cache" "hit"
+        else
+          log_item "cache" "miss"
+          run_cached_build "$GRMHD_BLEND_HDF5" \
+            "$PYTHON_BIN" "$GRMHD_BLEND_SCRIPT" \
+            --input "$VOLUME_HDF5_SOURCE" \
+            --input-next "$DISK_HDF5_NEXT_PATH" \
+            --output "$GRMHD_BLEND_HDF5" \
+            --time-blend "$GRMHD_TIME_BLEND"
+        fi
+        if [[ ! -f "$GRMHD_BLEND_HDF5" ]]; then
+          echo "error: GRMHD HDF5 temporal blend did not produce output: $GRMHD_BLEND_HDF5" >&2
+          exit 2
+        fi
+        VOLUME_HDF5_SOURCE="$GRMHD_BLEND_HDF5"
+      elif awk -v x="$GRMHD_TIME_BLEND" 'BEGIN { exit !(x >= 1.0) }'; then
+        log_section "Preprocess - GRMHD HDF5 Temporal Blend"
+        log_item "input" "$VOLUME_HDF5_SOURCE"
+        log_item "input_next" "$DISK_HDF5_NEXT_PATH"
+        log_item "time_blend" "$GRMHD_TIME_BLEND"
+        log_item "output" "using input_next directly"
+        VOLUME_HDF5_SOURCE="$DISK_HDF5_NEXT_PATH"
+      fi
+    fi
+
     if [[ "$DISK_VOL0_SET" -eq 0 ]]; then
       mkdir -p "$CACHE_ROOT"
       DISK_VOL0_SET=1
@@ -2216,10 +3147,16 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     if [[ -z "$DISK_VOL0_VALUE" && -z "$DISK_VOL1_VALUE" && -z "$DISK_META_VALUE" ]]; then
       GRMHD_CACHE_KEY="$(compute_cache_key \
         "$VOLUME_HDF5_SOURCE" "$(file_stamp "$VOLUME_HDF5_SOURCE")" \
-        "$DISK_GRMHD_NR" "$DISK_GRMHD_NPHI" "$DISK_GRMHD_NZ" "$DISK_GRMHD_NATIVE_3D" \
+        "$GRMHD_VOLUME_SCRIPT" "$(file_stamp "$GRMHD_VOLUME_SCRIPT")" \
+        "$DISK_GRMHD_NR" "$DISK_GRMHD_NPHI" "$DISK_GRMHD_NZ" "$DISK_GRMHD_NATIVE_3D" "$DISK_GRMHD_VELOCITY_MODE" \
         "$DISK_HDF5_R_TO_RS" "$DISK_HDF5_R_KEY" "$DISK_HDF5_PHI_KEY" "$DISK_HDF5_THETA_KEY" \
-        "$DISK_HDF5_RHO_KEY" "$DISK_HDF5_TEMP_KEY" "$DISK_HDF5_VR_KEY" "$DISK_HDF5_VPHI_KEY" \
-        "$DISK_HDF5_THETA_INDEX" "$DISK_HDF5_THETA_AVERAGE" "$DISK_GRMHD_Z_MAX" "$DISK_GRMHD_U_TO_THETAE")"
+        "$DISK_HDF5_RHO_KEY" "$DISK_HDF5_TEMP_KEY" "$DISK_HDF5_U0_KEY" "$DISK_HDF5_VR_KEY" "$DISK_HDF5_VPHI_KEY" \
+        "$DISK_HDF5_VZ_KEY" "$DISK_HDF5_BR_KEY" "$DISK_HDF5_BPHI_KEY" "$DISK_HDF5_BZ_KEY" \
+        "$DISK_HDF5_THETA_INDEX" "$DISK_HDF5_THETA_AVERAGE" "$DISK_GRMHD_Z_MAX" "$DISK_GRMHD_R_WARP" "$DISK_GRMHD_U_TO_THETAE" \
+        "$DISK_GRMHD_ELECTRON_MODEL" "$DISK_GRMHD_ELECTRON_R_LOW" "$DISK_GRMHD_ELECTRON_R_HIGH" "$DISK_GRMHD_ADIABATIC_GAMMA" \
+        "$DISK_GRMHD_PHI_CONTRAST" "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" \
+        "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" \
+        "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES")"
       DISK_VOL0_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.vol0.bin"
       DISK_VOL1_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.vol1.bin"
       DISK_META_VALUE="$CACHE_ROOT/grmhd_${GRMHD_CACHE_KEY}.meta.json"
@@ -2234,7 +3171,13 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
       --nr "$DISK_GRMHD_NR"
       --nphi "$DISK_GRMHD_NPHI"
       --nz "$DISK_GRMHD_NZ"
+      --r-warp "$DISK_GRMHD_R_WARP"
       --native-3d "$DISK_GRMHD_NATIVE_3D"
+      --velocity-mode "$DISK_GRMHD_VELOCITY_MODE"
+      --electron-model "$DISK_GRMHD_ELECTRON_MODEL"
+      --electron-r-low "$DISK_GRMHD_ELECTRON_R_LOW"
+      --electron-r-high "$DISK_GRMHD_ELECTRON_R_HIGH"
+      --adiabatic-gamma "$DISK_GRMHD_ADIABATIC_GAMMA"
     )
     if [[ -n "$DISK_HDF5_R_TO_RS" ]]; then
       GRMHD_VOLUME_CMD+=(--r-to-rs "$DISK_HDF5_R_TO_RS")
@@ -2254,11 +3197,26 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     if [[ -n "$DISK_HDF5_TEMP_KEY" ]]; then
       GRMHD_VOLUME_CMD+=(--thetae-key "$DISK_HDF5_TEMP_KEY")
     fi
+    if [[ -n "$DISK_HDF5_U0_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--u0-key "$DISK_HDF5_U0_KEY")
+    fi
     if [[ -n "$DISK_HDF5_VR_KEY" ]]; then
       GRMHD_VOLUME_CMD+=(--vr-key "$DISK_HDF5_VR_KEY")
     fi
     if [[ -n "$DISK_HDF5_VPHI_KEY" ]]; then
       GRMHD_VOLUME_CMD+=(--vphi-key "$DISK_HDF5_VPHI_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_VZ_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--vz-key "$DISK_HDF5_VZ_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_BR_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--br-key "$DISK_HDF5_BR_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_BPHI_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--bphi-key "$DISK_HDF5_BPHI_KEY")
+    fi
+    if [[ -n "$DISK_HDF5_BZ_KEY" ]]; then
+      GRMHD_VOLUME_CMD+=(--bz-key "$DISK_HDF5_BZ_KEY")
     fi
     if [[ -n "$DISK_HDF5_THETA_INDEX" ]]; then
       GRMHD_VOLUME_CMD+=(--theta-index "$DISK_HDF5_THETA_INDEX")
@@ -2272,6 +3230,24 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     if [[ -n "$DISK_GRMHD_U_TO_THETAE" ]]; then
       GRMHD_VOLUME_CMD+=(--u-to-thetae "$DISK_GRMHD_U_TO_THETAE")
     fi
+    if [[ -n "$DISK_GRMHD_PHI_CONTRAST" ]]; then
+      GRMHD_VOLUME_CMD+=(--phi-contrast "$DISK_GRMHD_PHI_CONTRAST")
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" ]]; then
+      GRMHD_VOLUME_CMD+=(--phi-contrast-max-ratio "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO")
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" ]]; then
+      GRMHD_VOLUME_CMD+=(--phi-residual-smooth "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH")
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" ]]; then
+      GRMHD_VOLUME_CMD+=(--phi-residual-smooth-passes "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES")
+    fi
+    if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" ]]; then
+      GRMHD_VOLUME_CMD+=(--rz-residual-smooth "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH")
+    fi
+    if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES" ]]; then
+      GRMHD_VOLUME_CMD+=(--rz-residual-smooth-passes "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES")
+    fi
 
     log_section "Preprocess - GRMHD Volumes"
     log_item "input" "$VOLUME_HDF5_SOURCE"
@@ -2279,7 +3255,27 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
     log_item "vol1" "$DISK_VOL1_VALUE"
     log_item "meta" "$DISK_META_VALUE"
     log_item "nr,nphi,nz" "${DISK_GRMHD_NR},${DISK_GRMHD_NPHI},${DISK_GRMHD_NZ}"
+    log_item "r_warp" "$DISK_GRMHD_R_WARP"
     log_item "native3d" "$DISK_GRMHD_NATIVE_3D"
+    log_item "electron_model" "${DISK_GRMHD_ELECTRON_MODEL},Rlow=${DISK_GRMHD_ELECTRON_R_LOW},Rhigh=${DISK_GRMHD_ELECTRON_R_HIGH}"
+    if [[ -n "$DISK_GRMHD_PHI_CONTRAST" ]]; then
+      log_item "phi_contrast" "$DISK_GRMHD_PHI_CONTRAST"
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" ]]; then
+      log_item "phi_contrast_max_ratio" "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO"
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" ]]; then
+      log_item "phi_residual_smooth" "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH"
+    fi
+    if [[ -n "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES" ]]; then
+      log_item "phi_residual_smooth_passes" "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH_PASSES"
+    fi
+    if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH" ]]; then
+      log_item "rz_residual_smooth" "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH"
+    fi
+    if [[ -n "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES" ]]; then
+      log_item "rz_residual_smooth_passes" "$DISK_GRMHD_RZ_RESIDUAL_SMOOTH_PASSES"
+    fi
     if [[ -f "$DISK_VOL0_VALUE" && -f "$DISK_VOL1_VALUE" && -f "$DISK_META_VALUE" ]]; then
       log_item "cache" "hit"
     else
@@ -2290,6 +3286,74 @@ if [[ -n "$VOLUME_HDF5_SOURCE" ]]; then
       echo "error: GRMHD volume bridge did not produce vol0/vol1/meta outputs." >&2
       exit 2
     fi
+    "$PYTHON_BIN" - "$DISK_META_VALUE" <<'PY' >&2 || true
+import json
+import sys
+
+meta_path = sys.argv[1]
+with open(meta_path, "r", encoding="utf-8") as f:
+    meta = json.load(f)
+
+stats = meta.get("stats", {})
+phi = stats.get("phiVariation", {})
+
+def fmt_var(name):
+    v = phi.get(name, {})
+    if not v:
+        return None
+    return (
+        f"{name}:p50={v.get('medianRelStd', 0.0):.4g},"
+        f"p95={v.get('p95RelStd', 0.0):.4g},"
+        f"profile={v.get('profileRelStd', 0.0):.4g}"
+    )
+
+parts = [p for p in (fmt_var("rho"), fmt_var("thetae"), fmt_var("betaMagnitude"), fmt_var("bMagnitude")) if p]
+if parts:
+    print("  grmhd_phi_variation  " + " ".join(parts))
+    thetae_prescription = meta.get("thetaePrescription", {})
+    if thetae_prescription:
+        etype = thetae_prescription.get("type", "unknown")
+        resolved = thetae_prescription.get("resolvedModel", "")
+        suffix = f" resolved={resolved}" if resolved else ""
+        stats = thetae_prescription.get("stats", {})
+        if stats:
+            print(
+                "  grmhd_thetae_prescription  "
+                f"type={etype}{suffix} "
+                f"thetaeP50={stats.get('thetaeMedian', 0.0):.4g} "
+                f"thetaeP95={stats.get('thetaeP95', 0.0):.4g} "
+                f"betaP50={stats.get('plasmaBetaMedian', 0.0):.4g}"
+            )
+        else:
+            print(f"  grmhd_thetae_prescription  type={etype}{suffix}")
+    radial = meta.get("radialRange", {})
+    if radial:
+        print(
+            "  grmhd_radial_range  "
+            f"mode={radial.get('mode', 'unknown')} "
+            f"sourceRMax={radial.get('sourceRMax', 0.0):.4g} "
+            f"selectedRMax={radial.get('selectedRMax', meta.get('rNormMax', 0.0)):.4g}"
+        )
+    rho_p95 = phi.get("rho", {}).get("p95RelStd", 0.0)
+    thetae_p95 = phi.get("thetae", {}).get("p95RelStd", 0.0)
+    beta_p95 = phi.get("betaMagnitude", {}).get("p95RelStd", 0.0)
+    b_p95 = phi.get("bMagnitude", {}).get("p95RelStd", 0.0)
+    if max(rho_p95, thetae_p95, beta_p95, b_p95) < 0.02:
+        print(
+            "warn: GRMHD source is nearly axisymmetric in phi; visible flow texture will be weak unless the input snapshot contains stronger non-axisymmetric structure.",
+            file=sys.stderr,
+        )
+    suitability = meta.get("suitability", {})
+    if suitability:
+        rating = suitability.get("rating", "unknown")
+        flow = suitability.get("flowPhiP95", 0.0)
+        dyn = suitability.get("dynamicsPhiP95", 0.0)
+        print(f"  grmhd_snapshot_suitability  rating={rating} flowPhiP95={flow:.4g} dynamicsPhiP95={dyn:.4g}")
+        for warning in suitability.get("warnings", []):
+            print(f"warn: GRMHD snapshot suitability: {warning}", file=sys.stderr)
+if meta.get("syntheticB", False):
+    print("warn: GRMHD magnetic field is synthetic; synchrotron/magnetization diagnostics are not physically predictive.", file=sys.stderr)
+PY
   else
     HDF5_VOLUME_SCRIPT="$SCRIPT_DIR/build_hdf5_volume.py"
     if [[ ! -f "$HDF5_VOLUME_SCRIPT" ]]; then
@@ -2533,6 +3597,10 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" 
     echo "error: --disk-hdf5 input not found: $DISK_HDF5_PATH" >&2
     exit 2
   fi
+  if [[ -n "$DISK_HDF5_NEXT_PATH" && ! -f "$DISK_HDF5_NEXT_PATH" ]]; then
+    echo "error: --disk-hdf5-next input not found: $DISK_HDF5_NEXT_PATH" >&2
+    exit 2
+  fi
 
   if [[ "$DISK_HDF5_OUT_EXPLICIT" -eq 0 ]]; then
     TEMP_HDF5_ATLAS="$(mktemp /tmp/blackhole_hdf5_atlas.XXXXXX).bin"
@@ -2554,7 +3622,14 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" 
     --r-min "$HDF5_R_MIN"
     --r-max "$HDF5_R_MAX"
     --r-warp "$HDF5_R_WARP"
+    --atlas-mode "$DISK_HDF5_ATLAS_MODE"
   )
+  if [[ -n "$DISK_HDF5_NEXT_PATH" ]]; then
+    HDF5_CMD+=(--input-next "$DISK_HDF5_NEXT_PATH")
+  fi
+  if [[ -n "$DISK_HDF5_TIME_BLEND" ]]; then
+    HDF5_CMD+=(--time-blend "$DISK_HDF5_TIME_BLEND")
+  fi
   if [[ -n "$DISK_HDF5_R_TO_RS" ]]; then
     HDF5_CMD+=(--r-to-rs "$DISK_HDF5_R_TO_RS")
   fi
@@ -2563,6 +3638,9 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" 
   fi
   if [[ -n "$DISK_HDF5_R_KEY" ]]; then
     HDF5_CMD+=(--r-key "$DISK_HDF5_R_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_THETA_KEY" ]]; then
+    HDF5_CMD+=(--theta-key "$DISK_HDF5_THETA_KEY")
   fi
   if [[ -n "$DISK_HDF5_PHI_KEY" ]]; then
     HDF5_CMD+=(--phi-key "$DISK_HDF5_PHI_KEY")
@@ -2578,6 +3656,33 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" 
   fi
   if [[ -n "$DISK_HDF5_VPHI_KEY" ]]; then
     HDF5_CMD+=(--vphi-key "$DISK_HDF5_VPHI_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_BR_KEY" ]]; then
+    HDF5_CMD+=(--br-key "$DISK_HDF5_BR_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_BZ_KEY" ]]; then
+    HDF5_CMD+=(--btheta-key "$DISK_HDF5_BZ_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_BPHI_KEY" ]]; then
+    HDF5_CMD+=(--bphi-key "$DISK_HDF5_BPHI_KEY")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_H_OVER_R" ]]; then
+    HDF5_CMD+=(--photosphere-h-over-r "$DISK_HDF5_PHOTOSPHERE_H_OVER_R")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_CONTRAST" ]]; then
+    HDF5_CMD+=(--photosphere-contrast "$DISK_HDF5_PHOTOSPHERE_CONTRAST")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_MAX_RATIO" ]]; then
+    HDF5_CMD+=(--photosphere-max-ratio "$DISK_HDF5_PHOTOSPHERE_MAX_RATIO")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE" ]]; then
+    HDF5_CMD+=(--photosphere-velocity-source "$DISK_HDF5_PHOTOSPHERE_VELOCITY_SOURCE")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_CORONA_MIX" ]]; then
+    HDF5_CMD+=(--photosphere-corona-mix "$DISK_HDF5_PHOTOSPHERE_CORONA_MIX")
+  fi
+  if [[ -n "$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R" ]]; then
+    HDF5_CMD+=(--photosphere-corona-h-over-r "$DISK_HDF5_PHOTOSPHERE_CORONA_H_OVER_R")
   fi
   if [[ -n "$DISK_HDF5_THETA_INDEX" ]]; then
     HDF5_CMD+=(--theta-index "$DISK_HDF5_THETA_INDEX")
@@ -2606,7 +3711,12 @@ if [[ -n "$DISK_HDF5_PATH" && "$USE_HDF5_FLOW_BRIDGE" -eq 0 && "$is_grmhd_mode" 
 
   log_section "Preprocess - HDF5"
   log_item "input" "$DISK_HDF5_PATH"
+  if [[ -n "$DISK_HDF5_NEXT_PATH" ]]; then
+    log_item "input_next" "$DISK_HDF5_NEXT_PATH"
+    log_item "time_blend" "${DISK_HDF5_TIME_BLEND:-0.0}"
+  fi
   log_item "preset" "$DISK_HDF5_PRESET"
+  log_item "atlas_mode" "$DISK_HDF5_ATLAS_MODE"
   log_item "atlas_out" "$DISK_HDF5_OUT"
   if [[ -n "$DISK_HDF5_R_KEY" || -n "$DISK_HDF5_PHI_KEY" || -n "$DISK_HDF5_RHO_KEY" || -n "$DISK_HDF5_TEMP_KEY" || -n "$DISK_HDF5_VR_KEY" || -n "$DISK_HDF5_VPHI_KEY" ]]; then
     log_item "keys" "r=${DISK_HDF5_R_KEY:-auto},phi=${DISK_HDF5_PHI_KEY:-auto},rho=${DISK_HDF5_RHO_KEY:-auto},temp=${DISK_HDF5_TEMP_KEY:-auto},vr=${DISK_HDF5_VR_KEY:-auto},vphi=${DISK_HDF5_VPHI_KEY:-auto}"
@@ -2876,8 +3986,29 @@ if [[ "$GPU_STREAM_LINEAR32" -eq 1 ]]; then
   fi
 fi
 
+ensure_parent_dir "$IMAGE_OUT"
+ensure_parent_dir "$COLLISIONS_OUT"
+if [[ -n "$LINEAR32_OUT" ]]; then
+  ensure_parent_dir "$LINEAR32_OUT"
+fi
+
 log_section "Pipeline"
 log_item "metric" "$METRIC_VALUE"
+if [[ "$SOURCE_MODEL_SET" -eq 1 ]]; then
+  log_item "source_model" "$SOURCE_MODEL_VALUE"
+fi
+if [[ "$SOURCE_QUALITY_SET" -eq 1 ]]; then
+  log_item "quality" "$SOURCE_QUALITY_VALUE"
+fi
+if [[ "$SCIENCE_REGIME_SET" -eq 1 ]]; then
+  log_item "science_regime" "$SCIENCE_REGIME_VALUE"
+fi
+if [[ -n "$PRESENTATION_MODE_VALUE" ]]; then
+  log_item "presentation_mode" "$PRESENTATION_MODE_VALUE"
+fi
+if [[ -n "$LOOK_VALUE" ]]; then
+  log_item "look" "$LOOK_VALUE"
+fi
 if [[ "$MATCH_CPU" -eq 0 ]]; then
   PIPELINE_MODE_LABEL="gpu-only"
 else
@@ -2977,8 +4108,33 @@ else
   ETA_KERR_SUBSTEPS=4
 fi
 
+refresh_metal_aggregate_if_needed() {
+  local volume_rt="$ROOT_DIR/Blackhole/Metal/volume_rt.metal"
+  local integral="$ROOT_DIR/Blackhole/integral.metal"
+  local dep
+  [[ -f "$volume_rt" ]] || return 0
+  for dep in \
+    "$ROOT_DIR"/Blackhole/Metal/VolumeTransport/*.metal \
+    "$ROOT_DIR"/Blackhole/Metal/Compose/*.metalh \
+    "$ROOT_DIR"/Blackhole/Metal/Visible/*.metal \
+    "$ROOT_DIR"/Blackhole/Metal/gr_math.metal \
+    "$ROOT_DIR"/Blackhole/Metal/disk_models.metal \
+    "$ROOT_DIR"/Blackhole/Metal/spectrum_visible.metal
+  do
+    [[ -e "$dep" ]] || continue
+    if [[ "$dep" -nt "$volume_rt" ]]; then
+      touch "$volume_rt"
+      break
+    fi
+  done
+  if [[ -f "$integral" && "$volume_rt" -nt "$integral" ]]; then
+    touch "$integral"
+  fi
+}
+
 if [[ "$NO_BUILD" -eq 0 ]]; then
   log_section "Build"
+  refresh_metal_aggregate_if_needed
   xcodebuild \
     -project "$PROJECT_PATH" \
     -scheme "$SCHEME" \

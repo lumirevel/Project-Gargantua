@@ -26,6 +26,11 @@ static inline float3 ray_bundle_visible_xyz_from_collision(thread const Collisio
         return float3(0.0);
     }
 
+    if (rec.noise <= -50.0) {
+        ok = true;
+        return max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
+    }
+
     float g_total = clamp(rec.v_disk.x, 1e-4, 1e4);
     float tEmit = max(rec.T, 1.0);
     float colorDilution = 1.0;

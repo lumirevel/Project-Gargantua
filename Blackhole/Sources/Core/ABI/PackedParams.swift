@@ -131,7 +131,24 @@ struct PackedParams {
     var coolGasKappa0: Float
     var coolGasNuSlope: Float
     var coolClumpStrength: Float
-    var coolAbsorptionPad: Float
+    var visibleSynchScale: Float
+    var thinPhotosphereEnabled: UInt32
+    var thinRadialTaperEnabled: UInt32
+    var thinHOverRBase: Float
+    var thinHOverRInner: Float
+    var thinHOverROuter: Float
+    var thinWeightPowerEmission: Float
+    var thinWeightPowerAbsorption: Float
+    var _padThinPhotosphere: Float
+    var coronaLayerEnabled: UInt32
+    var coronaHOverR: Float
+    var coronaWeightPower: Float
+    var visibleThermalTransferMode: UInt32
+    var grmhdBranchIsolationMode: UInt32
+    var grmhdTransportAlphaScale: Float
+    var grmhdSmoothEmissionScale: Float
+    var grmhdCloudEmissionScale: Float
+    var grmhdSmoothWeightMode: UInt32
 }
 
 struct CollisionInfo {
@@ -217,9 +234,9 @@ struct ComposeSolveParams {
     var lumQuantile: Float
     var targetWhite: Float
     var pFloor: Float
-    var _pad0: Float
-    var _pad1: Float
-    var _pad2: Float
+    var lumMidQuantile: Float
+    var targetMid: Float
+    var maxExposureBoost: Float
 }
 
 struct ComposeSolveResult {
@@ -228,7 +245,7 @@ struct ComposeSolveResult {
     var p50: Float
     var p995: Float
     var exposure: Float
-    var _pad0: Float
+    var pMid: Float
     var cloudSamples: UInt32
     var lumSamples: UInt32
 }
@@ -255,17 +272,25 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 548
-    let expectedStride = 560
+    let expectedSize = 616
+    let expectedStride = 624
     let expectedAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
         "rs": 100,
         "metric": 140,
         "diskPhysicsMode": 276,
+        "diskPrecisionTexture": 296,
         "diskVolumeMode": 332,
         "visibleMode": 436,
+        "visibleEmissionModel": 484,
         "coolAbsorptionMode": 508,
+        "visibleSynchScale": 544,
+        "thinPhotosphereEnabled": 548,
+        "coronaLayerEnabled": 580,
+        "visibleThermalTransferMode": 592,
+        "grmhdBranchIsolationMode": 596,
+        "grmhdSmoothWeightMode": 612,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -296,8 +321,16 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "rs": MemoryLayout<PackedParams>.offset(of: \PackedParams.rs) ?? -1,
         "metric": MemoryLayout<PackedParams>.offset(of: \PackedParams.metric) ?? -1,
         "diskPhysicsMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskPhysicsMode) ?? -1,
+        "diskPrecisionTexture": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskPrecisionTexture) ?? -1,
         "diskVolumeMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskVolumeMode) ?? -1,
         "visibleMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleMode) ?? -1,
+        "visibleEmissionModel": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleEmissionModel) ?? -1,
         "coolAbsorptionMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.coolAbsorptionMode) ?? -1,
+        "visibleSynchScale": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleSynchScale) ?? -1,
+        "thinPhotosphereEnabled": MemoryLayout<PackedParams>.offset(of: \PackedParams.thinPhotosphereEnabled) ?? -1,
+        "coronaLayerEnabled": MemoryLayout<PackedParams>.offset(of: \PackedParams.coronaLayerEnabled) ?? -1,
+        "visibleThermalTransferMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleThermalTransferMode) ?? -1,
+        "grmhdBranchIsolationMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdBranchIsolationMode) ?? -1,
+        "grmhdSmoothWeightMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdSmoothWeightMode) ?? -1,
     ]
 }

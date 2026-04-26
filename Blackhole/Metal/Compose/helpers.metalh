@@ -216,7 +216,8 @@ static inline bool comp_thin_physical_active(constant ComposeParams& C) {
 }
 
 static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
-    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 2u);
+    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u &&
+            (C.realismProfile == 2u || C.realismProfile == 3u || C.realismProfile == 4u));
 }
 
 static inline bool comp_thin_realism_debug_active(constant ComposeParams& C) {
@@ -231,19 +232,67 @@ static inline bool comp_linear_rgb_is_final_sentinel(float w) {
     return w > 1.25;
 }
 
+static inline bool comp_grmhd_visible_final_rec(const CollisionInfo rec,
+                                                constant ComposeParams& C)
+{
+    return (FC_PHYSICS_MODE == 3u &&
+            visible_mode_enabled_fc() &&
+            C.analysisMode == 0u &&
+            rec.noise <= -50.0);
+}
+
+static inline float comp_grmhd_visible_high_order_visibility(const CollisionInfo rec,
+                                                             constant Params& P,
+                                                             constant ComposeParams& C)
+{
+    (void)rec;
+    (void)P;
+    (void)C;
+    // Do not force a shadow or suppress caustics in the physical radiance path.
+    // Unresolved eye/camera effects belong in the observer PSF/adaptation layer,
+    // not as an impact-parameter mask on GRMHD transport.
+    return 1.0;
+}
+
+static inline float comp_atlas_temperature_ratio(float traceT,
+                                                 float referenceT,
+                                                 constant Params& P)
+{
+    if (P.diskAtlasMode == 0u) return 1.0;
+    if (!(traceT > 1.0) || !(referenceT > 1.0) || !isfinite(traceT) || !isfinite(referenceT)) {
+        return 1.0;
+    }
+    // The atlas temperature channel is a GRMHD-derived multiplicative photosphere
+    // modulation. Keep it bounded so code-unit preprocessing cannot overwrite the
+    // physical radial thin-disk temperature backbone.
+    return clamp(traceT / max(referenceT, 1.0), 0.35, 2.25);
+}
+
 static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P,
                                                              constant ComposeParams& C)
 {
     ThinHybridRealismConfig cfg;
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
-    if (C.realismProfile >= 3u) {
+    if (C.realismProfile == 5u) {
+        cfg.perturbAmp = clamp(0.34 + 0.18 * turbulence, 0.18, 0.58);
+        cfg.atmosphereTau = 0.0;
+        cfg.coronaStrength = 0.018;
+        cfg.beamingStrength = 0.0;
+        cfg.innerBoost = 0.52;
+    } else if (C.realismProfile == 4u) {
+        cfg.perturbAmp = clamp(0.30 + 0.14 * turbulence, 0.24, 0.46);
+        cfg.atmosphereTau = 0.035;
+        cfg.coronaStrength = 0.002;
+        cfg.beamingStrength = 0.0;
+        cfg.innerBoost = 0.30;
+    } else if (C.realismProfile == 3u) {
         cfg.perturbAmp = clamp(0.62 + 0.20 * turbulence, 0.54, 0.88);
         cfg.atmosphereTau = 0.30;
         cfg.coronaStrength = 0.055;
         cfg.beamingStrength = 0.0;
         cfg.innerBoost = 0.84;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
-        cfg.perturbAmp = clamp(0.50 + 0.20 * turbulence, 0.38, 0.74);
+        cfg.perturbAmp = clamp(0.42 + 0.16 * turbulence, 0.30, 0.62);
         cfg.atmosphereTau = 0.17;
         cfg.coronaStrength = 0.024;
         cfg.beamingStrength = 0.0;
@@ -255,7 +304,13 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
         cfg.beamingStrength = 0.0;
         cfg.innerBoost = 0.0;
     }
-    if (C.realismProfile >= 3u) {
+    if (C.realismProfile == 5u) {
+        cfg.outerFadeStart = 0.74;
+        cfg.outerFadeEnd = 1.00;
+    } else if (C.realismProfile == 4u) {
+        cfg.outerFadeStart = 0.70;
+        cfg.outerFadeEnd = 1.00;
+    } else if (C.realismProfile == 3u) {
         cfg.outerFadeStart = 0.50;
         cfg.outerFadeEnd = 0.98;
     } else if (C.realismProfile == 2u || comp_thin_hybrid_debug_active(C)) {
@@ -316,8 +371,174 @@ struct ThinMRIShearingField {
     float densityContrast;
 };
 
+struct ThinSpectralHeatingField {
+    float raw;
+    float low;
+    float high;
+    float cloud;
+    float filament;
+    float activity;
+};
+
 static inline float comp_periodic01(float x) {
     return clamp(0.5 + 0.5 * x, 0.0, 1.0);
+}
+
+static inline float comp_wrap_pi(float x) {
+    constexpr float pi = 3.141592653589793;
+    constexpr float twoPi = 6.283185307179586;
+    return x - twoPi * floor((x + pi) / twoPi);
+}
+
+static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rNorm,
+                                                                        float rInNorm,
+                                                                        float phi,
+                                                                        constant Params& P)
+{
+    ThinSpectralHeatingField f;
+    float rr = max(rNorm, rInNorm + 1e-4);
+    float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
+    float rOutNorm = max(P.re / max(P.rs, 1e-6), rInNorm + 1.0);
+    float logRMax = log(max(rOutNorm / max(rInNorm, 1e-4), 1.05));
+    float timeRs = P.diskFlowTime;
+    float orbitalBoost = max(P.diskOrbitalBoost, 0.05);
+    float turbulence = clamp(P.diskTurbulence, 0.0, 2.4);
+    // Keep the canonical source calibrated around the registry default
+    // diskTurbulence=1.6, but let controlled validation sweeps adjust the
+    // stochastic heating support without adding another public source model.
+    float turbulenceTune = clamp((turbulence - 1.6) / 0.8, -1.0, 1.0);
+    float rs = max(P.rs, 1e-6);
+    float camRrs = max(length(P.camPos) / rs, rr + 1.0);
+    float pixelAngle = 1.0 / max(P.d, 1.0);
+    float hOverR = clamp((P.he / rs) / max(rr, 1.0), 0.002, 0.080);
+    float projected = clamp(camRrs * pixelAngle / max(rr, 1.0), 0.0, 0.24);
+    // Approximate the source footprint in disk coordinates. This filters only
+    // the stochastic skin emissivity modes; the analytic photosphere is kept
+    // untouched. The floor tracks a fraction of H/R so sub-photospheric structure
+    // is not allowed to masquerade as resolvable radiance.
+    float sigmaPhiSrc = clamp(max(2.60 * hOverR, 1.20 * projected), 0.012, 0.120);
+    float sigmaLogSrc = clamp(max(1.65 * hOverR, 0.78 * projected), 0.010, 0.095);
+    float raw = 0.0;
+    float low = 0.0;
+    float cloud = 0.0;
+    float cloudNormW = 0.0;
+    float filament = 0.0;
+    float filamentNormW = 0.0;
+    float normRaw2 = 0.0;
+    float normLow2 = 0.0;
+    constexpr uint modeCount = 64u;
+    constexpr float twoPi = 6.283185307179586;
+
+    // Disk-coordinate spectral heating field. This is a deterministic,
+    // band-limited approximation to MRI-like shearing emissivity structure:
+    // modes live in (log r, phi), are advected by local Keplerian shear, and feed
+    // emissivity/temperature only. It is not screen-space or material texture.
+    for (uint i = 0u; i < modeCount; ++i) {
+        float id = float(i) + 1.0;
+        float h0 = fract(id * 0.754877666 + 0.113);
+        float h1 = fract(id * 0.569840291 + 0.217);
+        float h2 = fract(id * 0.438572245 + 0.431);
+        float h3 = fract(id * 0.318309886 + 0.173);
+        float h4 = fract(id * 0.221033321 + 0.619);
+        float h5 = fract(id * 0.141421356 + 0.347);
+
+        float m = floor(mix(2.0, 24.999, h0));
+        float kr = mix(0.85, 18.0, h1);
+        kr *= (h2 < 0.5) ? -1.0 : 1.0;
+        float kMag = sqrt(kr * kr + m * m);
+        // Kolmogorov-like power spectrum: power ~ k^-5/3, amplitude ~ k^-5/6.
+        float amp = pow(max(kMag, 1.0), -0.8333333) * mix(0.72, 1.28, h3);
+        float footprintFilter = exp(-0.5 * (
+            kr * kr * sigmaLogSrc * sigmaLogSrc +
+            m * m * sigmaPhiSrc * sigmaPhiSrc
+        ));
+        amp *= footprintFilter;
+
+        float omega = orbitalBoost * pow(max(rr, 1.0), -1.5);
+        float advectedPhi = phi - omega * timeRs * mix(0.78, 1.22, h4);
+        float slowPhase = 0.035 * timeRs * (h5 - 0.5);
+        float phase = twoPi * h3 + kr * logR + m * advectedPhi + slowPhase;
+        float v = cos(phase);
+
+        raw += amp * v;
+        normRaw2 += amp * amp;
+
+        float lowGate = smoothstep(0.0, 1.0, 1.0 - clamp((abs(kr) + 0.60 * m - 3.5) / 7.0, 0.0, 1.0));
+        low += amp * lowGate * v;
+        normLow2 += amp * amp * lowGate * lowGate;
+
+        // Positive high-frequency ridges from the same sheared spectral basis.
+        // These are emissivity/heating filaments in disk coordinates, not a
+        // texture channel. The high-mode gate suppresses broad zonal waves so the
+        // body remains clean and only the hot skin receives narrow activity.
+        float highGate = smoothstep(5.5, 14.0, abs(kr) + 0.85 * m);
+        float ridge = pow(max(0.0, 0.5 + 0.5 * cos(phase)), 5.0);
+        float ridgeAmp = amp * highGate;
+        filament += ridgeAmp * ridge;
+        filamentNormW += ridgeAmp;
+    }
+
+    // Positive "cloud packet" heating field in disk coordinates. These are not
+    // material/albedo blobs: they represent unresolved MRI/reconnection heating
+    // cells in the emitting skin, advected by Keplerian shear. The packets are
+    // log-radial, azimuth-periodic, band-limited, and only add emissivity.
+    constexpr uint packetCount = 56u;
+    for (uint i = 0u; i < packetCount; ++i) {
+        float id = float(i) + 1.0;
+        float h0 = fract(id * 0.618033989 + 0.071);
+        float h1 = fract(id * 0.414213562 + 0.193);
+        float h2 = fract(id * 0.732050808 + 0.317);
+        float h3 = fract(id * 0.577350269 + 0.529);
+        float h4 = fract(id * 0.301029996 + 0.683);
+        float h5 = fract(id * 0.839286755 + 0.241);
+
+        float logCenter = mix(0.08, max(logRMax * 0.92, 0.10), h0);
+        float rCenter = rInNorm * exp(logCenter);
+        float omegaCenter = orbitalBoost * pow(max(rCenter, 1.0), -1.5);
+        float phiCenter = twoPi * h1 + omegaCenter * timeRs * mix(0.84, 1.18, h2);
+        float dLog = logR - logCenter;
+        float trailingPitch = mix(2.2, 7.2, h3) * ((h4 < 0.5) ? -1.0 : 1.0);
+        float dPhi = comp_wrap_pi(phi - phiCenter - trailingPitch * dLog);
+
+        float sigmaLog = mix(0.026, 0.094, h4);
+        float sigmaPhi = mix(0.048, 0.196, h5);
+        // Source-footprint filtering prevents sub-resolution packets from
+        // becoming caustic-aligned scratches in high-order lensed images.
+        sigmaLog = max(sigmaLog, 0.78 * sigmaLogSrc);
+        sigmaPhi = max(sigmaPhi, 0.92 * sigmaPhiSrc);
+
+        float q = (dLog * dLog) / max(sigmaLog * sigmaLog, 1e-6)
+                + (dPhi * dPhi) / max(sigmaPhi * sigmaPhi, 1e-6);
+        float packet = exp(-0.5 * q);
+        float radialWeight = pow(max(rCenter / max(rInNorm, 1e-4), 1.0), -0.28)
+                           * (1.0 - smoothstep(0.86, 1.00, logCenter / max(logRMax, 1e-4)));
+        float amp = mix(0.65, 1.35, fract(id * 0.127323954 + 0.411)) * radialWeight;
+        cloud += amp * packet;
+        cloudNormW += amp;
+    }
+
+    float rawNorm = raw / max(sqrt(normRaw2), 1e-6);
+    float lowNorm = low / max(sqrt(normLow2), 1e-6);
+    float highNorm = rawNorm - 0.62 * lowNorm;
+    float cloudNorm = cloud / max(0.145 * cloudNormW, 1e-6);
+    float cloudActivity = smoothstep(0.18 - 0.035 * turbulenceTune,
+                                     0.82 - 0.060 * turbulenceTune,
+                                     cloudNorm);
+    float filamentNorm = filament / max(0.205 * filamentNormW, 1e-6);
+    float filamentActivity = smoothstep(0.16 - 0.030 * turbulenceTune,
+                                        0.92 - 0.060 * turbulenceTune,
+                                        filamentNorm);
+
+    f.raw = clamp(0.5 + 0.22 * rawNorm, 0.0, 1.0);
+    f.low = clamp(max(lowNorm, 0.0), 0.0, 1.0);
+    f.high = clamp(max(highNorm, 0.0) * (1.0 + 0.10 * turbulenceTune), 0.0, 2.0);
+    f.cloud = clamp(cloudActivity, 0.0, 1.0);
+    f.filament = clamp(filamentActivity, 0.0, 1.0);
+    f.activity = clamp(0.40 * smoothstep(0.34, 1.24, f.high)
+                     + 0.32 * f.cloud
+                     + 0.28 * f.filament,
+                     0.0, 1.0);
+    return f;
 }
 
 static inline float comp_thin_periodic_streak(float shear,
@@ -371,7 +592,7 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     // differential rotation, while radial coherence scales with H/r. This is a
     // constrained turbulence model, not a solved MHD simulation.
     float hOverR = clamp(P.he / max(rr * rs, 1e-6), 0.003, 0.12);
-    float radialCoherence = clamp(0.20 / hOverR, 2.5, 32.0);
+    float radialCoherence = clamp(0.045 / hOverR, 1.2, 6.0);
     float innerActivity = smoothstep(0.15, 2.2, dr) * (1.0 - smoothstep(46.0, 96.0, rr));
     float innerGain = 0.76 + 0.42 * (1.0 - smoothstep(4.0, 15.0, dr));
 
@@ -380,8 +601,14 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     float channel5 = sin(5.0 * (phi - 2.15 * omega * timeRs) + 14.0 * logR + 0.13 * rr);
     f.channel = 0.48 * channel2 + 0.32 * channel3 + 0.20 * channel5;
 
-    float zonalPhase = radialCoherence * logR + 0.035 * timeRs + 0.18 * sin(2.0 * shear);
-    f.zonal = sin(zonalPhase);
+    // Keep weak zonal modulation, but avoid thin-disk H/R turning it into
+    // screen-visible concentric standing rings. The azimuthal terms make this a
+    // sheared disk-space fluctuation rather than a radial contour texture.
+    float zonalPhase = 0.45 * radialCoherence * logR
+                     + 0.035 * timeRs
+                     + 0.55 * sin(2.0 * shear)
+                     + 0.24 * sin(5.0 * (phi - 1.15 * omega * timeRs));
+    f.zonal = 0.55 * sin(zonalPhase);
 
     float streak = comp_thin_periodic_streak(shear, logR, rr, omega, timeRs, radialCoherence);
     float eddy = comp_thin_periodic_eddy(phi, logR, rr, omega, timeRs, radialCoherence);
@@ -389,8 +616,8 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddy);
 
     float cloudCentered = cloudNorm - 0.5;
-    float raw = 0.54 * f.channel
-              + 0.16 * f.zonal
+    float raw = 0.60 * f.channel
+              + 0.06 * f.zonal
               + 0.34 * (f.filament - 0.5)
               + 0.16 * (eddy - 0.5)
               + 0.10 * cloudCentered;
@@ -467,33 +694,38 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     float rr = max(rNorm, 1.0001);
     float dr = max(rr - rInNorm, 0.0);
     ThinMRIShearingField mri = comp_thin_mri_shearing_field(rr, rInNorm, phi, cloudNorm, P, cfg);
-    m.filament = mri.filament;
-    m.perturb = mri.perturb;
+    float atlasBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
+    float atlasCentered = cloudNorm - 0.5;
+    // When an HDF5/GRMHD atlas is present, rec.noise is no longer procedural
+    // decoration. It is the preprocessed disk-space column/stress structure, so
+    // let it dominate unresolved photospheric contrast instead of re-smoothing it
+    // through the synthetic MRI field.
+    m.filament = mix(mri.filament, cloudNorm, 0.75 * atlasBlend);
+    m.perturb = mix(mri.perturb, cloudNorm, 0.90 * atlasBlend);
 
     float radialTau = comp_thin_alpha_opacity_proxy(rr, rInNorm, P);
     m.radialTau = radialTau;
     float densityBase = comp_thin_optical_depth_density(rr, rInNorm, m.perturb, cloudNorm, cfg);
-    float cloudCentered = cloudNorm - 0.5;
     float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
     float contrast = 0.62 * mri.densityContrast
-                   + 0.22 * cloudCentered
+                   + mix(0.22, 1.10, atlasBlend) * atlasCentered
                    + 0.30 * (m.filament - 0.5)
                    + 0.06 * mri.zonal
                    + 0.10 * innerTaper * mri.channel;
     float sigma = 0.18 + 0.42 * cfg.perturbAmp;
-    float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
+    float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.85, 1.05);
     float turbulentDensity = densityBase * exp(logDensity);
     float densityMix = clamp(0.45 + 0.45 * cfg.perturbAmp, 0.0, 0.92);
-    m.density = clamp(radialTau * mix(1.0, turbulentDensity, densityMix), 0.22, 2.55);
+    m.density = clamp(radialTau * mix(1.0, turbulentDensity, densityMix), 0.18, 3.20);
 
     // Small temperature variations follow disk-space structures; this preserves the
     // NT radial backbone while breaking the overly uniform ribbon look.
     float tempContrast = cfg.perturbAmp * (0.30 * (m.perturb - 0.5)
                          + 0.16 * (m.filament - 0.5)
-                         + 0.08 * cloudCentered
+                         + mix(0.08, 0.42, atlasBlend) * atlasCentered
                          + 0.06 * (m.density - 1.0)
                          + 0.08 * innerTaper * mri.channel);
-    m.tempShift = clamp(exp(tempContrast), 0.78, 1.30);
+    m.tempShift = clamp(exp(tempContrast), 0.70, 1.48);
     m.opacity = clamp(radialTau * m.density
                     * (0.82 + 0.30 * m.filament)
                     * (0.90 + 0.16 * innerTaper), 0.18, 2.90);
@@ -502,10 +734,17 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
 
 struct ThinSpectralEmission {
     float3 rgb;
+    float3 bodyRgb;
+    float3 skinRgb;
+    float3 coronaRgb;
     float g;
     float tEmit;
     float tObserved;
     float colorDilution;
+    float bodyRatio;
+    float skinRatio;
+    float coronaRatio;
+    float atlasActivity;
 };
 
 static inline float3 comp_visible_blackbody_rgb_from_observed_temp(float tObserved,
@@ -581,14 +820,38 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     ThinSpectralEmission e;
     e.g = comp_frequency_shift_from_record(rec, P, C);
     e.tEmit = max(rec.T, 1.0);
+    e.bodyRgb = float3(0.0);
+    e.skinRgb = float3(0.0);
+    e.coronaRgb = float3(0.0);
+    e.bodyRatio = 1.0;
+    e.skinRatio = 0.0;
+    e.coronaRatio = 0.0;
+    e.atlasActivity = 0.0;
     float fColUsed = 1.0;
+    float atlasTempRatio = 1.0;
+    bool thinVisibleReference = false;
     if ((comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) && FC_PHYSICS_MODE == 0u) {
         float rNorm = comp_emit_radius_norm(rec, P);
         float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
         float fluxTaper = comp_thin_outer_flux_taper(rNorm, P);
-        float ntT = thin_teff(rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol;
+        float teff = thin_teff(rNorm, P);
+        if (P.visibleTeffModel == 3u) {
+            thinVisibleReference = true;
+            // Thin visible reference mode: use the NT-like flux shape normalized
+            // by user-facing T0/r0 instead of mdot/geometry units. Ray-disk
+            // intersection, Kerr g-factor, and blackbody transport remain shared
+            // with the strict thin path; only the local photosphere temperature
+            // calibration is switched to an explicit visible reference model.
+            teff = disk_visible_teff(rNorm * max(P.rs, 1e-6), P);
+        }
+        float ntT = teff * pow(max(fluxTaper, 0.0), 0.25) * fCol;
         if (ntT > 1.0 && isfinite(ntT)) {
-            e.tEmit = ntT;
+            atlasTempRatio = comp_atlas_temperature_ratio(rec.T, ntT / max(fCol, 1.0), P);
+            // In thin-visible-reference + GRMHD atlas mode, the analytic
+            // photosphere remains the body. The atlas is allowed to add a
+            // positive hot-skin source below, but it must not lower/carve the
+            // photospheric temperature and recreate contour-like dark grooves.
+            e.tEmit = (thinVisibleReference && P.diskAtlasMode != 0u) ? ntT : (ntT * atlasTempRatio);
             fColUsed = fCol;
         }
     }
@@ -607,6 +870,155 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     float3 dWorld = rec.direct_world.xyz;
     float mu = abs(dWorld.z) / max(length(dWorld), 1e-30);
     e.rgb *= comp_limb_factor(mu, P);
+    e.bodyRgb = e.rgb;
+    if (thinVisibleReference && C.realismProfile == 5u) {
+        float rNorm = comp_emit_radius_norm(rec, P);
+        float rs = max(P.rs, 1e-6);
+        float rInNorm = max(disk_inner_radius_m(P) / rs, 1.0001);
+        float rOutNorm = max(P.re / rs, rInNorm + 1e-4);
+        float uOuter = clamp((rNorm - rInNorm) / max(rOutNorm - rInNorm, 1e-4), 0.0, 1.0);
+        float phi = comp_emit_phi(rec);
+        float bodyLum0 = dot(max(e.bodyRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        bool validDiskSource = isfinite(rNorm) && isfinite(phi)
+                            && rNorm > rInNorm && rNorm < rOutNorm
+                            && bodyLum0 > 1e-30;
+
+        // Plausible-disk-v1 in the thin reference path:
+        // keep the analytic photosphere as the luminous energy backbone, then
+        // add positive disk-coordinate heating packets as a hot skin. This is
+        // source emissivity, not albedo/normal/screen-space texture.
+        if (validDiskSource) {
+            ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(rNorm, rInNorm, phi, P);
+            float turbulence = clamp(P.diskTurbulence, 0.0, 2.4);
+            float turbulenceTune = clamp((turbulence - 1.6) / 0.8, -1.0, 1.0);
+            float radialGate = smoothstep(rInNorm + 0.18, rInNorm + 1.20, rNorm)
+                             * (1.0 - smoothstep(0.68, 0.98, uOuter));
+            float pathRsLocal = abs(rec.ct) / max(P.rs, 1e-6);
+            // Higher-order lensed images should preserve the analytic body but
+            // average unresolved skin heating. Otherwise the same source
+            // fluctuation is stretched into contour-like caustic strokes.
+            float unresolvedAverage = mix(1.0, 0.36, smoothstep(42.0, 118.0, pathRsLocal));
+            float activityBase = clamp(0.54 * heat.activity + 0.22 * heat.cloud + 0.24 * heat.filament,
+                                       0.0, 1.0);
+            // Make skin support more intermittent without changing it into a
+            // subtractive texture. The skin still receives positive emissivity
+            // only; this remaps broad heating into localized dissipation patches
+            // while preserving the clean thermal body.
+            float activityIntermittent = pow(max(activityBase, 0.0), 1.16);
+            float activity = clamp(activityIntermittent
+                                 * radialGate
+                                 * unresolvedAverage, 0.0, 1.0);
+
+            float bodyHeat = 1.0 + clamp((0.010 + 0.018 * turbulence) * heat.low, 0.0, 0.055);
+
+            float gBoost = smoothstep(0.85, 1.65, e.g);
+            float fCorona = radialGate
+                           * exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82))
+                           * (0.030 + 0.055 * heat.cloud + 0.030 * heat.filament)
+                           * (0.55 + 0.45 * activity)
+                           * (1.0 + 0.35 * turbulenceTune);
+            fCorona = clamp(fCorona, 0.0, 0.055);
+
+            float fSkin = radialGate
+                        * unresolvedAverage
+                        * (0.050 + 0.455 * activity + 0.185 * heat.cloud + 0.430 * heat.filament)
+                        * (1.0 + 0.18 * turbulenceTune)
+                        * (0.82 + 0.18 * gBoost);
+            fSkin = clamp(fSkin, 0.0, 0.28);
+            float fBody = clamp(1.0 - fSkin - fCorona, 0.70, 1.0);
+            float fNorm = max(fBody + fSkin + fCorona, 1e-6);
+            fBody /= fNorm;
+            fSkin /= fNorm;
+            fCorona /= fNorm;
+
+            // Energy-budgeted canonical source: redistribute the same local disk
+            // flux into a photospheric body, positive hot skin, and weak corona.
+            // This avoids reintroducing a global smooth floor while preventing the
+            // skin branch from merely adding texture on top of a saturated body.
+            float3 bodyShape = e.bodyRgb / max(bodyLum0, 1e-30);
+            e.bodyRgb = bodyShape * bodyLum0 * bodyHeat * fBody;
+
+            float skinObservedTemp = e.tObserved * (1.58
+                                                 + (1.48 + 0.12 * turbulenceTune) * activity
+                                                 + 0.10 * gBoost);
+            float3 skinShape = comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
+                             * comp_limb_factor(mu, P);
+            float skinLum = dot(max(skinShape, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+            skinShape /= max(skinLum, 1e-30);
+            float skinDissipationLift = 1.0 + clamp(radialGate
+                                                  * unresolvedAverage
+                                                  * (0.34 * activity
+                                                   + 0.16 * heat.cloud
+                                                   + 0.22 * heat.filament),
+                                                  0.0,
+                                                  0.38);
+            e.skinRgb += skinShape * bodyLum0 * bodyHeat * fSkin * skinDissipationLift;
+            float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
+            float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
+            float coronaShapeLum = dot(coronaShape, float3(0.2126, 0.7152, 0.0722));
+            coronaShape /= max(coronaShapeLum, 1.0e-6);
+            e.coronaRgb += coronaShape * bodyLum0 * bodyHeat * fCorona * (0.85 + 0.15 * innerWeight);
+            e.rgb = e.bodyRgb + e.skinRgb + e.coronaRgb;
+            float lumBody = dot(max(e.bodyRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+            float lumSkin = dot(max(e.skinRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+            float lumCorona = dot(max(e.coronaRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+            float lumTotal = max(lumBody + lumSkin + lumCorona, 1e-30);
+            e.bodyRatio = lumBody / lumTotal;
+            e.skinRatio = lumSkin / lumTotal;
+            e.coronaRatio = lumCorona / lumTotal;
+            e.atlasActivity = max(e.atlasActivity, activity);
+        }
+    }
+    if (thinVisibleReference && P.diskAtlasMode != 0u && P.diskAtlasDensityBlend > 1e-5) {
+        float rNorm = comp_emit_radius_norm(rec, P);
+        float rs = max(P.rs, 1e-6);
+        float rInNorm = max(disk_inner_radius_m(P) / rs, 1.0001);
+        float rOutNorm = max(P.re / rs, rInNorm + 1e-4);
+        float uOuter = clamp((rNorm - rInNorm) / max(rOutNorm - rInNorm, 1e-4), 0.0, 1.0);
+        float radialGate = smoothstep(rInNorm + 0.18, rInNorm + 1.35, rNorm)
+                         * (1.0 - smoothstep(0.72, 0.98, uOuter));
+        // In thin-visible-reference mode rec.noise stores a source-space
+        // positive heating excess from the atlas sampler, not raw column density.
+        // Use it as additive emissivity only; do not reinterpret it as albedo or
+        // let it subtract from the analytic photosphere.
+        float atlasActivity = clamp(rec.noise, 0.0, 1.0);
+        float tempActivity = smoothstep(1.03, 1.22, atlasTempRatio)
+                           * smoothstep(0.05, 0.55, atlasActivity);
+        float activity = clamp(0.86 * atlasActivity + 0.14 * tempActivity, 0.0, 1.0);
+        float gBoost = smoothstep(0.85, 1.65, e.g);
+        float pathRsLocal = abs(rec.ct) / max(P.rs, 1e-6);
+        float unresolvedHighOrder = smoothstep(54.0, 132.0, pathRsLocal);
+        // Higher-order images near the critical curve retain the smooth
+        // photospheric body, but sub-pixel hot-skin fluctuations should average
+        // out. Otherwise a physically small heating field turns into artificial
+        // contour rings.
+        float skinVisibility = mix(1.0, 0.055, unresolvedHighOrder);
+        float skinGain = clamp(P.diskAtlasDensityBlend, 0.0, 1.0)
+                       * radialGate
+                       * activity
+                       * (0.065 + 0.460 * activity)
+                       * (0.82 + 0.18 * gBoost)
+                       * skinVisibility;
+        float skinObservedTemp = e.tObserved * (1.13 + 0.82 * activity + 0.08 * gBoost);
+        e.skinRgb += comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
+                   * comp_limb_factor(mu, P)
+                   * skinGain;
+        e.rgb = e.bodyRgb + e.skinRgb + e.coronaRgb;
+        float lumBody = dot(max(e.bodyRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        float lumSkin = dot(max(e.skinRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        float lumTotal = max(lumBody + lumSkin, 1e-30);
+        e.bodyRatio = lumBody / lumTotal;
+        e.skinRatio = lumSkin / lumTotal;
+        e.coronaRatio = 0.0;
+        e.atlasActivity = max(e.atlasActivity, activity * radialGate);
+    }
+    if (thinVisibleReference && P.rayBundleSSAA != 0u) {
+        float coverage = clamp(rec.v_disk.w, 0.0, 1.0);
+        e.bodyRgb *= coverage;
+        e.skinRgb *= coverage;
+        e.coronaRgb *= coverage;
+        e.rgb *= coverage;
+    }
     return e;
 }
 
@@ -630,6 +1042,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
 
     float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
     ThinDiskStructureSample micro = comp_thin_disk_structure(s.rNorm, rInNorm, s.phi, cloudNorm, P, cfg);
+    float atlasBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
     s.perturb = micro.perturb;
     s.density = micro.density;
     s.radialTau = micro.radialTau;
@@ -637,7 +1050,10 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
     float fluxTaper = comp_thin_outer_flux_taper(s.rNorm, P);
-    s.observedTemp = max(thin_teff(s.rNorm, P) * pow(max(fluxTaper, 0.0), 0.25) * fCol * s.g * tempShift, 1.0);
+    float baseTeff = ((P.visibleTeffModel == 3u) ? disk_visible_teff(s.rNorm * max(P.rs, 1e-6), P) : thin_teff(s.rNorm, P))
+                   * pow(max(fluxTaper, 0.0), 0.25);
+    float atlasTemp = comp_atlas_temperature_ratio(rec.T, baseTeff, P);
+    s.observedTemp = max(baseTeff * atlasTemp * fCol * s.g * tempShift, 1.0);
     float colorDilution = 1.0 / pow(fCol, 4.0);
 
     float3 d = rec.direct_world.xyz;
@@ -654,8 +1070,23 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float surfaceTau = clamp(1.20 * micro.opacity * (0.72 + 0.28 * clamp(s.density / 1.6, 0.0, 1.0)), 0.0, 6.0);
     float surfaceEscape = 1.0 - exp(-surfaceTau / max(mu, 0.24));
     float surfaceCover = 0.62 + 0.38 * clamp(s.density / 1.65, 0.0, 1.0);
+    // For GRMHD-derived atlases, cloudNorm is a robust log column/stress proxy,
+    // not decorative noise. Use it as an unresolved photospheric covering/source
+    // modulation so code-unit turbulent structure survives the hot blackbody
+    // Rayleigh-Jeans compression without changing hue arbitrarily.
+    float atlasSource = exp(clamp(2.15 * atlasBlend * (cloudNorm - 0.5), -1.00, 1.30));
+    // Physical-flow keeps unresolved structure in the source/covering model
+    // before spectral conversion. This is not an RGB overlay: it changes the
+    // local thermal photosphere source carried into blackbody integration.
+    float flowSource = 1.0;
+    if (C.realismProfile == 4u && !(atlasBlend > 1e-5)) {
+        float sourceContrast = 0.34 * (micro.filament - 0.5)
+                             + 0.26 * (s.perturb - 0.5)
+                             + 0.10 * (s.density - 1.0);
+        flowSource = exp(clamp(sourceContrast, -0.16, 0.24));
+    }
     s.beaming = clamp(pow(max(s.g, 1e-4), 3.0), 0.02, 16.0);
-    s.photosphere = rgb * surfaceEscape * surfaceCover * s.outerFade * edgeGate;
+    s.photosphere = rgb * surfaceEscape * surfaceCover * atlasSource * flowSource * s.outerFade * edgeGate;
 
     float tau = cfg.atmosphereTau
               * (0.38 + 0.82 * s.innerWeight)
@@ -672,19 +1103,82 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float coronaLum = dot(s.photosphere, float3(0.2126, 0.7152, 0.0722));
     s.corona = cfg.coronaTint * coronaLum * cfg.coronaStrength * coronaGeom;
 
+    if (C.realismProfile == 5u) {
+        // Plausible-disk-v1 source model:
+        // A clean optically thick thin/intermediate disk supplies the energy
+        // backbone. A many-mode disk-coordinate spectral heating field splits
+        // slow body heating from positive high-frequency skin activity. This is
+        // source emissivity, not albedo/normal/screen texture.
+        ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(s.rNorm, rInNorm, s.phi, P);
+        float sigmaBody = clamp(0.020 + 0.020 * P.diskTurbulence, 0.010, 0.060);
+        float bodyHeat = exp(clamp(sigmaBody * heat.low - 0.5 * sigmaBody * sigmaBody, -0.10, 0.12));
+        float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
+        float atlasActivity = smoothstep(0.54, 0.92, cloudNorm);
+        float proceduralActivity = clamp(0.78 * heat.activity + 0.22 * heat.filament, 0.0, 1.0);
+        float activity = clamp(mix(proceduralActivity, max(0.18 * proceduralActivity, atlasActivity), atlasBlend), 0.0, 1.0);
+        float pathRsLocal = abs(rec.ct) / max(P.rs, 1e-6);
+        float unresolvedAverage = mix(1.0, 0.22, smoothstep(72.0, 150.0, pathRsLocal));
+        activity *= unresolvedAverage;
+        bodyHeat *= exp(clamp(0.11 * atlasBlend * (cloudNorm - 0.5), -0.045, 0.075));
+        float innerActive = smoothstep(0.20, 2.20, max(s.rNorm - rInNorm, 0.0))
+                          * (1.0 - smoothstep(0.66, 0.98, uOuter));
+        float skinBase = mix(0.010, 0.025, clamp(turbulence, 0.0, 1.0));
+        float skinDynamic = mix(0.220, 0.360, clamp(turbulence, 0.0, 1.0));
+        float cloudBoost = clamp(0.52 + 0.58 * heat.cloud + 0.42 * heat.filament, 0.52, 1.38);
+        float fSkin = clamp((skinBase + skinDynamic * activity * cloudBoost) * innerActive, 0.0, 0.42);
+        float fCorona = clamp(cfg.coronaStrength
+                            * pow(clamp(s.innerWeight, 0.0, 1.0), 1.65)
+                            * (0.30 + 0.70 * activity)
+                            * (1.0 - smoothstep(0.55, 0.98, uOuter)),
+                            0.0,
+                            0.040);
+        float fBody = clamp(1.0 - fSkin - fCorona, 0.58, 1.0);
+        float norm = max(fBody + fSkin + fCorona, 1.0e-6);
+        fBody /= norm;
+        fSkin /= norm;
+        fCorona /= norm;
+
+        float baseLum0 = dot(max(rgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        float localDissipationLift = 1.0 + clamp((0.52 + 0.45 * turbulence) * activity * innerActive
+                                               + (0.44 * heat.cloud + 0.34 * heat.filament) * innerActive, 0.0, 1.70);
+        float baseLum = baseLum0 * bodyHeat * 1.08 * localDissipationLift;
+        float3 bodyShape = rgb / max(baseLum0, 1.0e-30);
+
+        float hSkin = mix(1.32, 2.95, clamp(0.24 + 0.48 * activity + 0.28 * heat.cloud, 0.0, 1.0));
+        float3 skinBB = comp_visible_blackbody_rgb_from_observed_temp(s.observedTemp * hSkin, colorDilution, C)
+                      * comp_limb_factor(mu, P);
+        float skinLum = dot(max(skinBB, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        float3 skinShape = skinBB / max(skinLum, 1.0e-30);
+
+        float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
+        float coronaShapeLum = dot(coronaShape, float3(0.2126, 0.7152, 0.0722));
+        coronaShape /= max(coronaShapeLum, 1.0e-6);
+
+        float sourceGate = s.outerFade;
+        s.photosphere = bodyShape * baseLum * fBody * sourceGate;
+        s.atmosphere = skinShape * baseLum * fSkin * sourceGate;
+        s.corona = coronaShape * baseLum * fCorona * sourceGate;
+        s.opticalDepth = fSkin;
+        s.density = fBody;
+        s.radialTau = fCorona;
+        s.perturb = clamp(max(activity, heat.cloud), 0.0, 1.0);
+    }
+
     // Eye/observational presentation only: very long optical paths are usually
     // higher-order disk images near the critical curve. At single-ray sampling
     // they alias into dotted guide-line-like rings, so attenuate them as
-    // unresolved sub-pixel energy. Strict scientific/debug paths remain intact.
+    // unresolved sub-pixel energy. Strict scientific/debug paths and the
+    // physical-flow photosphere model remain intact.
     float pathRs = abs(rec.ct) / max(P.rs, 1e-6);
     float highOrder = smoothstep(72.0, 150.0, pathRs);
-    float highOrderVisibility = mix(1.0, 0.28, highOrder);
+    float highOrderVisibility = (C.realismProfile == 4u) ? 1.0 : mix(1.0, 0.28, highOrder);
     s.photosphere *= highOrderVisibility;
     s.atmosphere *= highOrderVisibility;
     s.corona *= highOrderVisibility;
 
-    float selfShadow = mix(1.0, 0.86, smoothstep(0.72, 1.25, tau) * (0.35 + 0.65 * s.innerWeight));
-    s.finalRgb = max(s.photosphere * trans * selfShadow + s.atmosphere + s.corona, float3(0.0));
+    float selfShadow = (C.realismProfile == 5u) ? 1.0 : mix(1.0, 0.86, smoothstep(0.72, 1.25, tau) * (0.35 + 0.65 * s.innerWeight));
+    float bodyTrans = (C.realismProfile == 5u) ? 1.0 : trans;
+    s.finalRgb = max(s.photosphere * bodyTrans * selfShadow + s.atmosphere + s.corona, float3(0.0));
     return s;
 }
 
@@ -693,6 +1187,23 @@ static inline float3 comp_debug_ramp(float t) {
     return clamp(float3(1.65 * t - 0.20,
                         1.35 - abs(2.35 * t - 1.05),
                         1.30 * (1.0 - t) + 0.18 * t), 0.0, 1.0);
+}
+
+static inline float comp_canonical_abs_branch_debug_scale() {
+    // PNG branch-isolated previews cannot carry the full HDR source range. Use
+    // one fixed scale for total/body/skin/corona so these absolute branch views
+    // are comparable to each other and cannot be mistaken for normalized maps.
+    return 6.8e-18;
+}
+
+static inline float comp_grmhd_raw_log_debug_t(float lumRaw) {
+    // Keep raw-log as a diagnostic range independent from the exposure
+    // histogram. Calibrated GRMHD hot-flow radiance is intentionally far
+    // below the older saturated 1e2...1e12 histogram range.
+    constexpr float logLo = -8.0;
+    constexpr float logHi = 4.0;
+    float logLum = log(max(lumRaw, 1e-38)) * 0.4342944819032518;
+    return clamp((logLum - logLo) / max(logHi - logLo, 1e-6), 0.0, 1.0);
 }
 
 static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
@@ -742,18 +1253,28 @@ static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
         float t = clamp((log(max(beaming, 1e-6)) * 0.4342944819032518 + 1.20) / 2.40, 0.0, 1.0);
         return comp_debug_ramp(t);
     }
-    if (C.analysisMode == 34u) return thin.rgb; // photosphere-only scientific master
-    if (C.analysisMode == 38u) {
-        float lum = dot(thin.rgb, float3(0.2126, 0.7152, 0.0722));
-        float t = clamp((log(max(lum, 1e-30)) * 0.4342944819032518 - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
-        return comp_debug_ramp(t);
+    if (C.analysisMode == 34u) return thin.bodyRgb * comp_canonical_abs_branch_debug_scale(); // absolute body radiance preview
+    if (C.analysisMode == 35u) return thin.skinRgb * comp_canonical_abs_branch_debug_scale(); // absolute positive hot-skin radiance preview
+    if (C.analysisMode == 36u) {
+        if (C.realismProfile == 5u) return thin.coronaRgb * comp_canonical_abs_branch_debug_scale(); // absolute weak corona radiance preview
+        return comp_debug_ramp(clamp(thin.atlasActivity, 0.0, 1.0));
     }
+    if (C.analysisMode == 37u) {
+        if (C.realismProfile == 5u) {
+            return clamp(float3(thin.bodyRatio, thin.skinRatio, thin.coronaRatio), 0.0, 1.0);
+        }
+        return comp_debug_ramp(clamp(thin.skinRatio / 0.25, 0.0, 1.0));
+    }
+    if (C.analysisMode == 38u) return thin.rgb * comp_canonical_abs_branch_debug_scale(); // absolute total radiance preview, pre-tone-map
     if (C.analysisMode == 39u) {
         float lt = log(max(thin.tObserved, 1.0)) * 0.4342944819032518;
         return comp_debug_ramp(clamp((lt - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0));
     }
+    if (C.analysisMode == 42u && C.realismProfile == 5u) {
+        return float3(clamp(thin.atlasActivity, 0.0, 1.0));
+    }
 
-    // Atmosphere, corona, perturbation, tau, and density are hybrid presentation
+    // Remaining atmosphere/corona/tau/density maps are hybrid presentation
     // diagnostics. In strict scientific mode, show black rather than silently
     // enabling phenomenological structure.
     return float3(0.0);
@@ -763,7 +1284,13 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                               constant Params& P,
                                               constant ComposeParams& C)
 {
-    if (FC_PHYSICS_MODE == 3u) {
+    bool precisionVolumeDebug = (FC_PHYSICS_MODE == 2u &&
+                                 P.diskVolumeMode != 0u &&
+                                 ((C.analysisMode >= 11u && C.analysisMode <= 16u) ||
+                                  C.analysisMode == 19u ||
+                                  (C.analysisMode >= 20u && C.analysisMode <= 29u) ||
+                                  (C.analysisMode >= 33u && C.analysisMode <= 56u)));
+    if (FC_PHYSICS_MODE == 3u || precisionVolumeDebug) {
         if (C.analysisMode >= 11u && C.analysisMode <= 14u) {
             float raw = 0.0;
             float lo = -30.0;
@@ -778,12 +1305,12 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                 hi = 4.0;
             } else if (C.analysisMode == 13u) {
                 raw = max(rec.emit_z_norm, 0.0); // max_jnu
-                lo = -40.0;
-                hi = -20.0;
+                lo = (FC_PHYSICS_MODE == 3u) ? -4.0 : -40.0;
+                hi = (FC_PHYSICS_MODE == 3u) ? 12.0 : -20.0;
             } else if (C.analysisMode == 14u) {
                 raw = max(rec.noise, 0.0); // max_inu
-                lo = -40.0;
-                hi = -20.0;
+                lo = (FC_PHYSICS_MODE == 3u) ? 2.0 : -40.0;
+                hi = (FC_PHYSICS_MODE == 3u) ? 12.0 : -20.0;
             }
             float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
             float t = clamp((lv - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
@@ -798,31 +1325,162 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         if (C.analysisMode == 16u) { // g-factor map
             float raw = clamp(rec.v_disk.x, 1e-6, 1e6);
             float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
-            float t = clamp((lv + 2.0) / max(4.0, 1e-6), 0.0, 1.0);
+            float lo = (FC_PHYSICS_MODE == 3u) ? -0.38 : -2.0;
+            float hi = (FC_PHYSICS_MODE == 3u) ? 0.28 : 2.0;
+            float t = clamp((lv - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
             return float3(t);
         }
         if (C.analysisMode == 19u) { // linear polarization fraction map
             float p = clamp(rec.noise, 0.0, 1.0);
             return float3(p);
         }
+        if ((C.analysisMode >= 20u && C.analysisMode <= 29u) ||
+            (C.analysisMode >= 33u && C.analysisMode <= 56u)) {
+            float raw = max(rec.emit_r_norm, 0.0);
+            if (C.analysisMode == 23u) { // fluid speed proxy |v|/c
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            }
+            if (C.analysisMode == 28u) { // invalid-value sample count
+                return (raw > 0.0) ? float3(1.0, 0.0, 0.0) : float3(0.0);
+            }
+            float lo = -4.0;
+            float hi = 3.0;
+            if (C.analysisMode == 20u) { // electron temperature theta_e = kT_e / m_e c^2
+                lo = -4.0;
+                hi = 3.0;
+            } else if (C.analysisMode == 21u) { // code-unit magnetization proxy B^2/rho
+                lo = -8.0;
+                hi = 8.0;
+            } else if (C.analysisMode == 22u) { // code-unit inverse plasma-beta proxy B^2/(rho theta_e)
+                lo = -8.0;
+                hi = 8.0;
+            } else if (C.analysisMode == 24u) { // Lorentz factor from sampled velocity proxy
+                lo = 0.0;
+                hi = 2.0;
+            } else if (C.analysisMode == 25u) { // integrated optical-depth proxy
+                lo = -3.0;
+                hi = 2.0;
+            } else if (C.analysisMode == 26u) { // absorption alpha_nu / opacity proxy
+                // GRMHD visible-thermal runs can accumulate very large code-unit
+                // alpha maxima before tau is clamped. Center the default alpha map
+                // on the active high-column range instead of saturating it white.
+                lo = 6.0;
+                hi = 10.0;
+            } else if (C.analysisMode == 27u) { // active contributing sample count
+                lo = 0.0;
+                hi = 3.0;
+            } else if (C.analysisMode == 29u) { // beaming proxy g^3
+                lo = -0.90;
+                hi = 0.80;
+            } else if (C.analysisMode == 33u) { // thermal source function S_nu = j_nu / alpha_nu
+                // Source-function diagnostics are code-unit transfer quantities,
+                // not final luminance. The temperature-flow volume path currently
+                // sits around log10(S_nu) ~= -13.5 with bright caustic/photosphere
+                // samples approaching -10, so use a narrow diagnostic range that
+                // reveals structure without changing the physical render.
+                lo = -15.5;
+                hi = -9.5;
+            } else if (C.analysisMode == 34u) { // first tau=1 radius in r/rs
+                if (!(raw > 0.0)) return float3(0.0);
+                float rMin = max(P.diskVolumeRNormMin, 0.0);
+                float rMax = max(P.diskVolumeRNormMax, rMin + 1e-6);
+                return comp_debug_ramp(clamp((raw - rMin) / max(rMax - rMin, 1e-6), 0.0, 1.0));
+            } else if (C.analysisMode == 35u) { // path length inside GRMHD medium to tau=1, in rs
+                if (!(raw > 0.0)) return float3(0.0);
+                return comp_debug_ramp(clamp(raw / 12.0, 0.0, 1.0));
+            } else if (C.analysisMode == 36u) { // integrated optical-depth proxy, wide diagnostic range
+                lo = -8.0;
+                hi = 6.0;
+            } else if (C.analysisMode == 37u) { // absorption alpha_nu / opacity proxy, wide diagnostic range
+                lo = -2.0;
+                hi = 10.5;
+            } else if (C.analysisMode == 38u) { // emission-weighted radius in r/rs
+                if (!(raw > 0.0)) return float3(0.0);
+                float rMin = max(P.diskVolumeRNormMin, 0.0);
+                float rMax = max(P.diskVolumeRNormMax, rMin + 1e-6);
+                return comp_debug_ramp(clamp((raw - rMin) / max(rMax - rMin, 1e-6), 0.0, 1.0));
+            } else if (C.analysisMode == 39u) { // |B| code-unit magnetic-field magnitude
+                lo = -12.0;
+                hi = 2.0;
+            } else if (C.analysisMode == 40u) { // eps_abs = kappa_ff / (kappa_es + kappa_ff)
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 41u) { // base thermal opacity a_base
+                lo = -24.0;
+                hi = 8.0;
+            } else if (C.analysisMode == 42u) { // cool absorber opacity a_cool
+                lo = -24.0;
+                hi = 8.0;
+            } else if (C.analysisMode == 43u) { // thermal emissivity j_thermal
+                lo = -6.0;
+                hi = 14.0;
+            } else if (C.analysisMode == 44u) { // optically thin synchrotron/proxy emissivity j_thin
+                // The GRMHD commit stage stores line-integrated emissivity for
+                // this view, not a local coefficient. Wide primitive dumps can
+                // sit around log10(int j_thin ds)=6..13 after inner radial crop.
+                lo = 5.0;
+                hi = 12.5;
+            } else if (C.analysisMode == 45u) { // thermal source S_thermal = eps_abs B_nu(T)
+                lo = -5.8;
+                hi = 3.0;
+            } else if (C.analysisMode == 46u) { // thin-branch source diagnostic
+                lo = -6.0;
+                hi = 18.0;
+            } else if (C.analysisMode == 47u) { // thin branch fraction after RT attenuation
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 48u) { // thin thermal photosphere weight
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 49u) { // thermal emissivity after thin weighting
+                lo = -6.0;
+                hi = 14.0;
+            } else if (C.analysisMode == 50u) { // thermal alpha/tau before thin weighting
+                // Line-integrated code-unit opacity in public GRMHD dumps is
+                // extremely broad; center this diagnostic on high-column
+                // structure rather than absolute SI opacity.
+                lo = 15.0;
+                hi = 18.5;
+            } else if (C.analysisMode == 51u) { // thermal alpha/tau after thin weighting
+                lo = 15.0;
+                hi = 18.5;
+            } else if (C.analysisMode == 52u) { // broad corona layer weight
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 53u) { // thermal cloud emissivity line integral
+                lo = -6.0;
+                hi = 14.0;
+            } else if (C.analysisMode == 54u) { // thermal cloud contribution fraction after RT
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 55u) { // accumulated ray path length in rs
+                raw = abs(rec.ct) / max(P.rs, 1e-6);
+                lo = 0.6;
+                hi = 2.35;
+            } else if (C.analysisMode == 56u) { // camera-ray impact parameter in rs
+                raw = max(rec.direct_world.w, 0.0);
+                if (!(raw > 0.0)) return float3(0.0);
+                return comp_debug_ramp(clamp(raw / 6.0, 0.0, 1.0));
+            } else if (C.analysisMode == 57u) { // max local GRMHD phi/field residual sampled by the ray
+                return comp_debug_ramp(clamp(raw / 1.25, 0.0, 1.0));
+            }
+            float lv = log(max(raw, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
+            return comp_debug_ramp(t);
+        }
 
         if (visible_mode_enabled_fc()) {
             if (rec.noise <= -50.0) {
-                // Packed by render-stage SSAA: emit_{r,phi,z} = linear XYZ.
+                // Packed by GRMHD visible volume RT: emit_{r,phi,z} = linear XYZ.
                 float3 xyzPacked = max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
                 float Y = xyzPacked.y;
                 if (C.analysisMode == 17u) { // Y luminance map
                     float lv = log(max(Y, 1e-38)) * 0.4342944819032518;
-                    float t = clamp((lv + 30.0) / max(34.0, 1e-6), 0.0, 1.0);
+                    float t = clamp((lv - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
                     return float3(t);
                 }
                 if (C.analysisMode == 18u) { // approximate dominant wavelength map
                     float3 rgbPacked = max(comp_xyz_to_rgb(xyzPacked), float3(0.0));
-                    float peakLamApprox = 550.0;
+                    float peakLamApprox = 520.0;
                     if (rgbPacked.x >= rgbPacked.y && rgbPacked.x >= rgbPacked.z) {
                         peakLamApprox = 650.0;
                     } else if (rgbPacked.z >= rgbPacked.x && rgbPacked.z >= rgbPacked.y) {
-                        peakLamApprox = 450.0;
+                        peakLamApprox = 425.0;
                     }
                     float w = clamp((peakLamApprox - 380.0) / 400.0, 0.0, 1.0);
                     float3 ramp = float3(
@@ -832,6 +1490,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                     );
                     return ramp;
                 }
+                xyzPacked *= comp_grmhd_visible_high_order_visibility(rec, P, C);
                 return comp_xyz_to_rgb(xyzPacked);
             }
 
@@ -853,7 +1512,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
             bool usedSpectralAnchors = false;
             if (useInuAnchor) {
                 // Packed by trace pass in visible volumetric mode:
-                // emit_{r,phi,z} = I_nu@{650,550,450}nm (observer frame).
+                // emit_{r,phi,z} = I_nu at CIE-fit anchors {650,520,425}nm (observer frame).
                 float3 iNuVis = max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
                 if (dot(iNuVis, float3(1.0)) > 1e-30) {
                     comp_visible_xyz_from_three_band_inu(iNuVis, colorDilution, P, X, Y, Z, yLum, peakLam);
@@ -882,7 +1541,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
 
             if (C.analysisMode == 17u) { // Y luminance map
                 float lv = log(max(Y, 1e-38)) * 0.4342944819032518;
-                float t = clamp((lv + 30.0) / max(34.0, 1e-6), 0.0, 1.0);
+                float t = clamp((lv - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
                 return float3(t);
             }
             if (C.analysisMode == 18u) { // spectrum peak wavelength map
@@ -898,11 +1557,21 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
             float3 d_world = rec.direct_world.xyz;
             float mu = abs(d_world.z) / max(length(d_world), 1e-30);
             float limb = comp_limb_factor(mu, P);
-            return rgb * limb;
+            return rgb * limb * comp_grmhd_visible_high_order_visibility(rec, P, C);
         }
 
         float iNu = max(rec.v_disk.w, 0.0);
         return float3(iNu);
+    }
+
+    if (FC_PHYSICS_MODE == 2u && P.diskVolumeMode != 0u && rec.noise <= -50.0) {
+        float3 xyzPacked = max(float3(rec.emit_r_norm, rec.emit_phi, rec.emit_z_norm), float3(0.0));
+        if (C.analysisMode == 17u) {
+            float lv = log(max(xyzPacked.y, 1e-38)) * 0.4342944819032518;
+            float t = clamp((lv - C.lumLogMin) / max(C.lumLogMax - C.lumLogMin, 1e-6), 0.0, 1.0);
+            return float3(t);
+        }
+        return comp_xyz_to_rgb(xyzPacked);
     }
 
     ThinSpectralEmission thin = comp_thin_spectral_emission(rec, P, C);
@@ -1046,8 +1715,24 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
     }
 
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
+    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && comp_thin_physical_active(C)) {
+        // Thin visible reference is a source-formation path: the photospheric
+        // body and optional atlas hot-skin perturbation are already encoded in
+        // comp_thin_spectral_emission. Do not run the legacy cloud/noise
+        // material multiplier afterward; that turns physical emissivity into
+        // albedo-like surface shading and makes atlas activity darken the body.
+        return rgb;
+    }
     if (FC_PHYSICS_MODE == 3u) {
         if (visible_mode_enabled_fc() && C.analysisMode == 0u) {
+            // GRMHD visible volume RT packs final linear XYZ into
+            // emit_{r,phi,z} and marks rec.noise with a negative sentinel.
+            // Do not reinterpret that sentinel as a cloud-density value here;
+            // doing so turns already-integrated hot gas into a dark slab in the
+            // presentation layer.
+            if (rec.noise <= -50.0) {
+                return rgb;
+            }
             float texStrength = clamp(P.diskPrecisionTexture, 0.0, 1.0);
             if (texStrength > 1e-5) {
                 float cloudRaw = comp_cloud_raw(rec, P, C);
@@ -1066,6 +1751,9 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
     }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     if (FC_PHYSICS_MODE == 2u) {
+        if (P.diskVolumeMode != 0u && rec.noise <= -50.0) {
+            return rgb;
+        }
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgb *= retFactor;
     }
@@ -1285,23 +1973,45 @@ static inline float3 comp_apply_camera_scene_response(float3 rgbExp,
 
 static inline float3 comp_apply_human_vision_pipeline(float3 rgbTm)
 {
-    float3 out = clamp(rgbTm, 0.0, 1.0);
-    float y = dot(out, float3(0.2126, 0.7152, 0.0722));
+    float3 coneRgb = clamp(rgbTm, 0.0, 1.0);
+    float y = dot(coneRgb, float3(0.2126, 0.7152, 0.0722));
 
-    // Human-eye presentation only: mesopic desaturation, Purkinje-like
-    // blue-green bias in dark regions, macular/lens short-wavelength filtering,
-    // and cone bleaching for intense highlights. Physical radiance is unchanged.
-    float mesopic = smoothstep(0.018, 0.26, y);
-    float scotopic = 1.0 - mesopic;
-    float bleach = smoothstep(0.62, 0.98, y);
-    float saturation = mix(0.30, 1.0, mesopic) * mix(1.0, 0.62, bleach);
+    // Human-eye presentation only. This is a display-side observer response:
+    // a mild Naka-Rushton-like photoreceptor compression, CIE-style
+    // mesopic rod/cone blending, ocular-media short-wavelength attenuation,
+    // and highlight bleaching. It does not modify transport radiance.
+    float n = 0.74;
+    float sigma = 0.34;
+    float yN = pow(max(y, 0.0), n);
+    float sN = pow(sigma, n);
+    float whiteResp = 1.0 / max(1.0 + sN, 1e-6);
+    float receptorY = (yN / max(yN + sN, 1e-6)) / whiteResp;
+    float adaptMix = 0.30 * smoothstep(0.006, 0.45, y) * (1.0 - 0.45 * smoothstep(0.75, 1.0, y));
+    float yAdapt = mix(y, clamp(receptorY, 0.0, 1.0), adaptMix);
+    float3 out = coneRgb * (yAdapt / max(y, 1e-6));
+    y = dot(out, float3(0.2126, 0.7152, 0.0722));
+
+    // Scotopic luminance is only an RGB-domain approximation here; the spectral
+    // radiance has already been converted to RGB upstream. Keep the Purkinje
+    // shift confined to genuinely dim display values: a bright accretion flow
+    // should be cone-dominated, while only faint outer flow/stars move toward
+    // blue-green low-light perception.
+    float photopic = smoothstep(0.018, 0.145, y);
+    float yScotopic = dot(out, float3(0.050, 0.730, 0.220));
+    float3 rodRgb = yScotopic * float3(0.78, 0.97, 1.04);
+    out = mix(rodRgb, out, photopic);
+    y = dot(out, float3(0.2126, 0.7152, 0.0722));
+
+    float bleach = smoothstep(0.58, 0.98, y);
+    float saturation = mix(0.10, 0.96, photopic) * mix(1.0, 0.46, bleach);
     out = mix(float3(y), out, saturation);
 
-    out *= mix(float3(1.0), float3(0.82, 0.99, 1.13), 0.25 * scotopic);
-    out *= mix(float3(1.0), float3(1.025, 1.000, 0.935), 0.18 * smoothstep(0.30, 1.0, y));
+    // Lens/macular pigment attenuates short wavelengths more in bright fields.
+    float media = smoothstep(0.10, 0.95, y);
+    out *= mix(float3(1.0), float3(1.030, 1.000, 0.905), 0.18 * media);
 
-    float3 bleachedWhite = float3(y);
-    out = mix(out, bleachedWhite, 0.24 * bleach);
+    float3 bleachedWhite = float3(dot(out, float3(0.2126, 0.7152, 0.0722)));
+    out = mix(out, bleachedWhite, 0.32 * bleach);
     return clamp(out, 0.0, 1.0);
 }
 
@@ -1357,6 +2067,48 @@ static inline float comp_psf_wing_strength(uint profile, constant ComposeParams&
     }
     float profileBoost = (profile >= 3u) ? 0.018 : ((profile >= 2u) ? 0.012 : 0.004);
     return clamp(profileBoost + 0.010 * C.cameraPsfSigmaPx + 0.050 * flare, 0.0, 0.12);
+}
+
+static inline bool comp_eye_caustic_spike_filter_enabled(constant ComposeParams& C)
+{
+    // Eye/pupil presentation only. Scientific and debug outputs keep the raw
+    // ray-sampled radiance, including unresolved high-order caustic samples.
+    return (C.cameraModel == 3u) &&
+           (C.analysisMode == 0u) &&
+           (C.cameraPsfSigmaPx > 1e-6);
+}
+
+static inline float3 comp_eye_caustic_spike_filter(float3 center,
+                                                   float3 cL,
+                                                   float3 cR,
+                                                   float3 cD,
+                                                   float3 cU,
+                                                   float3 cLD,
+                                                   float3 cLU,
+                                                   float3 cRD,
+                                                   float3 cRU,
+                                                   constant ComposeParams& C)
+{
+    if (!comp_eye_caustic_spike_filter_enabled(C)) return center;
+
+    const float3 lumaW = float3(0.2126, 0.7152, 0.0722);
+    float centerY = dot(max(center, float3(0.0)), lumaW);
+    float3 neighborMean = (cL + cR + cD + cU + cLD + cLU + cRD + cRU) * 0.125;
+    float neighborY = dot(max(neighborMean, float3(0.0)), lumaW);
+
+    // Single-ray high-order images can land as isolated pixel-scale impulses.
+    // A real eye has a finite pupil and retinal integration area, so suppress
+    // only center samples that are much brighter than their immediate field.
+    // Coherent arcs/ribbons survive because their neighboring samples are also
+    // bright and the ratio gate stays low.
+    float exposedY = centerY * max(C.exposure, 1e-30);
+    float brightGate = smoothstep(0.18, 1.35, exposedY);
+    float ratioGate = smoothstep(2.2, 5.6, centerY / max(neighborY, 1e-30));
+    float strength = 0.78 * brightGate * ratioGate;
+    if (!(strength > 1e-5)) return center;
+
+    float3 finitePupilAverage = 0.28 * center + 0.72 * neighborMean;
+    return max(mix(center, finitePupilAverage, strength), float3(0.0));
 }
 
 static inline float3 comp_linear_full_rgb(device const float4* inLinear,
@@ -1476,7 +2228,6 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
 {
     float3 center = comp_linear_full_rgb(inLinear, srcX, srcY, C);
     uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
-    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
     float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
@@ -1489,19 +2240,24 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
     uint yD = (srcY > 0u) ? (srcY - 1u) : 0u;
     uint yU = min(srcY + 1u, C.fullInputHeight - 1u);
 
+    float3 cL = comp_linear_full_rgb(inLinear, xL, srcY, C);
+    float3 cR = comp_linear_full_rgb(inLinear, xR, srcY, C);
+    float3 cD = comp_linear_full_rgb(inLinear, srcX, yD, C);
+    float3 cU = comp_linear_full_rgb(inLinear, srcX, yU, C);
+    float3 cLD = comp_linear_full_rgb(inLinear, xL, yD, C);
+    float3 cLU = comp_linear_full_rgb(inLinear, xL, yU, C);
+    float3 cRD = comp_linear_full_rgb(inLinear, xR, yD, C);
+    float3 cRU = comp_linear_full_rgb(inLinear, xR, yU, C);
+    center = comp_eye_caustic_spike_filter(center, cL, cR, cD, cU, cLD, cLU, cRD, cRU, C);
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
     float3 sum = center * w0;
     float wSum = w0;
 
-    sum += (comp_linear_full_rgb(inLinear, xL, srcY, C)
-          + comp_linear_full_rgb(inLinear, xR, srcY, C)
-          + comp_linear_full_rgb(inLinear, srcX, yD, C)
-          + comp_linear_full_rgb(inLinear, srcX, yU, C)) * w1;
+    sum += (cL + cR + cD + cU) * w1;
     wSum += 4.0 * w1;
 
-    sum += (comp_linear_full_rgb(inLinear, xL, yD, C)
-          + comp_linear_full_rgb(inLinear, xL, yU, C)
-          + comp_linear_full_rgb(inLinear, xR, yD, C)
-          + comp_linear_full_rgb(inLinear, xR, yU, C)) * w2;
+    sum += (cLD + cLU + cRD + cRU) * w2;
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
@@ -1511,20 +2267,33 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
         float rB = 4.0 + 4.8 * sigma;
         float sx = float(srcX);
         float sy = float(srcY);
-        float3 haloA = (
-            comp_sample_linear_full_bilinear(inLinear, float2(sx + rA, sy), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx - rA, sy), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx, sy + rA), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx, sy - rA), C)
-        ) * 0.25;
+        float3 hAXp = comp_sample_linear_full_bilinear(inLinear, float2(sx + rA, sy), C);
+        float3 hAXm = comp_sample_linear_full_bilinear(inLinear, float2(sx - rA, sy), C);
+        float3 hAYp = comp_sample_linear_full_bilinear(inLinear, float2(sx, sy + rA), C);
+        float3 hAYm = comp_sample_linear_full_bilinear(inLinear, float2(sx, sy - rA), C);
         float d = 0.70710678 * rB;
-        float3 haloB = (
-            comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy + d), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy + d), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy - d), C) +
-            comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy - d), C)
-        ) * 0.25;
-        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+        float3 hBDp = comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy + d), C);
+        float3 hBDm = comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy + d), C);
+        float3 hBCp = comp_sample_linear_full_bilinear(inLinear, float2(sx + d, sy - d), C);
+        float3 hBCm = comp_sample_linear_full_bilinear(inLinear, float2(sx - d, sy - d), C);
+        if (profile == 4u) {
+            // Human-eye veil glare is dominated by bright-source scatter in the
+            // ocular media. Keep the core optical blur linear, but make the broad
+            // wing additive and bright-pass so dark disk structure is not smeared
+            // into an artificial fog layer.
+            hAXp = comp_flare_bright_pass_scene(hAXp, C);
+            hAXm = comp_flare_bright_pass_scene(hAXm, C);
+            hAYp = comp_flare_bright_pass_scene(hAYp, C);
+            hAYm = comp_flare_bright_pass_scene(hAYm, C);
+            hBDp = comp_flare_bright_pass_scene(hBDp, C);
+            hBDm = comp_flare_bright_pass_scene(hBDm, C);
+            hBCp = comp_flare_bright_pass_scene(hBCp, C);
+            hBCm = comp_flare_bright_pass_scene(hBCm, C);
+        }
+        float3 haloA = (hAXp + hAXm + hAYp + hAYm) * 0.25;
+        float3 haloB = (hBDp + hBDm + hBCp + hBCm) * 0.25;
+        float3 halo = 0.68 * haloA + 0.32 * haloB;
+        out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
     return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
 }
@@ -1643,7 +2412,6 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
 {
     float3 center = comp_linear_tile_rgb(inLinear, lx, ly, C);
     uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 3u) ? 4u : ((C.cameraModel == 2u) ? 2u : ((C.cameraModel == 1u) ? 1u : 0u)));
-    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float sigma = max(C.cameraPsfSigmaPx, 1e-3);
     float inv2s2 = 0.5 / max(sigma * sigma, 1e-6);
@@ -1656,19 +2424,24 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
     uint yD = (ly > 0u) ? (ly - 1u) : 0u;
     uint yU = min(ly + 1u, C.tileHeight - 1u);
 
+    float3 cL = comp_linear_tile_rgb(inLinear, xL, ly, C);
+    float3 cR = comp_linear_tile_rgb(inLinear, xR, ly, C);
+    float3 cD = comp_linear_tile_rgb(inLinear, lx, yD, C);
+    float3 cU = comp_linear_tile_rgb(inLinear, lx, yU, C);
+    float3 cLD = comp_linear_tile_rgb(inLinear, xL, yD, C);
+    float3 cLU = comp_linear_tile_rgb(inLinear, xL, yU, C);
+    float3 cRD = comp_linear_tile_rgb(inLinear, xR, yD, C);
+    float3 cRU = comp_linear_tile_rgb(inLinear, xR, yU, C);
+    center = comp_eye_caustic_spike_filter(center, cL, cR, cD, cU, cLD, cLU, cRD, cRU, C);
+    if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
+
     float3 sum = center * w0;
     float wSum = w0;
 
-    sum += (comp_linear_tile_rgb(inLinear, xL, ly, C)
-          + comp_linear_tile_rgb(inLinear, xR, ly, C)
-          + comp_linear_tile_rgb(inLinear, lx, yD, C)
-          + comp_linear_tile_rgb(inLinear, lx, yU, C)) * w1;
+    sum += (cL + cR + cD + cU) * w1;
     wSum += 4.0 * w1;
 
-    sum += (comp_linear_tile_rgb(inLinear, xL, yD, C)
-          + comp_linear_tile_rgb(inLinear, xL, yU, C)
-          + comp_linear_tile_rgb(inLinear, xR, yD, C)
-          + comp_linear_tile_rgb(inLinear, xR, yU, C)) * w2;
+    sum += (cLD + cLU + cRD + cRU) * w2;
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
@@ -1678,20 +2451,29 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
         float rB = 4.0 + 4.8 * sigma;
         float sx = float(lx);
         float sy = float(ly);
-        float3 haloA = (
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx + rA, sy), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx - rA, sy), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy + rA), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy - rA), C)
-        ) * 0.25;
+        float3 hAXp = comp_sample_linear_tile_bilinear(inLinear, float2(sx + rA, sy), C);
+        float3 hAXm = comp_sample_linear_tile_bilinear(inLinear, float2(sx - rA, sy), C);
+        float3 hAYp = comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy + rA), C);
+        float3 hAYm = comp_sample_linear_tile_bilinear(inLinear, float2(sx, sy - rA), C);
         float d = 0.70710678 * rB;
-        float3 haloB = (
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy + d), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy + d), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy - d), C) +
-            comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy - d), C)
-        ) * 0.25;
-        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+        float3 hBDp = comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy + d), C);
+        float3 hBDm = comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy + d), C);
+        float3 hBCp = comp_sample_linear_tile_bilinear(inLinear, float2(sx + d, sy - d), C);
+        float3 hBCm = comp_sample_linear_tile_bilinear(inLinear, float2(sx - d, sy - d), C);
+        if (profile == 4u) {
+            hAXp = comp_flare_bright_pass_scene(hAXp, C);
+            hAXm = comp_flare_bright_pass_scene(hAXm, C);
+            hAYp = comp_flare_bright_pass_scene(hAYp, C);
+            hAYm = comp_flare_bright_pass_scene(hAYm, C);
+            hBDp = comp_flare_bright_pass_scene(hBDp, C);
+            hBDm = comp_flare_bright_pass_scene(hBDm, C);
+            hBCp = comp_flare_bright_pass_scene(hBCp, C);
+            hBCm = comp_flare_bright_pass_scene(hBCm, C);
+        }
+        float3 haloA = (hAXp + hAXm + hAYp + hAYm) * 0.25;
+        float3 haloB = (hBDp + hBDm + hBCp + hBCm) * 0.25;
+        float3 halo = 0.68 * haloA + 0.32 * haloB;
+        out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
     return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
 }
@@ -1821,19 +2603,23 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
     uint yD = (ly > 0u) ? (ly - 1u) : 0u;
     uint yU = min(ly + 1u, C.tileHeight - 1u);
 
+    float3 cL = comp_collision_tile_rgb(inInfo, xL, ly, P, C);
+    float3 cR = comp_collision_tile_rgb(inInfo, xR, ly, P, C);
+    float3 cD = comp_collision_tile_rgb(inInfo, lx, yD, P, C);
+    float3 cU = comp_collision_tile_rgb(inInfo, lx, yU, P, C);
+    float3 cLD = comp_collision_tile_rgb(inInfo, xL, yD, P, C);
+    float3 cLU = comp_collision_tile_rgb(inInfo, xL, yU, P, C);
+    float3 cRD = comp_collision_tile_rgb(inInfo, xR, yD, P, C);
+    float3 cRU = comp_collision_tile_rgb(inInfo, xR, yU, P, C);
+    center = comp_eye_caustic_spike_filter(center, cL, cR, cD, cU, cLD, cLU, cRD, cRU, C);
+
     float3 sum = center * w0;
     float wSum = w0;
 
-    sum += (comp_collision_tile_rgb(inInfo, xL, ly, P, C)
-          + comp_collision_tile_rgb(inInfo, xR, ly, P, C)
-          + comp_collision_tile_rgb(inInfo, lx, yD, P, C)
-          + comp_collision_tile_rgb(inInfo, lx, yU, P, C)) * w1;
+    sum += (cL + cR + cD + cU) * w1;
     wSum += 4.0 * w1;
 
-    sum += (comp_collision_tile_rgb(inInfo, xL, yD, P, C)
-          + comp_collision_tile_rgb(inInfo, xL, yU, P, C)
-          + comp_collision_tile_rgb(inInfo, xR, yD, P, C)
-          + comp_collision_tile_rgb(inInfo, xR, yU, P, C)) * w2;
+    sum += (cLD + cLU + cRD + cRU) * w2;
     wSum += 4.0 * w2;
 
     float3 out = sum / max(wSum, 1e-8);
@@ -1843,20 +2629,29 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
         float rB = 4.0 + 4.8 * sigma;
         float sx = float(lx);
         float sy = float(ly);
-        float3 haloA = (
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx + rA, sy), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx - rA, sy), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy + rA), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy - rA), P, C)
-        ) * 0.25;
+        float3 hAXp = comp_sample_collision_tile_bilinear(inInfo, float2(sx + rA, sy), P, C);
+        float3 hAXm = comp_sample_collision_tile_bilinear(inInfo, float2(sx - rA, sy), P, C);
+        float3 hAYp = comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy + rA), P, C);
+        float3 hAYm = comp_sample_collision_tile_bilinear(inInfo, float2(sx, sy - rA), P, C);
         float d = 0.70710678 * rB;
-        float3 haloB = (
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy + d), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy + d), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy - d), P, C) +
-            comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy - d), P, C)
-        ) * 0.25;
-        out = mix(out, 0.68 * haloA + 0.32 * haloB, wing);
+        float3 hBDp = comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy + d), P, C);
+        float3 hBDm = comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy + d), P, C);
+        float3 hBCp = comp_sample_collision_tile_bilinear(inInfo, float2(sx + d, sy - d), P, C);
+        float3 hBCm = comp_sample_collision_tile_bilinear(inInfo, float2(sx - d, sy - d), P, C);
+        if (profile == 4u) {
+            hAXp = comp_flare_bright_pass_scene(hAXp, C);
+            hAXm = comp_flare_bright_pass_scene(hAXm, C);
+            hAYp = comp_flare_bright_pass_scene(hAYp, C);
+            hAYm = comp_flare_bright_pass_scene(hAYm, C);
+            hBDp = comp_flare_bright_pass_scene(hBDp, C);
+            hBDm = comp_flare_bright_pass_scene(hBDm, C);
+            hBCp = comp_flare_bright_pass_scene(hBCp, C);
+            hBCm = comp_flare_bright_pass_scene(hBCm, C);
+        }
+        float3 haloA = (hAXp + hAXm + hAYp + hAYm) * 0.25;
+        float3 haloB = (hBDp + hBDm + hBCp + hBCm) * 0.25;
+        float3 halo = 0.68 * haloA + 0.32 * haloB;
+        out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
     return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
 }
@@ -1867,12 +2662,38 @@ static inline float3 comp_shade(const CollisionInfo rec,
 {
     if (rec.hit == 0u) return float3(0.0);
     float3 rgb = comp_linear_rgb(rec, P, C);
+    if (C.realismProfile == 5u &&
+        (C.analysisMode == 34u || C.analysisMode == 35u ||
+         C.analysisMode == 36u || C.analysisMode == 38u)) {
+        // Absolute canonical source radiance debug: output display-encoded
+        // linear clamp. The fixed HDR preview scale is applied when forming the
+        // branch debug radiance; avoid tone mapping, which inflates weak
+        // isolated branches.
+        float3 rgbExp = rgb * max(C.exposure, 1e-30);
+        return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
+    }
+    if (C.realismProfile == 5u && (C.analysisMode == 37u || C.analysisMode == 42u)) {
+        return clamp(rgb, 0.0, 1.0);
+    }
+    bool physicalVolumeDebug = (FC_PHYSICS_MODE == 3u) ||
+                               (FC_PHYSICS_MODE == 2u && P.diskVolumeMode != 0u);
+    if (physicalVolumeDebug && C.analysisMode == 30u) {
+        float lumRaw = dot(max(rgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        if (!(lumRaw > 1e-37)) return float3(0.0);
+        return comp_debug_ramp(comp_grmhd_raw_log_debug_t(lumRaw));
+    }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    if (physicalVolumeDebug && C.analysisMode == 31u) {
+        return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
+    }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
     float3 rgbTm = rgbExp * scale;
+    if (physicalVolumeDebug && C.analysisMode == 32u) {
+        return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
+    }
     if (C.look != 4u) {
         float shoulder = smoothstep(0.55, 1.0, lumTm);
         float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
@@ -1892,12 +2713,40 @@ static inline float3 comp_shade(const CollisionInfo rec,
 
 static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
 {
+    if (C.realismProfile == 5u &&
+        (C.analysisMode == 34u || C.analysisMode == 35u ||
+         C.analysisMode == 36u || C.analysisMode == 38u)) {
+        // Absolute canonical source radiance debug: output display-encoded
+        // linear clamp. The fixed HDR preview scale is applied when forming the
+        // branch debug radiance; avoid tone mapping, which inflates weak
+        // isolated branches.
+        float3 rgbExp = rgb * max(C.exposure, 1e-30);
+        return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
+    }
+    if (C.realismProfile == 5u && (C.analysisMode == 37u || C.analysisMode == 42u)) {
+        // Canonical normalized diagnostic maps are already display-domain unit
+        // values: RGB={body,skin,corona} ratios or grayscale activity. Do not run
+        // exposure, tone mapping, or sRGB gamma here, otherwise PNG channel values
+        // no longer match the physical branch diagnostics.
+        return clamp(rgb, 0.0, 1.0);
+    }
+    if (FC_PHYSICS_MODE == 3u && C.analysisMode == 30u) {
+        float lumRaw = dot(max(rgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+        if (!(lumRaw > 1e-37)) return float3(0.0);
+        return comp_debug_ramp(comp_grmhd_raw_log_debug_t(lumRaw));
+    }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
+    if (FC_PHYSICS_MODE == 3u && C.analysisMode == 31u) {
+        return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
+    }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
     float3 rgbTm = rgbExp * scale;
+    if (FC_PHYSICS_MODE == 3u && C.analysisMode == 32u) {
+        return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
+    }
     if (C.look != 4u) {
         float shoulder = smoothstep(0.55, 1.0, lumTm);
         float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
@@ -1913,4 +2762,133 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     return srgb;
+}
+
+static inline bool comp_eye_local_adaptation_enabled(constant ComposeParams& C)
+{
+    // Presentation-only retinal/cortical local adaptation. Keep this out of
+    // diagnostics and scientific master output; it operates after transport,
+    // exposure, tone mapping, and eye color response.
+    return (C.cameraModel == 3u) && (C.analysisMode == 0u);
+}
+
+static inline float3 comp_eye_local_adaptation_apply(float3 center,
+                                                     float3 surround)
+{
+    const float3 lumaW = float3(0.2126, 0.7152, 0.0722);
+    float centerY = dot(clamp(center, 0.0, 1.0), lumaW);
+    float surroundY = dot(clamp(surround, 0.0, 1.0), lumaW);
+
+    // A small log-domain gain restores visibility of physically present
+    // contrast after global adaptation, without inventing new disk texture.
+    float detail = log2(max(centerY, 1e-5)) - log2(max(surroundY, 1e-5));
+    float midtoneGate = smoothstep(0.018, 0.28, centerY) * (1.0 - smoothstep(0.72, 0.98, centerY));
+    float surroundGate = smoothstep(0.006, 0.20, surroundY);
+    float gain = 0.115 * midtoneGate * surroundGate;
+    float scale = clamp(exp2(gain * detail), 0.86, 1.16);
+    return clamp(center * scale, 0.0, 1.0);
+}
+
+static inline float comp_eye_scene_surround_full(device const float4* inLinear,
+                                                 uint srcX,
+                                                 uint srcY,
+                                                 constant ComposeParams& C)
+{
+    int ix = int(srcX);
+    int iy = int(srcY);
+    int maxX = int(max(C.fullInputWidth, 1u)) - 1;
+    int maxY = int(max(C.fullInputHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+    const float3 lumaW = float3(0.2126, 0.7152, 0.0722);
+
+    float y = 0.0;
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix - rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix + rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy - rNear, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy + rNear, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix - rFar, 0, maxX)), uint(clamp(iy - rFar, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_full_rgb(inLinear, uint(clamp(ix + rFar, 0, maxX)), uint(clamp(iy + rFar, 0, maxY)), C), 0.0), lumaW);
+    return y / 6.0;
+}
+
+static inline float comp_eye_scene_surround_tile(device const float4* inLinear,
+                                                 uint lx,
+                                                 uint ly,
+                                                 constant ComposeParams& C)
+{
+    int ix = int(lx);
+    int iy = int(ly);
+    int maxX = int(max(C.tileWidth, 1u)) - 1;
+    int maxY = int(max(C.tileHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+    const float3 lumaW = float3(0.2126, 0.7152, 0.0722);
+
+    float y = 0.0;
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix - rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix + rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy - rNear, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy + rNear, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix - rFar, 0, maxX)), uint(clamp(iy - rFar, 0, maxY)), C), 0.0), lumaW);
+    y += dot(max(comp_linear_tile_rgb(inLinear, uint(clamp(ix + rFar, 0, maxX)), uint(clamp(iy + rFar, 0, maxY)), C), 0.0), lumaW);
+    return y / 6.0;
+}
+
+static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
+                                              float surroundY,
+                                              constant ComposeParams& C)
+{
+    // Local adaptation belongs before the eye tone curve: a bright local field
+    // reduces retinal gain, preserving contrast that global exposure would
+    // otherwise push into the shoulder. Scientific radiance is left unchanged.
+    float expY = max(surroundY, 0.0) * max(C.exposure, 1e-30);
+    float brightGate = smoothstep(0.12, 1.60, expY);
+    float gain = pow(0.42 / max(expY, 1e-5), 0.32);
+    gain = clamp(gain, 0.24, 1.18);
+    return max(rgb * mix(1.0, gain, brightGate), 0.0);
+}
+
+static inline float3 comp_eye_surround_full(device const float4* inLinear,
+                                            uint srcX,
+                                            uint srcY,
+                                            constant ComposeParams& C)
+{
+    int ix = int(srcX);
+    int iy = int(srcY);
+    int maxX = int(max(C.fullInputWidth, 1u)) - 1;
+    int maxY = int(max(C.fullInputHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+
+    float3 acc = float3(0.0);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix - rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix + rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy - rNear, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy + rNear, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix - rFar, 0, maxX)), uint(clamp(iy - rFar, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_full_rgb(inLinear, uint(clamp(ix + rFar, 0, maxX)), uint(clamp(iy + rFar, 0, maxY)), C), C);
+    return acc / 6.0;
+}
+
+static inline float3 comp_eye_surround_tile(device const float4* inLinear,
+                                            uint lx,
+                                            uint ly,
+                                            constant ComposeParams& C)
+{
+    int ix = int(lx);
+    int iy = int(ly);
+    int maxX = int(max(C.tileWidth, 1u)) - 1;
+    int maxY = int(max(C.tileHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+
+    float3 acc = float3(0.0);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix - rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix + rNear, 0, maxX)), uint(clamp(iy, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy - rNear, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix, 0, maxX)), uint(clamp(iy + rNear, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix - rFar, 0, maxX)), uint(clamp(iy - rFar, 0, maxY)), C), C);
+    acc += comp_shade_linear(comp_linear_tile_rgb(inLinear, uint(clamp(ix + rFar, 0, maxX)), uint(clamp(iy + rFar, 0, maxY)), C), C);
+    return acc / 6.0;
 }
