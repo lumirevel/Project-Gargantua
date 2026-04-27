@@ -122,6 +122,40 @@ struct RenderMeta: Codable {
     var collisionStride: Int
 }
 
+struct ExposureDiagnostics: Codable {
+    var version: String
+    var layer: String
+    var imagePath: String
+    var width: Int
+    var height: Int
+    var presentationMode: String
+    var look: String
+    var cameraModel: String
+    var cameraProfile: String
+    var realismProfile: String
+    var autoExposure: Bool
+    var exposureMode: String
+    var exposureEV: Double
+    var baseExposure: Double?
+    var resolvedExposure: Double?
+    var solveMode: String
+    var targetWhite: Double?
+    var highQuantile: Double?
+    var pHigh: Double?
+    var midQuantile: Double?
+    var targetMid: Double?
+    var pMid: Double?
+    var maxExposureBoost: Double?
+    var pFloor: Double?
+    var p50: Double?
+    var luminanceSamples: UInt32?
+    var luminanceLogMin: Double?
+    var luminanceLogMax: Double?
+    var cloudQ10: Double?
+    var cloudQ90: Double?
+    var cloudSamples: UInt32?
+}
+
 enum RenderOutputs {
     static func writeImage(path: String, width: Int, height: Int, rgb: [UInt8]) throws {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
@@ -304,5 +338,68 @@ enum RenderOutputs {
         } else {
             print("Collision output skipped (discard mode), hits=\(hitCount)")
         }
+    }
+
+    static func writeExposureDiagnostics(
+        config: ResolvedRenderConfig,
+        width: Int,
+        height: Int,
+        solveMode: String,
+        resolvedExposure: Float,
+        settings: ComposeExposureSolveSettings,
+        p50: Float?,
+        pHigh: Float?,
+        pMid: Float?,
+        luminanceSamples: UInt32?,
+        luminanceLogMin: Float?,
+        luminanceLogMax: Float?,
+        cloudQ10: Float?,
+        cloudQ90: Float?,
+        cloudSamples: UInt32?
+    ) throws {
+        func finite(_ value: Float?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return Double(value)
+        }
+
+        let diagnostics = ExposureDiagnostics(
+            version: "interpreter_exposure_v1",
+            layer: "interpreter",
+            imagePath: config.imageOutPath,
+            width: width,
+            height: height,
+            presentationMode: config.presentationModeName,
+            look: config.composeLook,
+            cameraModel: config.cameraModelName,
+            cameraProfile: config.cameraProfileName,
+            realismProfile: config.realismProfileName,
+            autoExposure: config.autoExposureEnabled,
+            exposureMode: config.exposureModeName,
+            exposureEV: config.exposureEVArg,
+            baseExposure: finite(config.composeExposureBase),
+            resolvedExposure: finite(resolvedExposure),
+            solveMode: solveMode,
+            targetWhite: finite(settings.targetWhite),
+            highQuantile: finite(settings.highQuantile),
+            pHigh: finite(pHigh),
+            midQuantile: settings.midQuantile > 0.0 ? finite(settings.midQuantile) : nil,
+            targetMid: settings.targetMid > 0.0 ? finite(settings.targetMid) : nil,
+            pMid: settings.midQuantile > 0.0 ? finite(pMid) : nil,
+            maxExposureBoost: settings.maxExposureBoost > 1.0 ? finite(settings.maxExposureBoost) : nil,
+            pFloor: finite(settings.pFloor),
+            p50: finite(p50),
+            luminanceSamples: luminanceSamples,
+            luminanceLogMin: finite(luminanceLogMin),
+            luminanceLogMax: finite(luminanceLogMax),
+            cloudQ10: finite(cloudQ10),
+            cloudQ90: finite(cloudQ90),
+            cloudSamples: cloudSamples
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(diagnostics)
+        let path = config.imageOutPath + ".exposure_debug.json"
+        try data.write(to: URL(fileURLWithPath: path))
+        print("Saved exposure debug at:", URL(fileURLWithPath: path).path)
     }
 }

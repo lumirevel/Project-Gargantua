@@ -66,6 +66,10 @@ enum RenderComposeHDRIntermediatePhase {
         var linearGlobalCloudQ10: Float = 0.0
         var linearGlobalCloudQ90: Float = 1.0
         var linearGlobalCloudInvSpan: Float = 1.0
+        var exposureDebugP50: Float?
+        var exposureDebugPHigh: Float?
+        var exposureDebugPMid: Float?
+        var exposureDebugLumSamples: UInt32?
         if input.traceResult.linearCloudSampleCount > 0 {
             linearGlobalCloudQ10 = input.traceResult.linearCloudHistGlobal.withUnsafeBufferPointer {
                 quantileFromUniformHistogram($0, 0.08, 0.0, 1.0)
@@ -237,6 +241,10 @@ enum RenderComposeHDRIntermediatePhase {
             let solveResult = solveResultBuf.contents().bindMemory(to: ComposeSolveResult.self, capacity: 1).pointee
             resolvedComposeExposure = solveResult.exposure
             composeParamsTemplate.exposure = resolvedComposeExposure
+            exposureDebugP50 = solveResult.p50
+            exposureDebugPHigh = solveResult.p995
+            exposureDebugPMid = solveResult.pMid
+            exposureDebugLumSamples = solveResult.lumSamples
             if exposureSettings.midQuantile > 0.0 {
                 print("lum(hist) p50=\(solveResult.p50), p\(Int(exposureSettings.midQuantile * 100))=\(solveResult.pMid), p99.5=\(solveResult.p995), mode=hdr32-file, exposureBoost<=\(exposureSettings.maxExposureBoost)")
             } else {
@@ -317,6 +325,30 @@ enum RenderComposeHDRIntermediatePhase {
 
         try RenderOutputs.writeImage(path: config.imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
         print("Saved image at: \(config.imageOutPath)")
+        let exposureSettings = composeExposureSolveSettings(
+            lookID: composeLookID,
+            presentationModeID: config.presentationModeID,
+            realismProfileID: realismProfileID,
+            diskPhysicsModeID: config.diskPhysicsModeID,
+            diskVolumeEnabled: config.diskVolumeEnabled
+        )
+        try RenderOutputs.writeExposureDiagnostics(
+            config: config,
+            width: outWidth,
+            height: outHeight,
+            solveMode: "hdr32-file",
+            resolvedExposure: resolvedComposeExposure,
+            settings: exposureSettings,
+            p50: exposureDebugP50,
+            pHigh: exposureDebugPHigh,
+            pMid: exposureDebugPMid,
+            luminanceSamples: exposureDebugLumSamples,
+            luminanceLogMin: linearLumLogMin,
+            luminanceLogMax: linearLumLogMax,
+            cloudQ10: linearGlobalCloudQ10,
+            cloudQ90: linearGlobalCloudQ90,
+            cloudSamples: input.traceResult.linearCloudSampleCount > 0 ? UInt32(min(input.traceResult.linearCloudSampleCount, UInt64(UInt32.max))) : nil
+        )
 
         return RenderComposeHDRIntermediatePhaseResult(
             composeExposure: resolvedComposeExposure,
