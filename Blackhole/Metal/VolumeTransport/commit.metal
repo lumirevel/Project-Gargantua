@@ -165,6 +165,11 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
             raw = float(volumeA.invalidSamples);
         } else if (P.diskGrmhdDebugView == 19u) {
             raw = pow(clamp(prepared.gMean, 1e-4, 1e4), 3.0);
+        } else if (P.diskGrmhdDebugView == 20u) {
+            // Raw radiance should expose the integrated observed signal, not a
+            // per-sample peak. For visible GRMHD this is the accumulated
+            // photopic/XYZ scalar prepared above before interpreter effects.
+            raw = max(prepared.scalarI, 0.0);
         } else if (P.diskGrmhdDebugView == 23u) {
             raw = (volumeA.tauOneSource > 0.0) ? volumeA.tauOneSource : max(volumeA.maxSource, 0.0);
         } else if (P.diskGrmhdDebugView == 24u) {
@@ -230,6 +235,16 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
         } else if (P.diskGrmhdDebugView == 56u) {
             float tauMax = max(volumeA.tau, max(max(volumeA.tauVis.x, volumeA.tauVis.y), volumeA.tauVis.z));
             raw = clamp(1.0 - exp(-max(tauMax, 0.0)), 0.0, 1.0);
+        } else if (P.diskGrmhdDebugView == 57u) {
+            float thermalTotal = max(
+                volumeA.intIThermalBody + volumeA.intIThermalCloud + volumeA.intIThermalCorona,
+                volumeA.intIThermal
+            );
+            raw = clamp(volumeA.intIThermalBody / max(thermalTotal + volumeA.intIThin, 1e-30), 0.0, 1.0);
+        } else if (P.diskGrmhdDebugView == 58u) {
+            float body = max(volumeA.intIThermalBody, 0.0);
+            float skin = max(volumeA.intIThermalCloud + volumeA.intIThermalCorona, 0.0);
+            raw = clamp(skin / max(body + skin, 1e-30), 0.0, 1.0);
         } else if (P.diskGrmhdDebugView == 47u) {
             raw = max(volumeA.maxFlowResidual, 0.0);
         }

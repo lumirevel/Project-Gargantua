@@ -154,9 +154,24 @@ For the visible disk candidate, compare:
 --disk-grmhd-debug raw-radiance
 --disk-grmhd-debug jthermal-cloud
 --disk-grmhd-debug thermal-cloud-ratio
+--disk-grmhd-debug body-ratio
+--disk-grmhd-debug skin-body-balance
 --grmhd-branch-isolation body
 --grmhd-branch-isolation cloud
 ```
+
+The `body-ratio` and `skin-body-balance` maps were added after ineffective
+source-temperature and photospheric-filling probes showed little image change.
+They make the remaining problem inspectable: whether the broad visible
+photospheric body is still dominating post-transfer radiance over the structured
+GRMHD skin/cloud contribution.
+
+In the current 160px visible-disk cache, `body-ratio` averages about `0.58` and
+`skin-body-balance` about `0.63`. That means the failure is not simply "body is
+100% of the light"; the remaining flatness is in the integrated scalar radiance
+closure itself. The next physical implementation should target how the
+multi-band/XYZ radiance is reduced to scalar diagnostics or how the visible
+source function preserves spatial variation, not global body/skin gain.
 
 ## Remaining Scientific Risk
 

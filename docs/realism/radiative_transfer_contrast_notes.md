@@ -61,6 +61,22 @@ Also added clearer aliases for the existing pre/post comparison:
 - `emissivity-pre-transfer` -> existing `jthermal-weighted`
 - `radiance-post-transfer` -> existing `ithermal`
 
+Added branch-balance diagnostics for the visible disk candidate:
+
+- `body-ratio`: post-transfer photospheric body contribution divided by the
+  thermal/visible branch total.
+- `skin-body-balance`: post-transfer skin plus corona contribution divided by
+  body plus skin plus corona.
+
+These diagnostics are intentionally physics-side. They expose whether the
+photospheric body is dominating the raw signal before any camera/interpreter
+work, and they do not change the rendered radiance.
+
+`raw-radiance` now explicitly emits the integrated observed scalar radiance from
+the prepared GRMHD visible hit instead of falling through ambiguous debug
+routing. This makes the diagnostic represent post-transfer physical signal
+before interpreter/camera effects.
+
 Use these together:
 
 ```bash
@@ -69,6 +85,8 @@ Use these together:
 --disk-grmhd-debug optical_depth
 --disk-grmhd-debug transfer-saturation
 --disk-grmhd-debug source
+--disk-grmhd-debug body-ratio
+--disk-grmhd-debug skin-body-balance
 ```
 
 ## Recommended low-risk changes

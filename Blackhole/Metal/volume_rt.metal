@@ -3274,8 +3274,9 @@ static inline bool grmhd_state_debug_enabled(constant Params& P) {
     return (physicsSupportsDebug &&
             FC_TRACE_DEBUG_OFF == 0u &&
             ((P.diskGrmhdDebugView >= 10u && P.diskGrmhdDebugView <= 19u) ||
+             P.diskGrmhdDebugView == 20u ||
              (P.diskGrmhdDebugView >= 23u && P.diskGrmhdDebugView <= 54u) ||
-             P.diskGrmhdDebugView == 56u));
+             (P.diskGrmhdDebugView >= 56u && P.diskGrmhdDebugView <= 58u)));
 }
 
 static inline bool grmhd_pol_debug_enabled(constant Params& P) {
