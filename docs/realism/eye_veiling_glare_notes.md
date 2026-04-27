@@ -35,7 +35,7 @@ References used for this interpreter change:
 - added before the eye tone curve, keeping the effect in the eye/display interpreter,
 - no new buffers, no ABI changes, no CPU-GPU synchronization change.
 
-The change is intentionally small. It is not a full CIE glare spread function or age/pigment-dependent human observer model. It prevents the most obvious non-physiological dark-halo behavior while keeping diagnostics reversible through existing optics-off controls. The current distance weighting is a screen-space proxy because the compose ABI does not currently expose a calibrated per-pixel visual angle.
+The change is intentionally small. It is not a full CIE glare spread function or age/pigment-dependent human observer model. It prevents the most obvious non-physiological dark-halo behavior while keeping diagnostics reversible through existing optics-off controls.
 
 ## Angular Proxy Update
 
@@ -48,6 +48,17 @@ The current implementation therefore adds:
 - `comp_eye_glare_source_y`
 
 These helpers collect bright-pass scene luminance from nearby and farther samples with lower weight at the farther radius. The resulting `glareY` is passed separately into `comp_eye_scene_adapt_rgb`, so a dark wall average no longer incorrectly removes the veil caused by a nearby lamp. Bright-source glare now reduces visible contrast by adding a veil, not by multiplying the local image darker.
+
+## FOV-Normalized Angular Falloff
+
+The glare spread proxy now receives `cameraGlareParams` in `ComposeParams`:
+
+- `x`: pixel visual angle in degrees, derived from `fovDeg / width`
+- `y`: minimum glare angle in degrees
+- `z`: angular falloff exponent
+- `w`: max-sample mix for sparse bright sources
+
+This keeps the interpreter-side glare weights closer to disability-glare models where veiling luminance depends on the angular separation between the glare source and the viewed point. It also reduces sensitivity to output resolution and FOV changes compared with fixed screen-space weights.
 
 ## How To Inspect
 
@@ -88,7 +99,7 @@ The expected comparison is:
 
 ## Risks
 
-- The current proxy uses screen-space radii, not an angularly calibrated glare spread function.
+- The current proxy uses FOV-normalized sample radii, but it is still sparse sampling rather than a calibrated full-image glare convolution.
 - The strength is intentionally restrained and may still be too weak for extreme high-luminance sources.
 - A future calibrated eye model should consider glare angle, pupil size, observer age, ocular media, and source spectral distribution.
 - The optics-off diagnostic must remain available when reviewing raw tone mapping and exposure behavior.

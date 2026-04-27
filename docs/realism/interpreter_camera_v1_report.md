@@ -71,6 +71,7 @@ Intentionally not changed:
 - Eye presentation now adds a restrained intraocular-scatter veil around bright local sources. The added veil is gated by `cameraPsfSigmaPx`, so optics-off diagnostics can still remove it.
 - The veil driver now separates adaptation luminance from glare-source luminance, keeping local gain and bright-source scatter inspectable as different interpreter concerns.
 - Bright local surround luminance no longer darkens scene RGB before tone mapping; glare contrast loss is now carried by additive veiling luminance instead.
+- Eye glare weights now use `cameraGlareParams` with FOV-derived pixel visual angle, making the veil less dependent on output resolution and fixed screen-space radii.
 
 ## 3. Render Contract Consumption Status
 

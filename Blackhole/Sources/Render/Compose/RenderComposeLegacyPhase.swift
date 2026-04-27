@@ -437,7 +437,7 @@ enum RenderComposeLegacyPhase {
             cameraSceneR: config.cameraSceneR, cameraSceneG: config.cameraSceneG, cameraSceneB: config.cameraSceneB,
             cameraDisplayR: config.cameraDisplayR, cameraDisplayG: config.cameraDisplayG, cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams, cameraNoiseParams: config.cameraNoiseParams,
-            cameraColorParams: config.cameraColorParams
+            cameraColorParams: config.cameraColorParams, cameraGlareParams: config.cameraGlareParams
         )
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])!
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))

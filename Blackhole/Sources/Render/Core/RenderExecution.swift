@@ -231,6 +231,7 @@ enum RenderExecution {
                 cameraSensorParams: config.cameraSensorParams,
                 cameraNoiseParams: config.cameraNoiseParams,
                 cameraColorParams: config.cameraColorParams,
+                cameraGlareParams: config.cameraGlareParams,
                 cameraFlags: config.cameraFlags,
                 composeCameraPsfSigmaArg: config.composeCameraPsfSigmaArg,
                 composeCameraReadNoiseArg: config.composeCameraReadNoiseArg,

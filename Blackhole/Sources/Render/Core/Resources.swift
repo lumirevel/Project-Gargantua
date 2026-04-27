@@ -188,7 +188,8 @@ extension Resources {
                 cameraDisplayB: config.cameraDisplayB,
                 cameraSensorParams: config.cameraSensorParams,
                 cameraNoiseParams: config.cameraNoiseParams,
-                cameraColorParams: config.cameraColorParams
+                cameraColorParams: config.cameraColorParams,
+                cameraGlareParams: config.cameraGlareParams
             )
             directLinearParamBuf = device.makeBuffer(bytes: &directLinearParams, length: MemoryLayout<ComposeParams>.stride, options: [])
             if directLinearParamBuf == nil {

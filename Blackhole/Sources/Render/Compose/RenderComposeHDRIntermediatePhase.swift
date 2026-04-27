@@ -106,7 +106,8 @@ enum RenderComposeHDRIntermediatePhase {
             cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams,
             cameraNoiseParams: config.cameraNoiseParams,
-            cameraColorParams: config.cameraColorParams
+            cameraColorParams: config.cameraColorParams,
+            cameraGlareParams: config.cameraGlareParams
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))

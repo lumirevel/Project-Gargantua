@@ -49,6 +49,7 @@ struct ComposeParams {
     float4 cameraSensorParams; // gain, fullWell, shoulderMix, blackLevel
     float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
     float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
+    float4 cameraGlareParams; // pixelAngleDeg, minGlareAngleDeg, angularFalloff, maxSampleMix
 };
 
 struct ComposeSolveParams {

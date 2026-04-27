@@ -79,7 +79,8 @@ enum RenderTraceTileSupport {
             cameraDisplayB: input.cameraDisplayB,
             cameraSensorParams: input.cameraSensorParams,
             cameraNoiseParams: input.cameraNoiseParams,
-            cameraColorParams: input.cameraColorParams
+            cameraColorParams: input.cameraColorParams,
+            cameraGlareParams: input.cameraGlareParams
         )
         updateBuffer(linearParamBuf, with: &linearTileParams)
     }

@@ -3119,6 +3119,19 @@ static inline float comp_eye_glare_tile_at(device const float4* inLinear,
                                    C);
 }
 
+static inline float comp_eye_glare_weight(float radiusPx,
+                                          float referenceRadiusPx,
+                                          constant ComposeParams& C)
+{
+    float fallbackPixelDeg = 60.0 / max(float(max(C.fullInputWidth, 1u)), 1.0);
+    float pixelDeg = (C.cameraGlareParams.x > 1e-6) ? C.cameraGlareParams.x : fallbackPixelDeg;
+    float minTheta = max(C.cameraGlareParams.y, 0.03);
+    float falloff = clamp((C.cameraGlareParams.z > 1e-6) ? C.cameraGlareParams.z : 2.0, 1.2, 2.4);
+    float theta = max(radiusPx * pixelDeg, minTheta);
+    float refTheta = max(referenceRadiusPx * pixelDeg, minTheta);
+    return clamp(pow(refTheta / max(theta, 1e-6), falloff), 0.035, 1.0);
+}
+
 static inline float comp_eye_scene_glare_full(device const float4* inLinear,
                                               uint srcX,
                                               uint srcY,
@@ -3131,9 +3144,9 @@ static inline float comp_eye_scene_glare_full(device const float4* inLinear,
     int rNear = max(2, int(max(C.downsample, 1u)) * 3);
     int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
     float nearW = 1.0;
-    float nearDiagW = 0.58;
-    float farW = 0.28;
-    float farDiagW = 0.16;
+    float nearDiagW = comp_eye_glare_weight(float(rNear) * 1.41421356, float(rNear), C);
+    float farW = comp_eye_glare_weight(float(rFar), float(rNear), C);
+    float farDiagW = comp_eye_glare_weight(float(rFar) * 1.41421356, float(rNear), C);
     float y = 0.0;
     float yMax = 0.0;
 
@@ -3154,7 +3167,8 @@ static inline float comp_eye_scene_glare_full(device const float4* inLinear,
     s = comp_eye_glare_full_at(inLinear, ix - rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
     s = comp_eye_glare_full_at(inLinear, ix + rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
     float yAvg = y / max(4.0 * nearW + 4.0 * nearDiagW + 4.0 * farW + 4.0 * farDiagW, 1e-6);
-    return max(yAvg, 0.55 * yMax);
+    float maxMix = clamp((C.cameraGlareParams.w > 1e-6) ? C.cameraGlareParams.w : 0.55, 0.0, 0.85);
+    return max(yAvg, maxMix * yMax);
 }
 
 static inline float comp_eye_scene_glare_tile(device const float4* inLinear,
@@ -3169,9 +3183,9 @@ static inline float comp_eye_scene_glare_tile(device const float4* inLinear,
     int rNear = max(2, int(max(C.downsample, 1u)) * 3);
     int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
     float nearW = 1.0;
-    float nearDiagW = 0.58;
-    float farW = 0.28;
-    float farDiagW = 0.16;
+    float nearDiagW = comp_eye_glare_weight(float(rNear) * 1.41421356, float(rNear), C);
+    float farW = comp_eye_glare_weight(float(rFar), float(rNear), C);
+    float farDiagW = comp_eye_glare_weight(float(rFar) * 1.41421356, float(rNear), C);
     float y = 0.0;
     float yMax = 0.0;
 
@@ -3192,7 +3206,8 @@ static inline float comp_eye_scene_glare_tile(device const float4* inLinear,
     s = comp_eye_glare_tile_at(inLinear, ix - rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
     s = comp_eye_glare_tile_at(inLinear, ix + rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
     float yAvg = y / max(4.0 * nearW + 4.0 * nearDiagW + 4.0 * farW + 4.0 * farDiagW, 1e-6);
-    return max(yAvg, 0.55 * yMax);
+    float maxMix = clamp((C.cameraGlareParams.w > 1e-6) ? C.cameraGlareParams.w : 0.55, 0.0, 0.85);
+    return max(yAvg, maxMix * yMax);
 }
 
 static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,

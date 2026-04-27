@@ -598,6 +598,8 @@ enum ParamsBuilder {
         config.cameraSensorParams = visualSettings.cameraSensorParams
         config.cameraNoiseParams = visualSettings.cameraNoiseParams
         config.cameraColorParams = visualSettings.cameraColorParams
+        let glarePixelAngleDeg = Float(max(1e-6, fovDeg / Double(max(width, 1))))
+        config.cameraGlareParams = SIMD4<Float>(glarePixelAngleDeg, 0.08, 2.0, 0.55)
         config.cameraFlags = visualSettings.cameraFlags
         config.cameraPsfSigmaArg = cameraPsfSigmaArg
         config.cameraReadNoiseArg = cameraReadNoiseArg
