@@ -19,6 +19,13 @@ The GPU room RT glass path was also updated to trace:
 
 This keeps the validation scene more useful for judging camera/interpreter behavior such as glare, tone mapping, highlight rolloff, and display response on familiar refractive content.
 
+The GPU room RT metal path now shades reflected glass with the same
+refraction/Fresnel approximation used by primary glass hits. Previously the
+metal sphere's reflection path used a simple secondary shader, so the reflected
+glass sphere could read as diffuse/tinted instead of transparent. This change is
+limited to the room validation renderer and does not alter black-hole source
+physics.
+
 ## Camera/Depth Proxy Fix
 
 The room HDR alpha channel carries a single depth proxy for compose-stage camera depth of field. That is inherently lossy for transparent objects because one pixel can contain:

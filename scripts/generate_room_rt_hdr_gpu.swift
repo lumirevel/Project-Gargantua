@@ -210,6 +210,41 @@ static inline float3 shade_simple(float3 ro, float3 rd, constant RoomRTParams& P
     return a * (amb + direct_light(h.p, h.n, P));
 }
 
+static inline float3 shade_secondary(float3 ro, float3 rd, constant RoomRTParams& P) {
+    Hit h = intersect_scene(ro, rd, P);
+    if (h.mat < 0) return sky(rd);
+    float3 e = emission_for(h.mat);
+    if (dot(e,e) > 0.0f) return e;
+    float3 a = albedo_for(h.mat);
+    float3 base = a * (0.025f * sky(h.n) + direct_light(h.p, h.n, P));
+    if (h.mat == 4) {
+        float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
+        float fres = 0.04f + 0.96f * pow(1.0f - cosi, 5.0f);
+        float3 refl = shade_simple(h.p + h.n * 0.004f, safe_norm(reflect(rd, h.n)), P);
+        float3 refrIn;
+        if (!refract_dir(rd, h.n, 1.0f / 1.48f, refrIn)) {
+            return refl;
+        }
+        Hit exitHit = intersect_scene(h.p - h.n * 0.004f, refrIn, P);
+        float3 trn;
+        float pathLen = 0.65f;
+        if (exitHit.mat == 4) {
+            float3 refrOut;
+            pathLen = length(exitHit.p - h.p);
+            if (refract_dir(refrIn, -exitHit.n, 1.48f, refrOut)) {
+                trn = shade_simple(exitHit.p + exitHit.n * 0.004f, refrOut, P);
+            } else {
+                trn = shade_simple(exitHit.p - exitHit.n * 0.004f, safe_norm(reflect(refrIn, -exitHit.n)), P);
+            }
+        } else {
+            trn = shade_simple(h.p - h.n * 0.004f, refrIn, P);
+        }
+        float3 tint = exp(-float3(0.026f,0.010f,0.004f) * pathLen);
+        return base * 0.025f + mix(trn * tint, refl, fres);
+    }
+    return base;
+}
+
 static inline float3 trace_room(float3 ro, float3 rd, constant RoomRTParams& P) {
     Hit h = intersect_scene(ro, rd, P);
     if (h.mat < 0) return sky(rd);
@@ -219,7 +254,10 @@ static inline float3 trace_room(float3 ro, float3 rd, constant RoomRTParams& P) 
     float3 base = a * (0.025f * sky(h.n) + direct_light(h.p, h.n, P));
     if (h.mat == 3) {
         float3 rr = reflect(rd, h.n);
-        return base * 0.08f + shade_simple(h.p + h.n * 0.004f, safe_norm(rr), P) * a * 0.92f;
+        // Metal reflections must preserve the material behavior of the object
+        // they reflect.  In particular, a reflected glass sphere should still
+        // show refraction/Fresnel instead of collapsing to diffuse albedo.
+        return base * 0.08f + shade_secondary(h.p + h.n * 0.004f, safe_norm(rr), P) * a * 0.92f;
     }
     if (h.mat == 4) {
         float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
