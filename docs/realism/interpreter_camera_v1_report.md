@@ -11,6 +11,7 @@ This branch improves the visual interpreter/camera side of the renderer:
 - Expanded exposure/HDR diagnostics.
 - Added a reversible `sensor-filmic` display look.
 - Improved bloom/glare diagnostic metrics so optical redistribution can be inspected.
+- Added an eye-only veiling-glare proxy so bright local sources reduce contrast through a small scatter veil instead of reading as an artificial dark halo.
 
 Intentionally not changed:
 
@@ -66,6 +67,7 @@ Intentionally not changed:
 - Existing bloom/glare/flare code remains restrained and profile-gated.
 - No final-image bloom strength was increased.
 - Diagnostics now measure whether optical effects add visible halo energy or remove/redistribute core detail.
+- Eye presentation now adds a restrained intraocular-scatter veil in bright local surrounds. The added veil is gated by `cameraPsfSigmaPx`, so optics-off diagnostics can still remove it.
 
 ## 3. Render Contract Consumption Status
 
@@ -190,6 +192,7 @@ Do not overwrite:
 - `docs/realism/exposure_hdr_notes.md`
 - `docs/realism/tone_mapping_sensor_response_notes.md`
 - `docs/realism/bloom_glare_notes.md`
+- `docs/realism/eye_veiling_glare_notes.md`
 - interpreter-owned exposure, tone mapping, camera profile, bloom/glare, and display mapping logic
 
 Ready for integration: partial.

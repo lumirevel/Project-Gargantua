@@ -3098,7 +3098,17 @@ static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
     float dimGain = clamp(pow(0.11 / max(expY, 1e-5), 0.18), 1.0, 1.35);
     float gain = mix(1.0, brightGain, brightGate);
     gain = mix(gain, dimGain, 0.55 * dimGate);
-    return max(rgb * gain, 0.0);
+
+    // Bright-source glare in the eye is not just reduced gain. Intraocular
+    // scatter adds an equivalent veiling luminance to nearby retinal regions,
+    // reducing contrast without forming a dark halo. Use the existing coarse
+    // surround estimate as a restrained display-side proxy and keep it eye-only.
+    float veilGate = smoothstep(0.14, 1.05, expY);
+    float psf = clamp(C.cameraPsfSigmaPx, 0.0, 1.25);
+    float opticsGate = smoothstep(0.02, 0.24, psf);
+    float veilExp = (0.016 + 0.040 * psf) * opticsGate * veilGate * (0.55 + 0.45 * clamp(expY / 1.6, 0.0, 1.0));
+    float veilScene = veilExp / max(C.exposure, 1e-30);
+    return max(rgb * gain + float3(veilScene), 0.0);
 }
 
 static inline float3 comp_eye_surround_full(device const float4* inLinear,
