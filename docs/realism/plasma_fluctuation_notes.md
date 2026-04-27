@@ -173,6 +173,30 @@ closure itself. The next physical implementation should target how the
 multi-band/XYZ radiance is reduced to scalar diagnostics or how the visible
 source function preserves spatial variation, not global body/skin gain.
 
+## Visible Photosphere Support Update
+
+Follow-up diagnostics showed that raising the visible photosphere temperature
+scale broadened the bright optical disk without changing the emission-radius
+map. That means the apparent undersized disk was not a geodesic or volume-extent
+problem; it was mainly the visible photosphere support suppressing cooler outer
+radii.
+
+The `grmhd-visible-disk-skin-candidate` now defaults to a broader optical
+photosphere profile:
+
+- `--teff-T0 8600`
+- `--teff-p 0.58`
+
+The reference-skin support gate in `volume_rt.metal` is also softer:
+
+- temperature support opens across roughly `3000..6500 K`
+- body support keeps a small physical optical floor
+- skin support keeps a stronger positive hot-skin floor
+
+This remains physics-side. The Planck spectrum still controls the actual visible
+radiance; the change only avoids an extra artificial cutoff that made
+several-thousand-K photospheric gas disappear before transfer.
+
 ## Remaining Scientific Risk
 
 - The public GRMHD snapshot may not contain enough non-axisymmetric contrast at

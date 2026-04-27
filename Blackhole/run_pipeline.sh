@@ -791,8 +791,12 @@ apply_science_regime_defaults() {
       esac
       if [[ "${SOURCE_MODEL_VALUE:-}" == "grmhd-visible-disk-skin-candidate" ]]; then
         GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=1
-        GRMHD_TEMPERATURE_T0_DEFAULT="7200"
-        GRMHD_TEMPERATURE_P_DEFAULT="0.63"
+        # Keep the film-visible candidate in an optical photosphere regime:
+        # several-thousand-K gas still contributes visible red/near-red photons,
+        # so avoid making the outer disk disappear through an overly cool,
+        # steep reference body profile.
+        GRMHD_TEMPERATURE_T0_DEFAULT="8600"
+        GRMHD_TEMPERATURE_P_DEFAULT="0.58"
       fi
       PIPELINE_MODE="gpu-only"
       if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then

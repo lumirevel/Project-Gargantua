@@ -2213,18 +2213,19 @@ static inline void volume_integrate_segment(float3 p0,
                                     float hybridSkinT = hybridBodyT * (1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate);
                                     float hybridSkinSource = volume_planck_nu(nuComov, hybridSkinT, P);
                                     // Visible-reference body should not render
-                                    // the cool outer photosphere as a gray slab.
-                                    // Let physically visible-temperature gas carry
-                                    // the body, while cooler radii contribute only
-                                    // a weak continuum floor.
+                                    // the cool outer photosphere as a gray slab,
+                                    // but 3000-6000 K photospheric gas still has
+                                    // real optical/red output. Keep Planck's
+                                    // spectral falloff as the primary limiter and
+                                    // use only a gentle support gate here.
                                     float hybridVisibleTempGate = referenceSkinMode
-                                        ? smoothstep(3600.0, 7200.0, hybridBodyT)
+                                        ? smoothstep(3000.0, 6500.0, hybridBodyT)
                                         : 1.0;
                                     float hybridBodyVisibleSupport = referenceSkinMode
-                                        ? mix(0.12, 1.0, hybridVisibleTempGate)
+                                        ? mix(0.18, 1.0, hybridVisibleTempGate)
                                         : 1.0;
                                     float hybridSkinVisibleSupport = referenceSkinMode
-                                        ? mix(0.35, 1.0, hybridVisibleTempGate)
+                                        ? mix(0.52, 1.0, hybridVisibleTempGate)
                                         : 1.0;
 
                                     float hybridEdgeGate = smoothstep(1.02, 1.24, hybridX);
