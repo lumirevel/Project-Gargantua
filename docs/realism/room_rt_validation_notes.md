@@ -44,6 +44,29 @@ The glass sphere now writes an approximate visible-layer depth instead of always
 
 This is still a single-layer approximation, but it prevents the camera interpreter from treating the refracted rear-wall target as if it were opaque glass sitting only at the front surface.
 
+## Depth-Assisted Autofocus Validation
+
+`scripts/validate_presentation_on_rt_scene.py` supports a validation-only
+autofocus step:
+
+- `--autofocus-mode off`: keep the manual `--focus-depth`.
+- `--autofocus-mode center`: focus from a central metering window.
+- `--autofocus-mode glass`: focus from the known glass-sphere ROI.
+- `--autofocus-mode brightest`: focus from the brightest luminance percentile.
+
+The autofocus step uses the room HDR depth proxy, not black-hole physics. It
+chooses a weighted median depth from the selected AF window, with luminance and
+local contrast increasing the weight. This approximates a depth-assisted camera
+AF decision: a focus window selects subject evidence, the depth proxy supplies
+distance, and local contrast/luminance avoid giving blank surfaces too much
+weight.
+
+The resolved focus distance is recorded in `metrics.json` under `autofocus` and
+then used consistently for Metal compose DOF, stochastic thin-lens reference,
+and multi-layer transparent DOF reference. This remains a validation tool until
+the production black-hole render contract provides a reviewed depth/distance or
+multi-layer focus target.
+
 ## Multi-Layer Transparent DOF Reference
 
 `scripts/validate_presentation_on_rt_scene.py` now supports

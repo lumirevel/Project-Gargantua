@@ -615,6 +615,14 @@ def luminance(rgb: np.ndarray) -> np.ndarray:
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
 
 
+def load_linear32(path: Path, width: int, height: int) -> Tuple[np.ndarray, np.ndarray]:
+    rgba = np.fromfile(path, dtype=np.float32).reshape((height, width, 4))
+    rgba = np.flipud(rgba)
+    hdr = np.maximum(rgba[..., :3], 0.0)
+    depth = np.maximum(rgba[..., 3] - 2.0, 0.0)
+    return hdr, depth
+
+
 def tonemap(rgb: np.ndarray, exposure: float) -> np.ndarray:
     x = np.maximum(rgb * exposure, 0.0)
     # Smooth shoulder, close to a display-preview curve rather than a look grade.
@@ -768,6 +776,91 @@ def glass_roi_mask(width: int, height: int) -> np.ndarray:
     ry = max(3.0, 0.5 * height * (radius / z) / scale * 1.25)
     yy, xx = np.mgrid[0:height, 0:width]
     return (((xx + 0.5 - cx) / rx) ** 2 + ((yy + 0.5 - cy) / ry) ** 2) <= 1.0
+
+
+def center_roi_mask(width: int, height: int, radius: float) -> np.ndarray:
+    yy, xx = np.mgrid[0:height, 0:width]
+    cx = 0.5 * width
+    cy = 0.5 * height
+    r = max(min(width, height) * radius, 1.0)
+    return ((xx + 0.5 - cx) ** 2 + (yy + 0.5 - cy) ** 2) <= r * r
+
+
+def brightest_roi_mask(hdr: np.ndarray, percentile: float) -> np.ndarray:
+    y = luminance(hdr)
+    active = y[y > 1e-8]
+    if active.size == 0:
+        return np.ones(y.shape, dtype=bool)
+    t = float(np.percentile(active, percentile))
+    mask = y >= t
+    return mask if np.any(mask) else np.ones(y.shape, dtype=bool)
+
+
+def weighted_depth_percentile(depth: np.ndarray,
+                              weights: np.ndarray,
+                              percentile: float) -> Optional[float]:
+    valid = np.isfinite(depth) & np.isfinite(weights) & (depth > 1e-5) & (weights > 1e-8)
+    if not np.any(valid):
+        return None
+    d = depth[valid].astype(np.float64)
+    w = weights[valid].astype(np.float64)
+    order = np.argsort(d)
+    d = d[order]
+    w = w[order]
+    cdf = np.cumsum(w)
+    total = float(cdf[-1])
+    if total <= 1e-12:
+        return None
+    target = max(0.0, min(100.0, percentile)) / 100.0 * total
+    idx = int(np.searchsorted(cdf, target, side="left"))
+    idx = min(max(idx, 0), d.size - 1)
+    return float(d[idx])
+
+
+def resolve_autofocus_depth(hdr: np.ndarray,
+                            depth: np.ndarray,
+                            mode: str,
+                            fallback: float,
+                            center_radius: float,
+                            bright_percentile: float) -> Tuple[float, Dict[str, object]]:
+    if mode == "off":
+        return fallback, {"mode": "off", "resolved_focus_depth": fallback, "source": "manual"}
+    if mode == "center":
+        mask = center_roi_mask(depth.shape[1], depth.shape[0], center_radius)
+    elif mode == "glass":
+        mask = glass_roi_mask(depth.shape[1], depth.shape[0])
+    elif mode == "brightest":
+        mask = brightest_roi_mask(hdr, bright_percentile)
+    else:
+        raise ValueError(f"unknown autofocus mode: {mode}")
+
+    y = luminance(hdr)
+    gy, gx = np.gradient(y)
+    contrast = np.sqrt(gx * gx + gy * gy)
+    weights = np.where(mask, 0.25 + y + 2.0 * contrast, 0.0)
+    focus = weighted_depth_percentile(depth, weights, 50.0)
+    valid = mask & np.isfinite(depth) & (depth > 1e-5)
+    if focus is None:
+        return fallback, {
+            "mode": mode,
+            "resolved_focus_depth": fallback,
+            "source": "manual_fallback",
+            "reason": "no_valid_depth_in_af_window",
+            "roi_coverage": float(np.mean(mask)),
+        }
+    stats_depth = depth[valid]
+    info: Dict[str, object] = {
+        "mode": mode,
+        "resolved_focus_depth": focus,
+        "source": "depth_proxy_weighted_median",
+        "manual_focus_depth": fallback,
+        "roi_coverage": float(np.mean(mask)),
+        "valid_depth_fraction": float(np.mean(valid)),
+        "roi_depth_p10": float(np.percentile(stats_depth, 10.0)) if stats_depth.size else None,
+        "roi_depth_p50": float(np.percentile(stats_depth, 50.0)) if stats_depth.size else None,
+        "roi_depth_p90": float(np.percentile(stats_depth, 90.0)) if stats_depth.size else None,
+    }
+    return focus, info
 
 
 def masked_image_stats(rgb: np.ndarray, mask: np.ndarray) -> Dict[str, float]:
@@ -1008,6 +1101,24 @@ def main() -> None:
     ap.add_argument("--spp", type=int, default=1)
     ap.add_argument("--exposure", type=float, default=-1.0, help="negative means auto")
     ap.add_argument("--focus-depth", type=float, default=4.35)
+    ap.add_argument(
+        "--autofocus-mode",
+        choices=("off", "center", "glass", "brightest"),
+        default="off",
+        help="resolve focus depth from the HDR depth proxy before camera presentation",
+    )
+    ap.add_argument(
+        "--autofocus-center-radius",
+        type=float,
+        default=0.18,
+        help="center autofocus window radius as a fraction of the shorter image dimension",
+    )
+    ap.add_argument(
+        "--autofocus-bright-percentile",
+        type=float,
+        default=98.0,
+        help="luminance percentile used by --autofocus-mode brightest",
+    )
     ap.add_argument("--f-number", type=float, default=2.4)
     ap.add_argument("--dof-strength", type=float, default=1.35)
     ap.add_argument("--aperture-blades", type=int, default=7)
@@ -1072,6 +1183,7 @@ def main() -> None:
             args.bokeh_targets,
             args.color_chart,
         )
+        hdr, depth = load_linear32(hdr_path, args.width, args.height)
     else:
         hdr, depth = render_scene(
             args.width,
@@ -1083,6 +1195,14 @@ def main() -> None:
             args.depth_mode,
         )
         write_linear32(hdr_path, hdr, depth)
+    resolved_focus_depth, autofocus_info = resolve_autofocus_depth(
+        hdr,
+        depth,
+        args.autofocus_mode,
+        args.focus_depth,
+        args.autofocus_center_radius,
+        args.autofocus_bright_percentile,
+    )
     paths = {
         "scientific": out_dir / "rt_room_scientific.png",
         "eye": out_dir / "rt_room_eye.png",
@@ -1109,7 +1229,7 @@ def main() -> None:
                 args.width,
                 args.height,
                 mode,
-                args.focus_depth,
+                resolved_focus_depth,
                 args.f_number,
                 args.dof_strength,
                 args.aperture_blades,
@@ -1126,7 +1246,7 @@ def main() -> None:
                     args.height,
                     args.spp,
                     args.lens_reference_spp,
-                    args.focus_depth,
+                    resolved_focus_depth,
                     args.f_number,
                     args.dof_strength,
                     args.aperture_blades,
@@ -1138,14 +1258,14 @@ def main() -> None:
                     args.width,
                     args.height,
                     args.lens_reference_spp,
-                    args.focus_depth,
+                    resolved_focus_depth,
                     args.f_number,
                     args.dof_strength,
                     args.aperture_blades,
                     args.bokeh_targets,
                     args.color_chart,
                 )
-                write_linear32(lens_hdr_path, lens_hdr, np.full((args.height, args.width), args.focus_depth, dtype=np.float32))
+                write_linear32(lens_hdr_path, lens_hdr, np.full((args.height, args.width), resolved_focus_depth, dtype=np.float32))
             lens_reference_path = out_dir / "rt_room_thin_lens_reference_cinema.png"
             run_metal_compose(
                 lens_hdr_path,
@@ -1153,7 +1273,7 @@ def main() -> None:
                 args.width,
                 args.height,
                 "cinema",
-                args.focus_depth,
+                resolved_focus_depth,
                 args.f_number,
                 0.0,
                 args.aperture_blades,
@@ -1165,7 +1285,7 @@ def main() -> None:
                 args.width,
                 args.height,
                 args.spp,
-                args.focus_depth,
+                resolved_focus_depth,
                 args.bokeh_targets,
                 args.color_chart,
             )
@@ -1174,9 +1294,9 @@ def main() -> None:
             layered_hdr_path = out_dir / "rt_room_transparent_multilayer_dof.linear32f32"
             write_linear32(front_path, front, front_depth)
             write_linear32(back_path, back, back_depth)
-            layered_hdr = layer_dof(front, front_depth, args.focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
-            layered_hdr += layer_dof(back, back_depth, args.focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
-            write_linear32(layered_hdr_path, layered_hdr, np.full((args.height, args.width), args.focus_depth, dtype=np.float32))
+            layered_hdr = layer_dof(front, front_depth, resolved_focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            layered_hdr += layer_dof(back, back_depth, resolved_focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            write_linear32(layered_hdr_path, layered_hdr, np.full((args.height, args.width), resolved_focus_depth, dtype=np.float32))
             transparent_dof_path = out_dir / "rt_room_transparent_multilayer_dof_cinema.png"
             run_metal_compose(
                 layered_hdr_path,
@@ -1184,7 +1304,7 @@ def main() -> None:
                 args.width,
                 args.height,
                 "cinema",
-                args.focus_depth,
+                resolved_focus_depth,
                 args.f_number,
                 0.0,
                 args.aperture_blades,
@@ -1221,7 +1341,9 @@ def main() -> None:
         "height": args.height,
         "spp": args.spp,
         "exposure": exposure,
-        "focus_depth": args.focus_depth,
+        "focus_depth": resolved_focus_depth,
+        "manual_focus_depth": args.focus_depth,
+        "autofocus": autofocus_info,
         "depth_mode": args.depth_mode,
         "f_number": args.f_number,
         "dof_strength": args.dof_strength,

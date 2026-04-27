@@ -58,6 +58,8 @@ Intentionally not changed:
 - Photographic mode also records camera settings in metadata and exposure
   diagnostics. Shutter currently affects exposure/noise only; motion blur is
   deferred until temporal samples or a reviewed motion proxy exist.
+- Room RT validation now supports depth-assisted autofocus modes that resolve
+  the camera focus depth from a selected AF window before DOF/presentation.
 
 ### Tone Mapping/Sensor Response
 
@@ -223,6 +225,42 @@ python3 scripts/validate_presentation_on_rt_scene.py \
   --width 32 \
   --height 18 \
   --max-glass-roi-mae-vs-transparent-dof 0.02
+python3 -m py_compile scripts/validate_presentation_on_rt_scene.py
+python3 scripts/validate_presentation_on_rt_scene.py --help | rg "autofocus|focus-depth"
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+BH_ETA_HISTORY=/private/tmp/bh_room_autofocus_glass_validation/eta.json \
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --out-dir /private/tmp/bh_room_autofocus_glass_validation \
+  --width 160 \
+  --height 90 \
+  --spp 1 \
+  --gpu-room-rt \
+  --autofocus-mode glass \
+  --f-number 1.4 \
+  --dof-strength 1.8 \
+  --bokeh-targets
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --python-presentation \
+  --out-dir /private/tmp/bh_room_autofocus_center_validation \
+  --width 160 \
+  --height 90 \
+  --spp 1 \
+  --autofocus-mode center \
+  --f-number 1.4 \
+  --dof-strength 1.8 \
+  --bokeh-targets
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+BH_ETA_HISTORY=/private/tmp/bh_room_autofocus_hq/eta.json \
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --out-dir /private/tmp/bh_room_autofocus_hq \
+  --width 1920 \
+  --height 1080 \
+  --spp 48 \
+  --gpu-room-rt \
+  --autofocus-mode glass \
+  --f-number 1.8 \
+  --dof-strength 1.5 \
+  --bokeh-targets
 ```
 
 Passed:
@@ -250,6 +288,11 @@ Passed:
   validation run.
 - Missing-reference gate behavior was checked with Python presentation and
   exited non-zero as expected.
+- Depth-assisted autofocus resolved focus from the glass ROI and completed
+  Metal compose validation.
+- Center-window autofocus resolved a different focus distance in Python
+  presentation validation.
+- A 1920x1080 GPU room RT render completed with glass ROI autofocus enabled.
 
 Failed:
 
@@ -301,6 +344,8 @@ This branch expects:
 - a reviewed depth/distance proxy before stronger black-hole DOF is enabled,
 - for transparent DOF, either multi-layer depth/color layers or stochastic
   lens-integrated samples rather than a single blended depth value,
+- for production autofocus, a reviewed depth/distance or multi-layer focus
+  target contract rather than only a hard-coded manual focus distance,
 - generated physical diagnostics to remain separate from display interpretation.
 
 Check during later integration:

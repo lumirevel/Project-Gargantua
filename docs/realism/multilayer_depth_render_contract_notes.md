@@ -122,6 +122,12 @@ The interpreter consumes these values but must not generate or modify physical
 fields. Physics remains responsible for radiance, hit classification, optical
 depth, redshift, and source-location proxies.
 
+For autofocus, the interpreter additionally needs a focus-target policy and a
+valid distance proxy for the selected target. A single opaque depth can support
+basic center/subject AF, but transparent glass, reflections, and volumetric
+source layers need the same multi-layer depth/color contract described above;
+otherwise the autofocus system can only choose a compromise depth.
+
 ## Validation Gates
 
 Before enabling production multi-layer DOF:
