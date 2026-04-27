@@ -85,9 +85,10 @@ but a visible disk needs a luminous photospheric body.
 This candidate routes through GRMHD visible thermal transfer with:
 
 - a visible photospheric disk body: `--grmhd-smooth-weight visible-reference-skin`
-- positive GRMHD hot-skin emissivity: `--grmhd-cloud-emission-scale 1.80`
+- positive GRMHD hot-skin emissivity: `--grmhd-cloud-emission-scale 2.10`
 - no procedural Perlin clouds and no camera/display changes
-- `teff-T0=6500`, `teff-p=0.62`, `grmhd-smooth-emission-scale=1.55`,
+- `teff-T0=7200`, `teff-p=0.63`, `grmhd-smooth-emission-scale=1.75`,
+  `grmhd-cloud-emission-scale=2.10`, `disk-grmhd-emission-scale=1.25e-10`,
   and scientific presentation by default
 
 The earlier `9500 K / body 2.50 / skin 0.95` candidate looked like a gray
@@ -97,6 +98,25 @@ the visible photosphere temperature scale and shifts more signal into the
 positive hot/magnetized skin branch. In the same GRMHD cache, the measured final
 contrast rose from about `0.412` to `0.699` without changing camera or display
 mapping.
+
+The visible-reference body also gates the photospheric body by local visible
+temperature. Cooler outer photosphere cells now contribute only a weak continuum
+floor instead of a broad gray slab; gas hot enough to radiate efficiently in the
+visible band keeps the dominant body emission, and the hot-skin branch keeps a
+less aggressive version of the same temperature support.
+
+After this gate, the default visible-disk source budget was moved to the
+moderate luminosity probe point. In the same 160px GRMHD comparison, this raised
+the measured final mean from about `0.139` to `0.158` while keeping contrast at
+about `0.740`; hotter probes were brighter but moved back toward a smoother
+body-dominated disk.
+
+Branch-isolation probes after the gate show the remaining realism bottleneck:
+the photospheric body branch is bright but still comparatively smooth, while the
+GRMHD skin/cloud branches carry more spatial structure but less total power. A
+follow-up body/skin gain sweep increased apparent contrast only by making the
+disk dimmer, so further work should change the physical source/transfer closure
+rather than keep moving global gains.
 
 Use this when testing a film-visible disk body with physically sourced plasma
 structure. Use `grmhd-plasma-fluctuation-candidate` only when the goal is to

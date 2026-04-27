@@ -2212,6 +2212,20 @@ static inline void volume_integrate_segment(float3 p0,
                                     float hybridBodySource = volume_planck_nu(nuComov, hybridBodyT, P);
                                     float hybridSkinT = hybridBodyT * (1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate);
                                     float hybridSkinSource = volume_planck_nu(nuComov, hybridSkinT, P);
+                                    // Visible-reference body should not render
+                                    // the cool outer photosphere as a gray slab.
+                                    // Let physically visible-temperature gas carry
+                                    // the body, while cooler radii contribute only
+                                    // a weak continuum floor.
+                                    float hybridVisibleTempGate = referenceSkinMode
+                                        ? smoothstep(3600.0, 7200.0, hybridBodyT)
+                                        : 1.0;
+                                    float hybridBodyVisibleSupport = referenceSkinMode
+                                        ? mix(0.12, 1.0, hybridVisibleTempGate)
+                                        : 1.0;
+                                    float hybridSkinVisibleSupport = referenceSkinMode
+                                        ? mix(0.35, 1.0, hybridVisibleTempGate)
+                                        : 1.0;
 
                                     float hybridEdgeGate = smoothstep(1.02, 1.24, hybridX);
                                     float hybridOuterGate = 1.0 / (1.0 + pow(max(rRs / 72.0, 0.0), 2.15));
@@ -2220,7 +2234,7 @@ static inline void volume_integrate_segment(float3 p0,
                                         : mix(0.026, 0.052, smoothstep(7.0, 58.0, rRs));
                                     float hybridLayerCoord = abs(zNorm) / max(rRs * hybridHOverR, 1.0e-4);
                                     float hybridMidplane = exp(-0.5 * hybridLayerCoord * hybridLayerCoord);
-                                    float hybridBodySupport = hybridEdgeGate * hybridOuterGate * hybridMidplane;
+                                    float hybridBodySupport = hybridEdgeGate * hybridOuterGate * hybridMidplane * hybridBodyVisibleSupport;
                                     float hybridOpacityAnchor = max(comps.aBase * thermalAbsorptionWeight * radialThermalWeight, 1.0e-30);
                                     hybridBodyGate = clamp(hybridBodySupport, 0.0, 1.0);
                                     bodyProxy = hybridBodyGate;
@@ -2281,7 +2295,7 @@ static inline void volume_integrate_segment(float3 p0,
                                         * hybridInnerGate,
                                         0.0,
                                         1.0
-                                    );
+                                    ) * hybridSkinVisibleSupport;
                                     float hybridSkinOpacityAnchor = max(comps.aBase * thermalAbsorptionWeight * radialThermalWeight, 1.0e-30);
                                     hybridSkinUnit = max(P.diskGrmhdEmissionScale, 0.0)
                                                    * hybridSkinOpacityAnchor

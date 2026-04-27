@@ -791,8 +791,8 @@ apply_science_regime_defaults() {
       esac
       if [[ "${SOURCE_MODEL_VALUE:-}" == "grmhd-visible-disk-skin-candidate" ]]; then
         GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=1
-        GRMHD_TEMPERATURE_T0_DEFAULT="6500"
-        GRMHD_TEMPERATURE_P_DEFAULT="0.62"
+        GRMHD_TEMPERATURE_T0_DEFAULT="7200"
+        GRMHD_TEMPERATURE_P_DEFAULT="0.63"
       fi
       PIPELINE_MODE="gpu-only"
       if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
@@ -818,11 +818,15 @@ apply_science_regime_defaults() {
       append_swift_default --disk-precision-texture "0.70"
       append_swift_default --teff-T0 "$GRMHD_TEMPERATURE_T0_DEFAULT"
       append_swift_default --teff-p "$GRMHD_TEMPERATURE_P_DEFAULT"
-      append_swift_default --disk-grmhd-emission-scale "1e-10"
+      if [[ "$GRMHD_VISIBLE_DISK_SKIN_CANDIDATE" -eq 1 ]]; then
+        append_swift_default --disk-grmhd-emission-scale "1.25e-10"
+      else
+        append_swift_default --disk-grmhd-emission-scale "1e-10"
+      fi
       if [[ "$GRMHD_VISIBLE_DISK_SKIN_CANDIDATE" -eq 1 ]]; then
         append_swift_default --grmhd-smooth-weight "visible-reference-skin"
-        append_swift_default --grmhd-smooth-emission-scale "1.55"
-        append_swift_default --grmhd-cloud-emission-scale "1.80"
+        append_swift_default --grmhd-smooth-emission-scale "1.75"
+        append_swift_default --grmhd-cloud-emission-scale "2.10"
       fi
       [[ -z "$DISK_GRMHD_PHI_CONTRAST" ]] && DISK_GRMHD_PHI_CONTRAST="1.8"
       [[ -z "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" ]] && DISK_GRMHD_PHI_CONTRAST_MAX_RATIO="8.0"
