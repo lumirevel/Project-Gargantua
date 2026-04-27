@@ -227,6 +227,9 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
             raw = max(volumeA.intIThermalCorona, 0.0);
         } else if (P.diskGrmhdDebugView == 54u) {
             raw = clamp(volumeA.maxBodyProxy, 0.0, 1.0);
+        } else if (P.diskGrmhdDebugView == 56u) {
+            float tauMax = max(volumeA.tau, max(max(volumeA.tauVis.x, volumeA.tauVis.y), volumeA.tauVis.z));
+            raw = clamp(1.0 - exp(-max(tauMax, 0.0)), 0.0, 1.0);
         } else if (P.diskGrmhdDebugView == 47u) {
             raw = max(volumeA.maxFlowResidual, 0.0);
         }

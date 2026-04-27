@@ -1485,7 +1485,8 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
             return float3(p);
         }
         if ((C.analysisMode >= 20u && C.analysisMode <= 29u) ||
-            (C.analysisMode >= 33u && C.analysisMode <= 56u)) {
+            (C.analysisMode >= 33u && C.analysisMode <= 56u) ||
+            C.analysisMode == 66u) {
             float raw = max(rec.emit_r_norm, 0.0);
             if (C.analysisMode == 23u) { // fluid speed proxy |v|/c
                 return comp_debug_ramp(clamp(raw, 0.0, 1.0));
@@ -1606,6 +1607,8 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                 raw = max(rec.direct_world.w, 0.0);
                 if (!(raw > 0.0)) return float3(0.0);
                 return comp_debug_ramp(clamp(raw / 6.0, 0.0, 1.0));
+            } else if (C.analysisMode == 66u) { // transfer saturation 1-exp(-tau)
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
             } else if (C.analysisMode == 57u) { // max local GRMHD phi/field residual sampled by the ray
                 return comp_debug_ramp(clamp(raw / 1.25, 0.0, 1.0));
             }
