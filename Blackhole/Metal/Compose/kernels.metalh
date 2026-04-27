@@ -574,7 +574,10 @@ kernel void composeBHLinear(constant ComposeParams& C [[buffer(0)]],
 
             float3 rgb = comp_sample_linear_psf_full(inLinear, srcX, srcY, C);
             if (comp_eye_local_adaptation_enabled(C)) {
-                rgb = comp_eye_scene_adapt_rgb(rgb, comp_eye_scene_surround_full(inLinear, srcX, srcY, C), C);
+                rgb = comp_eye_scene_adapt_rgb(rgb,
+                                               comp_eye_scene_surround_full(inLinear, srcX, srcY, C),
+                                               comp_eye_scene_glare_full(inLinear, srcX, srcY, C),
+                                               C);
             }
             float3 shaded = comp_shade_linear(rgb, C);
             if (comp_eye_local_adaptation_enabled(C)) {
@@ -624,7 +627,10 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
             uint ly = srcY - C.srcOffsetY;
             float3 rgb = comp_sample_linear_psf_tile(inLinear, lx, ly, C);
             if (comp_eye_local_adaptation_enabled(C)) {
-                rgb = comp_eye_scene_adapt_rgb(rgb, comp_eye_scene_surround_tile(inLinear, lx, ly, C), C);
+                rgb = comp_eye_scene_adapt_rgb(rgb,
+                                               comp_eye_scene_surround_tile(inLinear, lx, ly, C),
+                                               comp_eye_scene_glare_tile(inLinear, lx, ly, C),
+                                               C);
             }
             float3 shaded = comp_shade_linear(rgb, C);
             if (comp_eye_local_adaptation_enabled(C)) {

@@ -26,14 +26,27 @@ References used for this interpreter change:
 
 ## Implemented Improvement
 
-`comp_eye_scene_adapt_rgb` now adds a restrained neutral veiling-luminance proxy in exposed local-bright-surround regions:
+`comp_eye_scene_adapt_rgb` now adds a restrained neutral veiling-luminance proxy near bright sources:
 
-- gated by local exposed surround luminance,
+- local surround luminance still drives eye adaptation gain,
+- a separate distance-weighted bright-pass sample drives the scatter veil,
 - gated by `cameraPsfSigmaPx`, so diagnostics that disable optical PSF also disable this added veil,
 - added before the eye tone curve, keeping the effect in the eye/display interpreter,
 - no new buffers, no ABI changes, no CPU-GPU synchronization change.
 
-The change is intentionally small. It is not a full CIE glare spread function or age/pigment-dependent human observer model. It prevents the most obvious non-physiological dark-halo behavior while keeping diagnostics reversible through existing optics-off controls.
+The change is intentionally small. It is not a full CIE glare spread function or age/pigment-dependent human observer model. It prevents the most obvious non-physiological dark-halo behavior while keeping diagnostics reversible through existing optics-off controls. The current distance weighting is a screen-space proxy because the compose ABI does not currently expose a calibrated per-pixel visual angle.
+
+## Angular Proxy Update
+
+The first veil implementation used the same coarse local surround estimate for both adaptation and glare. That was scientifically incomplete: adaptation can follow average local luminance, but disability glare is driven by bright off-axis sources and their angular separation from the retinal point.
+
+The current implementation therefore adds:
+
+- `comp_eye_scene_glare_full`
+- `comp_eye_scene_glare_tile`
+- `comp_eye_glare_source_y`
+
+These helpers collect bright-pass scene luminance from nearby and farther samples with lower weight at the farther radius. The resulting `glareY` is passed separately into `comp_eye_scene_adapt_rgb`, so a dark wall average no longer incorrectly removes the veil caused by a nearby lamp.
 
 ## How To Inspect
 
@@ -74,7 +87,7 @@ The expected comparison is:
 
 ## Risks
 
-- The current proxy uses a coarse local surround estimate, not an angularly calibrated glare spread function.
+- The current proxy uses screen-space radii, not an angularly calibrated glare spread function.
 - The strength is intentionally restrained and may still be too weak for extreme high-luminance sources.
 - A future calibrated eye model should consider glare angle, pupil size, observer age, ocular media, and source spectral distribution.
 - The optics-off diagnostic must remain available when reviewing raw tone mapping and exposure behavior.

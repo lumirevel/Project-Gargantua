@@ -12,6 +12,7 @@ This branch improves the visual interpreter/camera side of the renderer:
 - Added a reversible `sensor-filmic` display look.
 - Improved bloom/glare diagnostic metrics so optical redistribution can be inspected.
 - Added an eye-only veiling-glare proxy so bright local sources reduce contrast through a small scatter veil instead of reading as an artificial dark halo.
+- Refined the eye veil driver to use distance-weighted bright-pass samples rather than only the coarse local luminance average.
 
 Intentionally not changed:
 
@@ -67,7 +68,8 @@ Intentionally not changed:
 - Existing bloom/glare/flare code remains restrained and profile-gated.
 - No final-image bloom strength was increased.
 - Diagnostics now measure whether optical effects add visible halo energy or remove/redistribute core detail.
-- Eye presentation now adds a restrained intraocular-scatter veil in bright local surrounds. The added veil is gated by `cameraPsfSigmaPx`, so optics-off diagnostics can still remove it.
+- Eye presentation now adds a restrained intraocular-scatter veil around bright local sources. The added veil is gated by `cameraPsfSigmaPx`, so optics-off diagnostics can still remove it.
+- The veil driver now separates adaptation luminance from glare-source luminance, keeping local gain and bright-source scatter inspectable as different interpreter concerns.
 
 ## 3. Render Contract Consumption Status
 
