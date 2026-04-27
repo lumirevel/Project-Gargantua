@@ -2210,7 +2210,19 @@ static inline void volume_integrate_segment(float3 p0,
                                     float hybridNtT = disk_visible_teff(r, P);
                                     float hybridBodyT = max(hybridParamT, hybridNtT);
                                     float hybridBodySource = volume_planck_nu(nuComov, hybridBodyT, P);
-                                    float hybridSkinT = hybridBodyT * (1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate);
+                                    float hybridSkinTempBoost = 1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate;
+                                    if (referenceSkinMode) {
+                                        // The reference visible skin is a heated
+                                        // photospheric transition layer. Keep its
+                                        // color correction in the scattering-disk
+                                        // range instead of letting a hot residual
+                                        // jump directly to a blue, optically-thin
+                                        // color branch.
+                                        float skinHeat = smoothstep(0.0, 1.0, residualHotGate);
+                                        float skinMag = smoothstep(0.0, 1.0, residualMagGate);
+                                        hybridSkinTempBoost = 1.08 + 0.32 * skinHeat + 0.10 * skinMag;
+                                    }
+                                    float hybridSkinT = hybridBodyT * hybridSkinTempBoost;
                                     float hybridSkinSource = volume_planck_nu(nuComov, hybridSkinT, P);
                                     // Visible-reference body should not render
                                     // the cool outer photosphere as a gray slab,
@@ -2540,8 +2552,17 @@ static inline void volume_integrate_segment(float3 p0,
 	                                float nuRefVisible = P.c / max(550.0e-9, 1e-30);
 	                                float branchNuRatio = clamp(nuObs / max(nuRefVisible, 1e6), 0.35, 2.10);
 	                                float bodySpectralTilt = positivePlasmaMode ? pow(branchNuRatio, -0.04) : 1.0;
-	                                float skinSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, 0.20 + 0.16 * residualHotGate + ((hotSkinMode || analyticBodySkinMode) ? 0.10 : 0.0)) : 1.0;
-	                                float coronaSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, (hotSkinMode || analyticBodySkinMode) ? 0.58 : 0.44) : 1.0;
+	                                float skinTiltExp = 0.20 + 0.16 * residualHotGate + ((hotSkinMode || analyticBodySkinMode) ? 0.10 : 0.0);
+	                                float coronaTiltExp = (hotSkinMode || analyticBodySkinMode) ? 0.58 : 0.44;
+	                                if (referenceSkinMode) {
+	                                    // Let the thermal Planck source set most of
+	                                    // the color. A strong extra blue tilt makes
+	                                    // the inner skin look like a hard color mask.
+	                                    skinTiltExp = 0.08 + 0.10 * residualHotGate;
+	                                    coronaTiltExp = referenceSkinCoronaMode ? 0.24 : 0.0;
+	                                }
+	                                float skinSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, skinTiltExp) : 1.0;
+	                                float coronaSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, coronaTiltExp) : 1.0;
 	                                jThermalCloudEff *= skinScale * max(P.grmhdCloudEmissionScale, 0.0) * skinSpectralTilt;
 	                                if (P.grmhdSmoothWeightMode == 2u || P.grmhdSmoothWeightMode == 3u || plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode) {
                                     float bodyScaleArg = max(P.grmhdSmoothEmissionScale, 0.0);

@@ -197,6 +197,31 @@ This remains physics-side. The Planck spectrum still controls the actual visible
 radiance; the change only avoids an extra artificial cutoff that made
 several-thousand-K photospheric gas disappear before transfer.
 
+## Inner Blue Skin Smoothing
+
+The visible reference skin also had two independent blue-bias terms:
+
+- a skin color-temperature boost that could approach about `2x` the local body
+  temperature
+- an additional frequency tilt on the skin branch
+
+Diagnostics with `peak`, `g`, `teff`, `body-proxy`, and `skin-body-balance`
+showed the hard blue transition followed the source temperature/skin branch more
+than the redshift map. The reference skin now keeps the hot layer in a
+photospheric color-correction range and reduces the extra blue spectral tilt.
+This keeps the inner disk allowed to be hotter/bluer, but makes the transition
+come from the radial Planck temperature and GRMHD heating fields rather than a
+hard branch color jump.
+
+Preview validation at `160x160` against the prior reference-skin build, using
+the same cached GRMHD volume, reduced the final-image blue-dominant pixel
+fraction from `0.1084` to `0.0796`. The `g` diagnostic remained unchanged, so
+the visible shift is attributable to source-spectrum handling rather than to a
+camera/display or geodesic change. The `peak` diagnostic still has discrete
+channel transitions because it is a scalar/debug routing view; final radiance
+and `teff`/body/skin diagnostics should be used together when judging physical
+smoothness.
+
 ## Remaining Scientific Risk
 
 - The public GRMHD snapshot may not contain enough non-axisymmetric contrast at
