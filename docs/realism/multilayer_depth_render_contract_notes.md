@@ -130,6 +130,8 @@ Before enabling production multi-layer DOF:
 - inspect glass/transparent ROI metrics rather than only whole-image averages,
 - inspect glass/transparent ROI crop sheets and error heatmaps against
   layer-aware or stochastic lens references,
+- run the optional glass ROI threshold gates when accepting or rejecting a
+  single-depth, multi-layer, or stochastic lens integration change,
 - verify memory growth at target resolution,
 - verify no CPU-GPU synchronization regression,
 - document packed ABI changes and alignment,

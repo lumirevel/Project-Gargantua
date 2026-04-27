@@ -78,6 +78,9 @@ Intentionally not changed:
 - The veil driver now separates adaptation luminance from glare-source luminance, keeping local gain and bright-source scatter inspectable as different interpreter concerns.
 - Bright local surround luminance no longer darkens scene RGB before tone mapping; glare contrast loss is now carried by additive veiling luminance instead.
 - Eye glare weights now use `cameraGlareParams` with FOV-derived pixel visual angle, making the veil less dependent on output resolution and fixed screen-space radii.
+- Transparent DOF validation can now fail on optional glass ROI thresholds,
+  making the transparent DOF check usable as an integration gate rather than
+  only a visual artifact review.
 
 ## 3. Render Contract Consumption Status
 
@@ -196,6 +199,30 @@ python3 scripts/validate_presentation_on_rt_scene.py \
   --transparent-dof-reference \
   --lens-reference-spp 4 \
   --bokeh-targets
+python3 -m py_compile scripts/validate_presentation_on_rt_scene.py
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+BH_ETA_HISTORY=/private/tmp/bh_transparent_roi_gate_validation/eta.json \
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --out-dir /private/tmp/bh_transparent_roi_gate_validation \
+  --width 96 \
+  --height 54 \
+  --spp 1 \
+  --focus-depth 4.35 \
+  --f-number 1.4 \
+  --dof-strength 1.8 \
+  --transparent-dof-reference \
+  --lens-reference-spp 4 \
+  --bokeh-targets \
+  --max-glass-roi-mae-vs-transparent-dof 0.02 \
+  --min-glass-roi-corr-vs-transparent-dof 0.99 \
+  --max-glass-roi-mae-vs-thin-lens 0.04 \
+  --min-glass-roi-corr-vs-thin-lens 0.95
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --python-presentation \
+  --out-dir /private/tmp/bh_transparent_roi_gate_missing_reference \
+  --width 32 \
+  --height 18 \
+  --max-glass-roi-mae-vs-transparent-dof 0.02
 ```
 
 Passed:
@@ -219,10 +246,17 @@ Passed:
 - Transparent DOF validation now writes a glass ROI crop sheet and optional ROI
   error heatmaps versus stochastic thin-lens and multi-layer transparent DOF
   references.
+- Optional glass ROI threshold gates passed on a low-resolution room RT
+  validation run.
+- Missing-reference gate behavior was checked with Python presentation and
+  exited non-zero as expected.
 
 Failed:
 
-- No project validation command failed during this branch.
+- No project validation command failed unexpectedly during this branch.
+- The missing-reference validation command above intentionally exits non-zero
+  to verify gate failure behavior; this is an expected negative test, not a
+  project failure.
 
 Could not be fully validated:
 
@@ -278,6 +312,8 @@ Check during later integration:
 - `sensor-filmic` against existing looks on the same physical input.
 - glass ROI crop sheet and ROI error heatmaps before accepting a transparent or
   multi-layer DOF merge.
+- optional glass ROI threshold gates as non-beauty regression checks before
+  accepting a production DOF contract change.
 
 Do not overwrite:
 

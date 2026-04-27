@@ -74,6 +74,18 @@ The script also writes glass-focused visual diagnostics:
 These images are diagnostic-only. They make the known single-depth transparency
 failure local and visible before any production render-contract change.
 
+The same ROI comparisons can now be turned into validation gates:
+
+- `--max-glass-roi-mae-vs-transparent-dof <value>`
+- `--min-glass-roi-corr-vs-transparent-dof <value>`
+- `--max-glass-roi-mae-vs-thin-lens <value>`
+- `--min-glass-roi-corr-vs-thin-lens <value>`
+
+When a gate is supplied, the script records `validation_gates` in
+`metrics.json` and exits non-zero if the required reference output is missing or
+the metric falls outside the threshold. These gates are intended for regression
+checks and integration review, not for tuning the physical source.
+
 This does not change the black-hole renderer's physical source model or packed
 physics outputs. It also does not pretend the production compose path has a full
 multi-layer depth contract. It creates an interpreter-side reference image for

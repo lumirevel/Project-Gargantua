@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -866,6 +867,46 @@ def corr(a: np.ndarray, b: np.ndarray) -> float:
     return 0.0 if denom < 1e-12 else float(np.dot(aa, bb) / denom)
 
 
+def add_validation_gate(results: List[Dict[str, object]],
+                        failures: List[str],
+                        name: str,
+                        value: Optional[float],
+                        threshold: Optional[float],
+                        mode: str) -> None:
+    if threshold is None:
+        return
+    if value is None:
+        result = {
+            "name": name,
+            "mode": mode,
+            "threshold": threshold,
+            "value": None,
+            "passed": False,
+            "reason": "metric_missing",
+        }
+        results.append(result)
+        failures.append(f"{name}: metric missing")
+        return
+    if mode == "max":
+        passed = value <= threshold
+        relation = "<="
+    elif mode == "min":
+        passed = value >= threshold
+        relation = ">="
+    else:
+        raise ValueError(f"unknown gate mode: {mode}")
+    result = {
+        "name": name,
+        "mode": mode,
+        "threshold": threshold,
+        "value": value,
+        "passed": passed,
+    }
+    results.append(result)
+    if not passed:
+        failures.append(f"{name}: {value:.6g} not {relation} {threshold:.6g}")
+
+
 def make_sheet(items: List[Tuple[str, Path]], out_path: Path) -> None:
     imgs = [(label, Image.open(path).convert("RGB")) for label, path in items]
     w, h = imgs[0][1].size
@@ -987,6 +1028,30 @@ def main() -> None:
     ap.add_argument("--color-chart", action="store_true", help="add diffuse RGB/CMY wall patches for eye/chroma validation")
     ap.add_argument("--python-presentation", action="store_true", help="use the local Python presentation approximation instead of Metal compose")
     ap.add_argument("--rebuild-each-render", action="store_true", help="do not add --no-build after the first Metal compose")
+    ap.add_argument(
+        "--max-glass-roi-mae-vs-transparent-dof",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI RGB MAE exceeds the multi-layer transparent DOF reference",
+    )
+    ap.add_argument(
+        "--min-glass-roi-corr-vs-transparent-dof",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI luma correlation is below the multi-layer transparent DOF reference",
+    )
+    ap.add_argument(
+        "--max-glass-roi-mae-vs-thin-lens",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI RGB MAE exceeds the stochastic thin-lens reference",
+    )
+    ap.add_argument(
+        "--min-glass-roi-corr-vs-thin-lens",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI luma correlation is below the stochastic thin-lens reference",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -1215,6 +1280,43 @@ def main() -> None:
         metrics["glass_roi"]["cinema_mae_vs_transparent_multilayer_dof"] = masked_mae(cine, layered, glass_mask)
         metrics["outputs"]["transparent_multilayer_dof_cinema"] = str(transparent_dof_path)
         metrics["outputs"]["glass_roi_error_vs_transparent_multilayer_dof"] = str(layered_error_path)
+    validation_gates: List[Dict[str, object]] = []
+    validation_failures: List[str] = []
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_mae_vs_transparent_multilayer_dof",
+        metrics["glass_roi"].get("cinema_mae_vs_transparent_multilayer_dof"),
+        args.max_glass_roi_mae_vs_transparent_dof,
+        "max",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_luma_corr_vs_transparent_multilayer_dof",
+        metrics["glass_roi"].get("cinema_luma_corr_vs_transparent_multilayer_dof"),
+        args.min_glass_roi_corr_vs_transparent_dof,
+        "min",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_mae_vs_thin_lens_reference",
+        metrics["glass_roi"].get("cinema_mae_vs_thin_lens_reference"),
+        args.max_glass_roi_mae_vs_thin_lens,
+        "max",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_luma_corr_vs_thin_lens_reference",
+        metrics["glass_roi"].get("cinema_luma_corr_vs_thin_lens_reference"),
+        args.min_glass_roi_corr_vs_thin_lens,
+        "min",
+    )
+    if validation_gates:
+        metrics["validation_gates"] = validation_gates
+        metrics["validation_passed"] = not validation_failures
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     (out_dir / "summary.md").write_text(
         "# Everyday RT Presentation Validation\n\n"
@@ -1226,6 +1328,11 @@ def main() -> None:
     )
     print(json.dumps(metrics, indent=2, sort_keys=True))
     print(f"sheet={sheet}")
+    if validation_failures:
+        print("validation gate failures:", file=sys.stderr)
+        for failure in validation_failures:
+            print(f"- {failure}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
