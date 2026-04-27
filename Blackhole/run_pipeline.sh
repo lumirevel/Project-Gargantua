@@ -523,6 +523,9 @@ canonical_source_model() {
     grmhd-plasma|grmhd-plasma-fluctuation|grmhd-plasma-fluctuation-candidate|plasma-fluctuation-candidate)
       printf 'grmhd-plasma-fluctuation-candidate'
       ;;
+    grmhd-visible-disk|grmhd-visible-disk-skin|grmhd-visible-disk-skin-candidate|visible-disk-skin-candidate|visible-plasma-disk-candidate)
+      printf 'grmhd-visible-disk-skin-candidate'
+      ;;
     thin-luminous-layer|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer)
       printf 'thin-luminous-layer-candidate'
       ;;
@@ -549,6 +552,9 @@ source_model_to_science_regime() {
     grmhd-plasma-fluctuation-candidate)
       printf 'grmhd-hot-flow'
       ;;
+    grmhd-visible-disk-skin-candidate)
+      printf 'grmhd-temperature-flow-scientific'
+      ;;
     thin-luminous-layer-candidate)
       printf 'thin-luminous-layer-candidate'
       ;;
@@ -565,10 +571,10 @@ apply_source_model_defaults() {
   [[ "$SOURCE_MODEL_SET" -eq 1 ]] || return 0
   SOURCE_MODEL_VALUE="$(canonical_source_model "$SOURCE_MODEL_VALUE")"
   case "$SOURCE_MODEL_VALUE" in
-    canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
+    canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
       ;;
     *)
-      echo "error: --source-model must be one of canonical-visible-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
+      echo "error: --source-model must be one of canonical-visible-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, grmhd-visible-disk-skin-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
       echo "       use --science-regime ... --experimental for legacy/debug source families" >&2
       exit 2
       ;;
@@ -767,6 +773,8 @@ apply_science_regime_defaults() {
     grmhd-temperature-flow|grmhd-visible-flow|grmhd-thermal-flow|temperature-flow|grmhd-temperature-flow-hq|grmhd-visible-flow-hq|grmhd-thermal-flow-hq|temperature-flow-hq|grmhd-temperature-flow-scientific|grmhd-temperature-science|grmhd-visible-flow-scientific|grmhd-visible-science|grmhd-temperature-flow-eye|grmhd-temperature-eye|grmhd-temperature-flow-human-visible|grmhd-human-visible-flow)
       set_default_disk_mode "grmhd"
       GRMHD_TEMPERATURE_T0_DEFAULT="6500"
+      GRMHD_TEMPERATURE_P_DEFAULT="0.75"
+      GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=0
       case "$SCIENCE_REGIME_VALUE" in
         *scientific*|*science)
           set_default_presentation_mode "scientific"
@@ -781,6 +789,11 @@ apply_science_regime_defaults() {
           GRMHD_TEMPERATURE_T0_DEFAULT="6500"
           ;;
       esac
+      if [[ "${SOURCE_MODEL_VALUE:-}" == "grmhd-visible-disk-skin-candidate" ]]; then
+        GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=1
+        GRMHD_TEMPERATURE_T0_DEFAULT="9500"
+        GRMHD_TEMPERATURE_P_DEFAULT="0.68"
+      fi
       PIPELINE_MODE="gpu-only"
       if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
         SSAA=2
@@ -804,7 +817,13 @@ apply_science_regime_defaults() {
       append_swift_default --visible-kappa "0.0015"
       append_swift_default --disk-precision-texture "0.70"
       append_swift_default --teff-T0 "$GRMHD_TEMPERATURE_T0_DEFAULT"
+      append_swift_default --teff-p "$GRMHD_TEMPERATURE_P_DEFAULT"
       append_swift_default --disk-grmhd-emission-scale "1e-10"
+      if [[ "$GRMHD_VISIBLE_DISK_SKIN_CANDIDATE" -eq 1 ]]; then
+        append_swift_default --grmhd-smooth-weight "visible-reference-skin"
+        append_swift_default --grmhd-smooth-emission-scale "2.50"
+        append_swift_default --grmhd-cloud-emission-scale "0.95"
+      fi
       [[ -z "$DISK_GRMHD_PHI_CONTRAST" ]] && DISK_GRMHD_PHI_CONTRAST="1.8"
       [[ -z "$DISK_GRMHD_PHI_CONTRAST_MAX_RATIO" ]] && DISK_GRMHD_PHI_CONTRAST_MAX_RATIO="8.0"
       [[ -z "$DISK_GRMHD_PHI_RESIDUAL_SMOOTH" ]] && DISK_GRMHD_PHI_RESIDUAL_SMOOTH="0.45"
@@ -1100,7 +1119,7 @@ One-command pipeline:
 Routing rules:
 - Shared: --width --height --rcp
 - Spin range: --spin [-0.999, 0.999] (negative = retrograde orbit convention)
-- Public source interface: --source-model {canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic} --presentation {scientific|eye|cinema} --quality {preview|hq}
+- Public source interface: --source-model {canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic} --presentation {scientific|eye|cinema} --quality {preview|hq}
 - Presentation-only validation: --compose-hdr-in <float4-linear32-file> --width <w> --height <h> --presentation {scientific|eye|cinema}
 - Legacy/debug source families are hidden from the recommended surface. Use --science-regime <old-name> --experimental only when reproducing an old experiment.
 - Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --grmhd-branch-isolation --grmhd-transport-alpha-scale --grmhd-smooth-emission-scale --grmhd-cloud-emission-scale --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
@@ -1120,8 +1139,8 @@ Routing rules:
 - Compose controls: --chunk --spectral-step --exposure --exposure-samples --dither --inner-edge-mult --look --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --compose-hdr-in
   - look options: balanced(default), realistic, interstellar, eht, thin-disk, agx/filmic, hdr, structure
   - presentation modes: --presentation-mode {legacy,scientific,eye,cinema} (alias: --presentation)
-  - recommended source models: --source-model {canonical-visible-disk-v1,thin-disk-visible-reference,grmhd-hot-flow-diagnostic,grmhd-plasma-fluctuation-candidate,thin-luminous-layer-candidate,grmhd-temperature-flow-diagnostic}
-    canonical-visible-disk-v1 = clean thin-disk visible body + disk-coordinate stochastic heating skin + weak corona, all before scientific/eye/cinema presentation; thin-disk-visible-reference = pure Kerr thin-disk reference with procedural/GRMHD texture disabled; grmhd-hot-flow-diagnostic = GRMHD-native optically thin hot-flow structure diagnostic; grmhd-plasma-fluctuation-candidate = named alias for the optically thin GRMHD plasma fluctuation path, useful when cloud-like structure should come from synchrotron/hot-flow physics rather than procedural texture; thin-luminous-layer-candidate = GRMHD visible thermal RT constrained to a thin tau-surface photosphere using existing layer weights; grmhd-temperature-flow-diagnostic = 3D GRMHD thermal visible volume RT diagnostic.
+  - recommended source models: --source-model {canonical-visible-disk-v1,thin-disk-visible-reference,grmhd-hot-flow-diagnostic,grmhd-plasma-fluctuation-candidate,grmhd-visible-disk-skin-candidate,thin-luminous-layer-candidate,grmhd-temperature-flow-diagnostic}
+    canonical-visible-disk-v1 = clean thin-disk visible body + disk-coordinate stochastic heating skin + weak corona, all before scientific/eye/cinema presentation; thin-disk-visible-reference = pure Kerr thin-disk reference with procedural/GRMHD texture disabled; grmhd-hot-flow-diagnostic = GRMHD-native optically thin hot-flow structure diagnostic; grmhd-plasma-fluctuation-candidate = named alias for the optically thin GRMHD plasma fluctuation path, useful when cloud-like structure should come from synchrotron/hot-flow physics rather than procedural texture; grmhd-visible-disk-skin-candidate = visible photospheric disk body plus positive GRMHD hot-skin emissivity, for film-visible disk tests without camera tricks; thin-luminous-layer-candidate = GRMHD visible thermal RT constrained to a thin tau-surface photosphere using existing layer weights; grmhd-temperature-flow-diagnostic = 3D GRMHD thermal visible volume RT diagnostic.
   - legacy science regimes: --science-regime <old-name> --experimental. Old names remain for reproduction but are not recommended final source models.
   - camera profiles: --camera-profile {ideal,scientific,cinema-digital,full-frame}
   - custom camera profile: --camera-profile-json path/to/profile.json

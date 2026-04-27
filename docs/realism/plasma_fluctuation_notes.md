@@ -70,6 +70,29 @@ by Swift but were hard to discover from the public pipeline:
 - `--grmhd-smooth-emission-scale`
 - `--grmhd-cloud-emission-scale`
 
+## Visible Disk Candidate
+
+The movie-visible accretion disk should not be represented only by the optically
+thin hot-flow candidate. That path is useful for plasma fluctuation diagnostics,
+but a visible disk needs a luminous photospheric body.
+
+`Blackhole/run_pipeline.sh` now also exposes:
+
+```bash
+--source-model grmhd-visible-disk-skin-candidate
+```
+
+This candidate routes through GRMHD visible thermal transfer with:
+
+- a visible photospheric disk body: `--grmhd-smooth-weight visible-reference-skin`
+- positive GRMHD hot-skin emissivity: `--grmhd-cloud-emission-scale 0.95`
+- no procedural Perlin clouds and no camera/display changes
+- `teff-T0=9500`, `teff-p=0.68`, and scientific presentation by default
+
+Use this when testing a film-visible disk body with physically sourced plasma
+structure. Use `grmhd-plasma-fluctuation-candidate` only when the goal is to
+inspect the optically thin hot-flow tail itself.
+
 ## How To Inspect
 
 Use the plasma fluctuation source model with physical diagnostics:
@@ -92,6 +115,17 @@ Recommended comparison set:
 --disk-grmhd-debug jthermal-cloud
 --disk-grmhd-debug thermal-cloud-ratio
 --disk-grmhd-debug raw-radiance
+--grmhd-branch-isolation cloud
+```
+
+For the visible disk candidate, compare:
+
+```bash
+--source-model grmhd-visible-disk-skin-candidate
+--disk-grmhd-debug raw-radiance
+--disk-grmhd-debug jthermal-cloud
+--disk-grmhd-debug thermal-cloud-ratio
+--grmhd-branch-isolation body
 --grmhd-branch-isolation cloud
 ```
 
