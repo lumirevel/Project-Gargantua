@@ -52,6 +52,12 @@ Intentionally not changed:
   - pHigh/p50 and pMid/p50 ratios in stops
   - linear histogram bounds
 - Exposure solve behavior was not changed.
+- Added opt-in `--exposure-mode photographic`, with `--camera-f-number`,
+  `--camera-shutter`, and `--camera-iso` feeding an interpreter-side camera
+  exposure scale. Existing auto and fixed exposure modes remain unchanged.
+- Photographic mode also records camera settings in metadata and exposure
+  diagnostics. Shutter currently affects exposure/noise only; motion blur is
+  deferred until temporal samples or a reviewed motion proxy exist.
 
 ### Tone Mapping/Sensor Response
 
@@ -124,6 +130,44 @@ python3 scripts/render_interpreter_stage_diagnostics.py \
   --height 40 \
   --quality preview \
   --out-dir /private/tmp/bh_bloom_glare_validation
+xcodebuild -project Blackhole.xcodeproj -scheme Blackhole -configuration Debug \
+  -derivedDataPath /private/tmp/ProjectGargantuaCameraInterpreterDerivedData build
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+bash Blackhole/run_pipeline.sh \
+  --compose-hdr-in /private/tmp/bh_room_glass_depth_validation/rt_room.linear32f32 \
+  --width 420 \
+  --height 240 \
+  --presentation cinema \
+  --look sensor-filmic \
+  --exposure-mode photographic \
+  --camera-f-number 2.8 \
+  --camera-shutter 1/60 \
+  --camera-iso 100 \
+  --output /private/tmp/bh_camera_controls_validation/rt_room_photo_f28_iso100_60.png
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+bash Blackhole/run_pipeline.sh --no-build \
+  --compose-hdr-in /private/tmp/bh_room_glass_depth_validation/rt_room.linear32f32 \
+  --width 420 \
+  --height 240 \
+  --presentation cinema \
+  --look sensor-filmic \
+  --exposure-mode photographic \
+  --camera-f-number 1.4 \
+  --camera-shutter 1/60 \
+  --camera-iso 100 \
+  --output /private/tmp/bh_camera_controls_validation/rt_room_photo_f14_iso100_60.png
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+bash Blackhole/run_pipeline.sh --no-build \
+  --compose-hdr-in /private/tmp/bh_room_glass_depth_validation/rt_room.linear32f32 \
+  --width 420 \
+  --height 240 \
+  --presentation cinema \
+  --look sensor-filmic \
+  --exposure-mode photographic \
+  --camera-f-number 2.8 \
+  --camera-shutter 1/60 \
+  --camera-iso 800 \
+  --output /private/tmp/bh_camera_controls_validation/rt_room_photo_f28_iso800_60.png
 ```
 
 Passed:
@@ -135,6 +179,11 @@ Passed:
 - Exposure debug JSON wrote and included new fields.
 - `sensor-filmic` look parsed and rendered.
 - Bloom/glare metrics include positive-delta coverage and negative redistribution fields.
+- `--exposure-mode photographic` renders completed for f/2.8 ISO100, f/1.4
+  ISO100, and f/2.8 ISO800 on the same RT room HDR input.
+- Exposure debug JSON recorded `cameraFNumber`, `cameraISO`,
+  `cameraShutterSeconds`, effective camera noise, and
+  `photographicExposureScale`.
 
 Failed:
 

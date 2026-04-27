@@ -220,6 +220,10 @@ struct ResolvedRenderConfig {
     var cameraReadNoiseArg: Float = 0.0
     var cameraShotNoiseArg: Float = 0.0
     var cameraFlareStrengthArg: Float = 0.0
+    var cameraFNumberArg: Float = 8.0
+    var cameraISOArg: Float = 100.0
+    var cameraShutterSecondsArg: Float = 1.0 / 60.0
+    var photographicExposureScale: Float = 0.0
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0

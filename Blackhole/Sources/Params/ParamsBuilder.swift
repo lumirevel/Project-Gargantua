@@ -337,6 +337,10 @@ enum ParamsBuilder {
     let cameraReadNoiseArg = visualSettings.cameraReadNoiseArg
     let cameraShotNoiseArg = visualSettings.cameraShotNoiseArg
     let cameraFlareStrengthArg = visualSettings.cameraFlareStrengthArg
+    let cameraFNumberArg = visualSettings.cameraFNumberArg
+    let cameraISOArg = visualSettings.cameraISOArg
+    let cameraShutterSecondsArg = visualSettings.cameraShutterSecondsArg
+    let photographicExposureScale = visualSettings.photographicExposureScale
     let backgroundModeName = visualSettings.backgroundModeName
     let backgroundModeID = visualSettings.backgroundModeID
     let backgroundStarDensityArg = visualSettings.backgroundStarDensityArg
@@ -605,6 +609,10 @@ enum ParamsBuilder {
         config.cameraReadNoiseArg = cameraReadNoiseArg
         config.cameraShotNoiseArg = cameraShotNoiseArg
         config.cameraFlareStrengthArg = cameraFlareStrengthArg
+        config.cameraFNumberArg = cameraFNumberArg
+        config.cameraISOArg = cameraISOArg
+        config.cameraShutterSecondsArg = cameraShutterSecondsArg
+        config.photographicExposureScale = photographicExposureScale
         config.composeCameraPsfSigmaArg = composeCameraPsfSigmaArg
         config.composeCameraReadNoiseArg = composeCameraReadNoiseArg
         config.composeCameraShotNoiseArg = composeCameraShotNoiseArg

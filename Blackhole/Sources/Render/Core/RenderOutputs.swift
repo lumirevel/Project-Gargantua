@@ -115,6 +115,10 @@ struct RenderMeta: Codable {
     var cameraReadNoise: Double
     var cameraShotNoise: Double
     var cameraFlareStrength: Double
+    var cameraFNumber: Double
+    var cameraISO: Double
+    var cameraShutterSeconds: Double
+    var photographicExposureScale: Double
     var backgroundMode: String
     var backgroundStarDensity: Double
     var backgroundStarStrength: Double
@@ -136,6 +140,12 @@ struct ExposureDiagnostics: Codable {
     var autoExposure: Bool
     var exposureMode: String
     var exposureEV: Double
+    var cameraFNumber: Double
+    var cameraISO: Double
+    var cameraShutterSeconds: Double
+    var cameraReadNoise: Double
+    var cameraShotNoise: Double
+    var photographicExposureScale: Double?
     var baseExposure: Double?
     var resolvedExposure: Double?
     var solveMode: String
@@ -326,6 +336,10 @@ enum RenderOutputs {
             cameraReadNoise: Double(config.cameraReadNoiseArg),
             cameraShotNoise: Double(config.cameraShotNoiseArg),
             cameraFlareStrength: Double(config.cameraFlareStrengthArg),
+            cameraFNumber: Double(config.cameraFNumberArg),
+            cameraISO: Double(config.cameraISOArg),
+            cameraShutterSeconds: Double(config.cameraShutterSecondsArg),
+            photographicExposureScale: Double(config.photographicExposureScale),
             backgroundMode: config.backgroundModeName,
             backgroundStarDensity: Double(config.backgroundStarDensityArg),
             backgroundStarStrength: Double(config.backgroundStarStrengthArg),
@@ -447,6 +461,12 @@ enum RenderOutputs {
             autoExposure: config.autoExposureEnabled,
             exposureMode: config.exposureModeName,
             exposureEV: config.exposureEVArg,
+            cameraFNumber: Double(config.cameraFNumberArg),
+            cameraISO: Double(config.cameraISOArg),
+            cameraShutterSeconds: Double(config.cameraShutterSecondsArg),
+            cameraReadNoise: Double(config.cameraReadNoiseArg),
+            cameraShotNoise: Double(config.cameraShotNoiseArg),
+            photographicExposureScale: config.exposureModeID == 2 ? finite(config.photographicExposureScale) : nil,
             baseExposure: finite(config.composeExposureBase),
             resolvedExposure: finite(resolvedExposure),
             solveMode: solveMode,
