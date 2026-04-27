@@ -148,9 +148,24 @@ struct ExposureDiagnostics: Codable {
     var maxExposureBoost: Double?
     var pFloor: Double?
     var p50: Double?
+    var highExposureCandidate: Double?
+    var midExposureCandidate: Double?
+    var resolvedExposureEV: Double?
+    var effectiveMidBoost: Double?
+    var maxMidBoost: Double?
+    var exposureDriver: String?
+    var exposedP50: Double?
+    var exposedPHigh: Double?
+    var exposedPMid: Double?
+    var pHighOverP50: Double?
+    var pHighStopsOverP50: Double?
+    var pMidOverP50: Double?
+    var pMidStopsOverP50: Double?
     var luminanceSamples: UInt32?
     var luminanceLogMin: Double?
     var luminanceLogMax: Double?
+    var luminanceHistogramMin: Double?
+    var luminanceHistogramMax: Double?
     var cloudQ10: Double?
     var cloudQ90: Double?
     var cloudSamples: UInt32?
@@ -361,9 +376,65 @@ enum RenderOutputs {
             guard let value, value.isFinite else { return nil }
             return Double(value)
         }
+        func finiteDouble(_ value: Double?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return value
+        }
+        func candidateExposure(target: Float, luminance: Float?) -> Double? {
+            guard target > 0.0, let luminance, luminance.isFinite, luminance > 0.0 else { return nil }
+            return Double(target / max(luminance, settings.pFloor))
+        }
+        func exposed(_ luminance: Float?) -> Double? {
+            guard let luminance, luminance.isFinite, luminance >= 0.0, resolvedExposure.isFinite else { return nil }
+            return Double(luminance * resolvedExposure)
+        }
+        func ratio(_ numerator: Float?, _ denominator: Float?) -> Double? {
+            guard
+                let numerator, numerator.isFinite,
+                let denominator, denominator.isFinite,
+                numerator > 0.0, denominator > 0.0
+            else { return nil }
+            return Double(numerator / denominator)
+        }
+        func stops(_ ratio: Double?) -> Double? {
+            guard let ratio, ratio.isFinite, ratio > 0.0 else { return nil }
+            return log2(ratio)
+        }
+        func pow10Finite(_ value: Float?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return pow(10.0, Double(value))
+        }
+
+        let highExposure = candidateExposure(target: settings.targetWhite, luminance: pHigh)
+        let midExposure = (settings.midQuantile > 0.0 && settings.targetMid > 0.0)
+            ? candidateExposure(target: settings.targetMid, luminance: pMid)
+            : nil
+        let resolvedExposureValue = finite(resolvedExposure)
+        let effectiveMidBoost = (settings.midQuantile > 0.0)
+            ? finiteDouble(resolvedExposureValue.flatMap { resolved in
+                guard let highExposure, highExposure > 0.0 else { return nil }
+                return resolved / highExposure
+            })
+            : nil
+        let exposureDriver: String = {
+            if !config.autoExposureEnabled { return "manual_or_fixed" }
+            guard highExposure != nil else { return "auto_no_luminance_samples" }
+            guard midExposure != nil, settings.midQuantile > 0.0 else { return "high_quantile" }
+            guard let effectiveMidBoost else { return "high_quantile" }
+            if effectiveMidBoost > 1.0001 {
+                if effectiveMidBoost >= Double(settings.maxExposureBoost) * 0.999 {
+                    return "mid_quantile_capped"
+                }
+                return "mid_quantile"
+            }
+            return "high_quantile"
+        }()
+
+        let pHighRatio = ratio(pHigh, p50)
+        let pMidRatio = ratio(pMid, p50)
 
         let diagnostics = ExposureDiagnostics(
-            version: "interpreter_exposure_v1",
+            version: "interpreter_exposure_v2",
             layer: "interpreter",
             imagePath: config.imageOutPath,
             width: width,
@@ -388,9 +459,24 @@ enum RenderOutputs {
             maxExposureBoost: settings.maxExposureBoost > 1.0 ? finite(settings.maxExposureBoost) : nil,
             pFloor: finite(settings.pFloor),
             p50: finite(p50),
+            highExposureCandidate: highExposure,
+            midExposureCandidate: midExposure,
+            resolvedExposureEV: resolvedExposure > 0.0 ? finiteDouble(log2(Double(resolvedExposure))) : nil,
+            effectiveMidBoost: effectiveMidBoost,
+            maxMidBoost: settings.maxExposureBoost > 1.0 ? finite(settings.maxExposureBoost) : nil,
+            exposureDriver: exposureDriver,
+            exposedP50: exposed(p50),
+            exposedPHigh: exposed(pHigh),
+            exposedPMid: settings.midQuantile > 0.0 ? exposed(pMid) : nil,
+            pHighOverP50: pHighRatio,
+            pHighStopsOverP50: stops(pHighRatio),
+            pMidOverP50: settings.midQuantile > 0.0 ? pMidRatio : nil,
+            pMidStopsOverP50: settings.midQuantile > 0.0 ? stops(pMidRatio) : nil,
             luminanceSamples: luminanceSamples,
             luminanceLogMin: finite(luminanceLogMin),
             luminanceLogMax: finite(luminanceLogMax),
+            luminanceHistogramMin: pow10Finite(luminanceLogMin),
+            luminanceHistogramMax: pow10Finite(luminanceLogMax),
             cloudQ10: finite(cloudQ10),
             cloudQ90: finite(cloudQ90),
             cloudSamples: cloudSamples
