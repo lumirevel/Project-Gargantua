@@ -251,7 +251,28 @@ static inline float3 trace_room(float3 ro, float3 rd, constant RoomRTParams& P) 
 
 static inline float primary_depth(float3 ro, float3 rd, float focusDepth, constant RoomRTParams& P) {
     Hit h = intersect_scene(ro, rd, P);
-    return h.mat < 0 ? focusDepth : h.t;
+    if (h.mat < 0) return focusDepth;
+    if (h.mat != 4) return h.t;
+
+    float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
+    float fres = 0.04f + 0.96f * pow(1.0f - cosi, 5.0f);
+    float3 refrIn;
+    if (!refract_dir(rd, h.n, 1.0f / 1.48f, refrIn)) {
+        return h.t;
+    }
+    Hit exitHit = intersect_scene(h.p - h.n * 0.004f, refrIn, P);
+    if (exitHit.mat != 4) {
+        return h.t;
+    }
+    float3 refrOut;
+    if (!refract_dir(refrIn, -exitHit.n, 1.48f, refrOut)) {
+        return h.t + exitHit.t;
+    }
+    Hit seen = intersect_scene(exitHit.p + exitHit.n * 0.004f, refrOut, P);
+    float transmitDepth = h.t + exitHit.t + ((seen.mat < 0) ? max(focusDepth - h.t - exitHit.t, 0.0f) : seen.t);
+    // A single depth channel cannot represent reflected and transmitted layers.
+    // Use the same Schlick mix as color so DOF follows the dominant visible layer.
+    return mix(transmitDepth, h.t, clamp(fres, 0.0f, 1.0f));
 }
 
 static inline float2 aperture_sample(uint i, uint n, uint blades) {

@@ -289,7 +289,31 @@ def trace(scene: Scene, ro: np.ndarray, rd: np.ndarray, depth: int = 0) -> np.nd
 
 def primary_depth(scene: Scene, ro: np.ndarray, rd: np.ndarray, focus_fallback: float) -> float:
     hit = scene.intersect(ro, rd)
-    return focus_fallback if hit is None else float(hit.t)
+    if hit is None:
+        return focus_fallback
+    if hit.mat.kind != "glass":
+        return float(hit.t)
+
+    n = hit.n.copy()
+    cosi = -float(np.dot(n, rd))
+    if cosi <= 0.0:
+        return float(hit.t)
+    refr_in = refract(rd, n, 1.0 / hit.mat.ior)
+    if refr_in is None:
+        return float(hit.t)
+    exit_hit = scene.intersect(hit.p - n * EPS * 8.0, normalize(refr_in))
+    if exit_hit is None or exit_hit.mat.kind != "glass":
+        return float(hit.t)
+    refr_out = refract(normalize(refr_in), -exit_hit.n, hit.mat.ior)
+    if refr_out is None:
+        return float(hit.t + exit_hit.t)
+    seen = scene.intersect(exit_hit.p + exit_hit.n * EPS * 8.0, normalize(refr_out))
+    sky_depth = max(focus_fallback - float(hit.t + exit_hit.t), 0.0)
+    transmit_depth = float(hit.t + exit_hit.t + (sky_depth if seen is None else seen.t))
+    fres = schlick(max(cosi, 0.0), hit.mat.ior)
+    # One depth value cannot represent reflected and transmitted layers.
+    # Match the color model's Fresnel blend so DOF follows the dominant layer.
+    return (1.0 - fres) * transmit_depth + fres * float(hit.t)
 
 
 def render_scene(width: int,
