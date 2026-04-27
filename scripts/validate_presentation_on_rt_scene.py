@@ -744,6 +744,64 @@ def image_stats(rgb: np.ndarray) -> Dict[str, float]:
     }
 
 
+def glass_roi_mask(width: int, height: int) -> np.ndarray:
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    center = np.array([0.35, -0.50, -1.45], dtype=np.float32)
+    radius = 0.50
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    v = center - cam_pos
+    z = max(float(np.dot(v, forward)), 1e-5)
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    ndc_x = float(np.dot(v, right)) / (z * aspect * scale)
+    ndc_y = float(np.dot(v, up)) / (z * scale)
+    cx = (ndc_x * 0.5 + 0.5) * width
+    cy = (0.5 - ndc_y * 0.5) * height
+    rx = max(3.0, 0.5 * width * (radius / z) / (aspect * scale) * 1.25)
+    ry = max(3.0, 0.5 * height * (radius / z) / scale * 1.25)
+    yy, xx = np.mgrid[0:height, 0:width]
+    return (((xx + 0.5 - cx) / rx) ** 2 + ((yy + 0.5 - cy) / ry) ** 2) <= 1.0
+
+
+def masked_image_stats(rgb: np.ndarray, mask: np.ndarray) -> Dict[str, float]:
+    if not np.any(mask):
+        return {}
+    y = luminance(rgb)
+    gy, gx = np.gradient(y)
+    grad = np.sqrt(gx * gx + gy * gy)
+    roi = rgb[mask]
+    roi_y = y[mask]
+    roi_grad = grad[mask]
+    mx = np.max(roi, axis=-1)
+    mn = np.min(roi, axis=-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    return {
+        "coverage": float(np.mean(mask)),
+        "mean_luma": float(np.mean(roi_y)),
+        "p50_luma": float(np.percentile(roi_y, 50.0)),
+        "p90_luma": float(np.percentile(roi_y, 90.0)),
+        "grad_p95": float(np.percentile(roi_grad, 95.0)),
+        "local_contrast": float(np.std(roi_y) / max(float(np.mean(roi_y)), 1e-8)),
+        "mean_saturation": float(np.mean(sat)),
+    }
+
+
+def masked_mae(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(np.abs(a[mask] - b[mask])))
+
+
+def masked_luma_corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return corr(luminance(a)[mask], luminance(b)[mask])
+
+
 def corr(a: np.ndarray, b: np.ndarray) -> float:
     aa = a.astype(np.float64).reshape(-1)
     bb = b.astype(np.float64).reshape(-1)
@@ -1027,6 +1085,7 @@ def main() -> None:
     eye = np.asarray(Image.open(paths["eye"]).convert("RGB"), dtype=np.float32) / 255.0
     cine = np.asarray(Image.open(paths["cinema"]).convert("RGB"), dtype=np.float32) / 255.0
     sci_y = luminance(sci)
+    glass_mask = glass_roi_mask(args.width, args.height)
     metrics = {
         "scene": "room_area_light_metal_glass_plastic",
         "presentation_backend": presentation_backend,
@@ -1047,6 +1106,15 @@ def main() -> None:
         "scientific": image_stats(sci),
         "eye": image_stats(eye),
         "cinema": image_stats(cine),
+        "glass_roi": {
+            "scientific": masked_image_stats(sci, glass_mask),
+            "eye": masked_image_stats(eye, glass_mask),
+            "cinema": masked_image_stats(cine, glass_mask),
+            "eye_luma_corr_vs_scientific": masked_luma_corr(eye, sci, glass_mask),
+            "cinema_luma_corr_vs_scientific": masked_luma_corr(cine, sci, glass_mask),
+            "eye_rgb_mae_vs_scientific": masked_mae(eye, sci, glass_mask),
+            "cinema_rgb_mae_vs_scientific": masked_mae(cine, sci, glass_mask),
+        },
         "eye_luma_corr_vs_scientific": corr(sci_y, luminance(eye)),
         "cinema_luma_corr_vs_scientific": corr(sci_y, luminance(cine)),
         "eye_rgb_mae_vs_scientific": float(np.mean(np.abs(eye - sci))),
@@ -1060,6 +1128,9 @@ def main() -> None:
         metrics["thin_lens_reference"] = image_stats(ref)
         metrics["cinema_luma_corr_vs_thin_lens_reference"] = corr(cine_y, ref_y)
         metrics["cinema_mae_vs_thin_lens_reference"] = float(np.mean(np.abs(cine - ref)))
+        metrics["glass_roi"]["thin_lens_reference"] = masked_image_stats(ref, glass_mask)
+        metrics["glass_roi"]["cinema_luma_corr_vs_thin_lens_reference"] = masked_luma_corr(cine, ref, glass_mask)
+        metrics["glass_roi"]["cinema_mae_vs_thin_lens_reference"] = masked_mae(cine, ref, glass_mask)
         metrics["outputs"]["thin_lens_reference_cinema"] = str(lens_reference_path)
     if transparent_dof_path is not None:
         layered = np.asarray(Image.open(transparent_dof_path).convert("RGB"), dtype=np.float32) / 255.0
@@ -1068,6 +1139,9 @@ def main() -> None:
         metrics["transparent_multilayer_dof"] = image_stats(layered)
         metrics["cinema_luma_corr_vs_transparent_multilayer_dof"] = corr(cine_y, layered_y)
         metrics["cinema_mae_vs_transparent_multilayer_dof"] = float(np.mean(np.abs(cine - layered)))
+        metrics["glass_roi"]["transparent_multilayer_dof"] = masked_image_stats(layered, glass_mask)
+        metrics["glass_roi"]["cinema_luma_corr_vs_transparent_multilayer_dof"] = masked_luma_corr(cine, layered, glass_mask)
+        metrics["glass_roi"]["cinema_mae_vs_transparent_multilayer_dof"] = masked_mae(cine, layered, glass_mask)
         metrics["outputs"]["transparent_multilayer_dof_cinema"] = str(transparent_dof_path)
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     (out_dir / "summary.md").write_text(

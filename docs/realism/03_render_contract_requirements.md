@@ -69,3 +69,9 @@ If code-level contract changes are invasive, document them first and defer imple
 ## Deferred Contract Work
 
 A fuller contract should eventually make raw radiance, depth, hit mask, optical depth, redshift/g-factor, source radius, and optional temperature/debug flags explicitly available without overloading unrelated fields. That is not implemented here because the current baseline already has many packed ABI paths, and changing them without focused review would create unnecessary breakage risk.
+
+Transparent DOF needs an even stronger contract than a single depth proxy. A
+single `float4` HDR sample cannot represent front reflection and transmitted
+background at different depths. Future integration should use either explicit
+multi-layer radiance/depth buffers or stochastic lens-integrated rendering.
+Details are tracked in `docs/realism/multilayer_depth_render_contract_notes.md`.

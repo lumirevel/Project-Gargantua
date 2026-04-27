@@ -200,6 +200,8 @@ Passed:
   `photographicExposureScale`.
 - Transparent DOF validation wrote a stochastic thin-lens reference and a
   multi-layer transparent DOF reference on the same room RT scene.
+- Transparent DOF validation metrics include a glass ROI block so local glass
+  errors are not hidden by whole-image averages.
 
 Failed:
 
@@ -265,6 +267,8 @@ Do not overwrite:
 - `docs/realism/bloom_glare_notes.md`
 - `docs/realism/eye_veiling_glare_notes.md`
 - interpreter-owned exposure, tone mapping, camera profile, bloom/glare, and display mapping logic
+- `docs/realism/multilayer_depth_render_contract_notes.md`, which records the
+  deferred ABI/render-contract work required for production transparent DOF
 
 Ready for integration: partial.
 

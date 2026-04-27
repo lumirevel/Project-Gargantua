@@ -56,6 +56,9 @@ The script writes:
 - `rt_room_transparent_multilayer_dof.linear32f32`
 - `rt_room_transparent_multilayer_dof_cinema.png`
 
+Metrics now include a glass-sphere ROI block so transparent DOF differences are
+not hidden by whole-image averages.
+
 This does not change the black-hole renderer's physical source model or packed
 physics outputs. It also does not pretend the production compose path has a full
 multi-layer depth contract. It creates an interpreter-side reference image for
