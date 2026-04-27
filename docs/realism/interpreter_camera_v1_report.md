@@ -168,6 +168,20 @@ bash Blackhole/run_pipeline.sh --no-build \
   --camera-shutter 1/60 \
   --camera-iso 800 \
   --output /private/tmp/bh_camera_controls_validation/rt_room_photo_f28_iso800_60.png
+python3 -m py_compile scripts/validate_presentation_on_rt_scene.py
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+BH_ETA_HISTORY=/private/tmp/bh_transparent_dof_validation/eta.json \
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --out-dir /private/tmp/bh_transparent_dof_validation \
+  --width 128 \
+  --height 72 \
+  --spp 1 \
+  --focus-depth 4.35 \
+  --f-number 1.4 \
+  --dof-strength 1.8 \
+  --transparent-dof-reference \
+  --lens-reference-spp 8 \
+  --bokeh-targets
 ```
 
 Passed:
@@ -184,6 +198,8 @@ Passed:
 - Exposure debug JSON recorded `cameraFNumber`, `cameraISO`,
   `cameraShutterSeconds`, effective camera noise, and
   `photographicExposureScale`.
+- Transparent DOF validation wrote a stochastic thin-lens reference and a
+  multi-layer transparent DOF reference on the same room RT scene.
 
 Failed:
 
@@ -228,6 +244,8 @@ This branch expects:
 - stable hit/background signaling,
 - debug views for optical depth and redshift/g-factor when available,
 - a reviewed depth/distance proxy before stronger black-hole DOF is enabled,
+- for transparent DOF, either multi-layer depth/color layers or stochastic
+  lens-integrated samples rather than a single blended depth value,
 - generated physical diagnostics to remain separate from display interpretation.
 
 Check during later integration:

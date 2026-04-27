@@ -287,6 +287,65 @@ def trace(scene: Scene, ro: np.ndarray, rd: np.ndarray, depth: int = 0) -> np.nd
     return base
 
 
+def transmitted_depth_for_glass(scene: Scene, hit: Hit, rd: np.ndarray, focus_fallback: float) -> float:
+    n = hit.n.copy()
+    cosi = -float(np.dot(n, rd))
+    if cosi <= 0.0:
+        return float(hit.t)
+    refr_in = refract(rd, n, 1.0 / hit.mat.ior)
+    if refr_in is None:
+        return float(hit.t)
+    exit_hit = scene.intersect(hit.p - n * EPS * 8.0, normalize(refr_in))
+    if exit_hit is None or exit_hit.mat.kind != "glass":
+        return float(hit.t)
+    refr_out = refract(normalize(refr_in), -exit_hit.n, hit.mat.ior)
+    if refr_out is None:
+        return float(hit.t + exit_hit.t)
+    seen = scene.intersect(exit_hit.p + exit_hit.n * EPS * 8.0, normalize(refr_out))
+    sky_depth = max(focus_fallback - float(hit.t + exit_hit.t), 0.0)
+    return float(hit.t + exit_hit.t + (sky_depth if seen is None else seen.t))
+
+
+def trace_front_back_layers(scene: Scene,
+                            ro: np.ndarray,
+                            rd: np.ndarray,
+                            focus_fallback: float) -> Tuple[np.ndarray, float, np.ndarray, float]:
+    """Split transparent primary hits into front and transmitted radiance layers.
+
+    This is a validation-only approximation for camera DOF. The normal render
+    still writes one HDR color, but this reference lets glass reflection focus at
+    the front surface while refracted background focuses at the transmitted hit.
+    """
+    hit = scene.intersect(ro, rd)
+    if hit is None:
+        return visible_sky(rd), focus_fallback, np.zeros(3, dtype=np.float32), focus_fallback
+    if hit.mat.kind != "glass":
+        return trace(scene, ro, rd), primary_depth(scene, ro, rd, focus_fallback), np.zeros(3, dtype=np.float32), focus_fallback
+
+    mat = hit.mat
+    n = hit.n.copy()
+    eta_i, eta_t = 1.0, mat.ior
+    cosi = -float(np.dot(n, rd))
+    entering = cosi > 0.0
+    if not entering:
+        n = -n
+        eta_i, eta_t = eta_t, eta_i
+        cosi = -float(np.dot(n, rd))
+    eta = eta_i / eta_t
+    refr = refract(rd, n, eta)
+    fres = schlick(max(cosi, 0.0), mat.ior)
+    base = direct_light(scene, hit) * 0.04
+    refl_col = trace(scene, hit.p + n * EPS * 8.0, normalize(reflect(rd, n)), 1)
+    front = base + fres * refl_col * mat.albedo
+    if refr is None:
+        return front.astype(np.float32), float(hit.t), np.zeros(3, dtype=np.float32), focus_fallback
+    refr_col = trace(scene, hit.p - n * EPS * 8.0, normalize(refr), 1)
+    tint = np.exp(-np.array([0.015, 0.006, 0.002], dtype=np.float32))
+    back = ((1.0 - fres) * refr_col * tint * mat.albedo).astype(np.float32)
+    back_depth = transmitted_depth_for_glass(scene, hit, rd, focus_fallback)
+    return front.astype(np.float32), float(hit.t), back, back_depth
+
+
 def primary_depth(scene: Scene, ro: np.ndarray, rd: np.ndarray, focus_fallback: float) -> float:
     hit = scene.intersect(ro, rd)
     if hit is None:
@@ -314,6 +373,128 @@ def primary_depth(scene: Scene, ro: np.ndarray, rd: np.ndarray, focus_fallback: 
     # One depth value cannot represent reflected and transmitted layers.
     # Match the color model's Fresnel blend so DOF follows the dominant layer.
     return (1.0 - fres) * transmit_depth + fres * float(hit.t)
+
+
+def camera_coc_px(depth: float,
+                  width: int,
+                  height: int,
+                  focus_depth: float,
+                  f_number: float,
+                  dof_strength: float) -> float:
+    if focus_depth <= 1e-5 or depth <= 1e-5 or dof_strength <= 1e-5:
+        return 0.0
+    frame_min = max(min(width, height), 1)
+    defocus = abs(depth - focus_depth) / max(max(depth, focus_depth), 1e-5)
+    aperture = 1.0 / max(f_number, 0.7)
+    return min(max(frame_min * 0.018 * dof_strength * aperture * defocus, 0.0), 18.0)
+
+
+def dof_depth_weight(center_depth: float, sample_depth: float) -> float:
+    if center_depth <= 1e-5 or sample_depth <= 1e-5:
+        return 1.0
+    rel = abs(sample_depth - center_depth) / max(max(center_depth, sample_depth), 1e-5)
+    sigma = 0.10
+    return math.exp(-0.5 * (rel * rel) / max(sigma * sigma, 1e-6))
+
+
+def bilinear_rgb(img: np.ndarray, x: float, y: float) -> np.ndarray:
+    h, w = img.shape[:2]
+    fx = min(max(x, 0.0), w - 1.0)
+    fy = min(max(y, 0.0), h - 1.0)
+    x0 = int(math.floor(fx))
+    y0 = int(math.floor(fy))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    tx = fx - x0
+    ty = fy - y0
+    return (1.0 - ty) * ((1.0 - tx) * img[y0, x0] + tx * img[y0, x1]) + ty * ((1.0 - tx) * img[y1, x0] + tx * img[y1, x1])
+
+
+def bilinear_depth(depth: np.ndarray, x: float, y: float) -> float:
+    h, w = depth.shape[:2]
+    fx = min(max(x, 0.0), w - 1.0)
+    fy = min(max(y, 0.0), h - 1.0)
+    x0 = int(math.floor(fx))
+    y0 = int(math.floor(fy))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    tx = fx - x0
+    ty = fy - y0
+    d0 = (1.0 - tx) * depth[y0, x0] + tx * depth[y0, x1]
+    d1 = (1.0 - tx) * depth[y1, x0] + tx * depth[y1, x1]
+    return float((1.0 - ty) * d0 + ty * d1)
+
+
+def layer_dof(hdr: np.ndarray,
+              depth: np.ndarray,
+              focus_depth: float,
+              f_number: float,
+              dof_strength: float,
+              aperture_blades: int) -> np.ndarray:
+    h, w = hdr.shape[:2]
+    out = np.zeros_like(hdr)
+    n = 12
+    for y in range(h):
+        for x in range(w):
+            center_depth = float(depth[y, x])
+            coc = camera_coc_px(center_depth, w, h, focus_depth, f_number, dof_strength)
+            if coc <= 0.35:
+                out[y, x] = hdr[y, x]
+                continue
+            acc = hdr[y, x] * 0.35
+            wsum = 0.35
+            for i in range(n):
+                ax, ay = aperture_sample(i, n, aperture_blades)
+                sx = x + ax * coc
+                sy = y + ay * coc
+                sample_depth = bilinear_depth(depth, sx, sy)
+                weight = dof_depth_weight(center_depth, sample_depth)
+                acc += weight * bilinear_rgb(hdr, sx, sy)
+                wsum += weight
+            out[y, x] = acc / max(wsum, 1e-6)
+    return np.maximum(out, 0.0)
+
+
+def render_scene_transparent_layers(width: int,
+                                    height: int,
+                                    spp: int,
+                                    focus_depth: float,
+                                    bokeh_targets: bool,
+                                    color_chart: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    scene = Scene(bokeh_targets=bokeh_targets, color_chart=color_chart)
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    front = np.zeros((height, width, 3), dtype=np.float32)
+    back = np.zeros((height, width, 3), dtype=np.float32)
+    front_depth = np.full((height, width), focus_depth, dtype=np.float32)
+    back_depth = np.full((height, width), focus_depth, dtype=np.float32)
+    grid = [(0.5, 0.5)] if spp <= 1 else [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+    for y in range(height):
+        for x in range(width):
+            fc = np.zeros(3, dtype=np.float32)
+            bc = np.zeros(3, dtype=np.float32)
+            fd: List[float] = []
+            bd: List[float] = []
+            for ox, oy in grid:
+                px = ((x + ox) / width * 2.0 - 1.0) * aspect * scale
+                py = (1.0 - (y + oy) / height * 2.0) * scale
+                rd = normalize(forward + px * right + py * up)
+                f_col, f_dep, b_col, b_dep = trace_front_back_layers(scene, cam_pos, rd, focus_depth)
+                fc += f_col
+                bc += b_col
+                fd.append(f_dep)
+                bd.append(b_dep)
+            front[y, x] = fc / len(grid)
+            back[y, x] = bc / len(grid)
+            front_depth[y, x] = min(fd)
+            back_depth[y, x] = min(bd)
+    return front, front_depth, back, back_depth
 
 
 def render_scene(width: int,
@@ -677,6 +858,11 @@ def main() -> None:
     ap.add_argument("--dof-strength", type=float, default=1.35)
     ap.add_argument("--aperture-blades", type=int, default=7)
     ap.add_argument("--lens-reference-spp", type=int, default=0, help="optional slow CPU aperture-sampled reference")
+    ap.add_argument(
+        "--transparent-dof-reference",
+        action="store_true",
+        help="write a CPU multi-layer transparent DOF reference for the glass sphere",
+    )
     ap.add_argument("--gpu-room-rt", action="store_true", help="generate the room HDR on the GPU instead of the Python CPU tracer")
     ap.add_argument(
         "--depth-mode",
@@ -725,6 +911,7 @@ def main() -> None:
         "cinema": out_dir / "rt_room_cinema.png",
     }
     lens_reference_path: Optional[Path] = None
+    transparent_dof_path: Optional[Path] = None
     if args.python_presentation:
         exposure = auto_exposure(hdr) if args.exposure < 0.0 else args.exposure
         sci = tonemap(hdr, exposure)
@@ -795,12 +982,45 @@ def main() -> None:
                 args.exposure,
                 no_build=True,
             )
+        if args.transparent_dof_reference:
+            front, front_depth, back, back_depth = render_scene_transparent_layers(
+                args.width,
+                args.height,
+                args.spp,
+                args.focus_depth,
+                args.bokeh_targets,
+                args.color_chart,
+            )
+            front_path = out_dir / "rt_room_transparent_front_layer.linear32f32"
+            back_path = out_dir / "rt_room_transparent_back_layer.linear32f32"
+            layered_hdr_path = out_dir / "rt_room_transparent_multilayer_dof.linear32f32"
+            write_linear32(front_path, front, front_depth)
+            write_linear32(back_path, back, back_depth)
+            layered_hdr = layer_dof(front, front_depth, args.focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            layered_hdr += layer_dof(back, back_depth, args.focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            write_linear32(layered_hdr_path, layered_hdr, np.full((args.height, args.width), args.focus_depth, dtype=np.float32))
+            transparent_dof_path = out_dir / "rt_room_transparent_multilayer_dof_cinema.png"
+            run_metal_compose(
+                layered_hdr_path,
+                transparent_dof_path,
+                args.width,
+                args.height,
+                "cinema",
+                args.focus_depth,
+                args.f_number,
+                0.0,
+                args.aperture_blades,
+                args.exposure,
+                no_build=True,
+            )
         presentation_backend = "metal-compose"
 
     sheet = out_dir / "rt_room_presentation_sheet.png"
     sheet_items = [("scientific", paths["scientific"]), ("eye", paths["eye"]), ("cinema", paths["cinema"])]
     if lens_reference_path is not None:
         sheet_items.append(("thin-lens ref", lens_reference_path))
+    if transparent_dof_path is not None:
+        sheet_items.append(("multi-layer DOF", transparent_dof_path))
     make_sheet(sheet_items, sheet)
 
     sci = np.asarray(Image.open(paths["scientific"]).convert("RGB"), dtype=np.float32) / 255.0
@@ -821,6 +1041,7 @@ def main() -> None:
         "dof_strength": args.dof_strength,
         "aperture_blades": args.aperture_blades,
         "lens_reference_spp": args.lens_reference_spp,
+        "transparent_dof_reference": args.transparent_dof_reference,
         "bokeh_targets": args.bokeh_targets,
         "color_chart": args.color_chart,
         "scientific": image_stats(sci),
@@ -840,6 +1061,14 @@ def main() -> None:
         metrics["cinema_luma_corr_vs_thin_lens_reference"] = corr(cine_y, ref_y)
         metrics["cinema_mae_vs_thin_lens_reference"] = float(np.mean(np.abs(cine - ref)))
         metrics["outputs"]["thin_lens_reference_cinema"] = str(lens_reference_path)
+    if transparent_dof_path is not None:
+        layered = np.asarray(Image.open(transparent_dof_path).convert("RGB"), dtype=np.float32) / 255.0
+        layered_y = luminance(layered)
+        cine_y = luminance(cine)
+        metrics["transparent_multilayer_dof"] = image_stats(layered)
+        metrics["cinema_luma_corr_vs_transparent_multilayer_dof"] = corr(cine_y, layered_y)
+        metrics["cinema_mae_vs_transparent_multilayer_dof"] = float(np.mean(np.abs(cine - layered)))
+        metrics["outputs"]["transparent_multilayer_dof_cinema"] = str(transparent_dof_path)
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     (out_dir / "summary.md").write_text(
         "# Everyday RT Presentation Validation\n\n"

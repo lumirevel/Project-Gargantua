@@ -37,6 +37,36 @@ The glass sphere now writes an approximate visible-layer depth instead of always
 
 This is still a single-layer approximation, but it prevents the camera interpreter from treating the refracted rear-wall target as if it were opaque glass sitting only at the front surface.
 
+## Multi-Layer Transparent DOF Reference
+
+`scripts/validate_presentation_on_rt_scene.py` now supports
+`--transparent-dof-reference`. This is a validation reference for the real
+transparent-object failure mode of single-depth post-process DOF:
+
+1. primary glass pixels are split into a front layer and a transmitted layer,
+2. the front layer carries local/front-surface reflection depth,
+3. the transmitted layer carries the refracted background depth,
+4. each layer is blurred with the same camera CoC/aperture proxy,
+5. the blurred layers are recombined in linear HDR before display mapping.
+
+The script writes:
+
+- `rt_room_transparent_front_layer.linear32f32`
+- `rt_room_transparent_back_layer.linear32f32`
+- `rt_room_transparent_multilayer_dof.linear32f32`
+- `rt_room_transparent_multilayer_dof_cinema.png`
+
+This does not change the black-hole renderer's physical source model or packed
+physics outputs. It also does not pretend the production compose path has a full
+multi-layer depth contract. It creates an interpreter-side reference image for
+judging how far the current single-depth compose approximation deviates from a
+layer-aware camera result.
+
+For stochastic/lens-integrated validation, use the existing
+`--lens-reference-spp <N>` path. That path traces rays over a finite aperture
+before writing the HDR input, so transparent refraction is sampled through the
+lens rather than repaired by a post-process depth proxy.
+
 References:
 
 - NVIDIA GPU Gems 3, "Practical Post-Process Depth of Field": https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-28-practical-post-process-depth-field
@@ -54,4 +84,7 @@ References:
 - The glass sphere uses a simple two-interface refraction approximation.
 - Transparent shadows/caustics are not physically complete.
 - The depth proxy cannot represent multiple simultaneous focus layers.
+- The production compose path still receives only one depth value per `float4`
+  HDR sample; multi-layer transparent DOF is currently a validation reference,
+  not a universal render contract.
 - Changes do not affect black-hole geodesics, disk radiance, optical depth, redshift, or radiative transfer.
