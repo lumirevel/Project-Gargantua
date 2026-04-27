@@ -53,6 +53,7 @@ enum ParamsBuilder {
     let discardCollisionOutput = runtimeIO.discardCollisionOutput
     let linear32Intermediate = runtimeIO.linear32Intermediate
     let linear32OutPath = runtimeIO.linear32OutPath
+    let composeHDRInputPath = runtimeIO.composeHDRInputPath
     let outPath = runtimeIO.outPath
     let imageOutPath = runtimeIO.imageOutPath
     let traceHDRDirectMode = runtimeIO.traceHDRDirectMode
@@ -488,6 +489,8 @@ enum ParamsBuilder {
         config.preset = preset
         config.outPath = outPath
         config.linear32OutPath = linear32OutPath
+        config.composeHDRInputPath = composeHDRInputPath
+        config.composeExternalHDRInput = !composeHDRInputPath.isEmpty
         config.imageOutPath = imageOutPath
         config.composeGPU = composeGPU
         config.gpuFullCompose = gpuFullCompose
@@ -595,6 +598,7 @@ enum ParamsBuilder {
         config.cameraSensorParams = visualSettings.cameraSensorParams
         config.cameraNoiseParams = visualSettings.cameraNoiseParams
         config.cameraColorParams = visualSettings.cameraColorParams
+        config.cameraFlags = visualSettings.cameraFlags
         config.cameraPsfSigmaArg = cameraPsfSigmaArg
         config.cameraReadNoiseArg = cameraReadNoiseArg
         config.cameraShotNoiseArg = cameraShotNoiseArg

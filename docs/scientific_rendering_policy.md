@@ -77,6 +77,27 @@ to manufacture missing plasma structure. If body/skin/corona branch diagnostics
 show weak or misleading source structure, fix the source branch model first and
 then re-render eye/cinema.
 
+## Sensor Validation Track
+
+The next stable engineering boundary is to validate the observer layer on generic
+HDR radiance inputs before using it to judge accretion-flow source changes.
+
+Recommended fixed sensor tests:
+
+1. Blackbody ramp: spectral blackbody temperature sweep -> CIE XYZ -> display RGB.
+2. HDR point/line source: fixed radiance with eye/cinema glare enabled and disabled.
+3. Smooth extended emitter: no source texture, only tone/adaptation response.
+4. Branch-preservation check: scientific, eye, and cinema must preserve the same
+   source morphology and only change perceptual/display response.
+
+Accepted basis:
+
+- CIE 1931 2-degree color matching functions for spectral-to-XYZ conversion.
+- Psychophysically based glare/PSF only in eye/cinema presentation, not in the
+  scientific master.
+- Exposure/adaptation may compress dynamic range, but must not alter branch
+  ratios or invent disk-space structure.
+
 ## Data Priority
 
 When real evolved 3D GRMHD/fluid data is available and scientifically suitable, it should drive the flow. Analytic or procedural volume fields are acceptable only as fallback/surrogate test fields and must be documented as such.
@@ -86,3 +107,22 @@ model. They are useful for testing density, temperature, magnetization, velocity
 and opacity interpretations, but the current canonical human-visible disk uses a
 thin-disk photosphere plus disk-coordinate stochastic heating until the GRMHD
 visible-band calibration is strong enough to replace it.
+
+## Experimental Atmosphere And Corona Notes
+
+The precision/GRMHD diagnostic paths currently contain experimental physically
+motivated approximations:
+
+- Eddington gray-atmosphere temperature profile:
+  `T^4 = (3/4) T_eff^4 (tau + 2/3)`.
+- Gaussian vertical density/opacity support for finite-thickness volume tests.
+- MRI-inspired disk-coordinate heating modes in `(log r, phi)` advected by
+  Keplerian shear. This replaces Perlin/material texture in the affected
+  precision path but is still a surrogate stress/heating model, not an MHD solve.
+- Conservative unsaturated Compton corona proxy gated to optically thin plasma.
+  It is bounded and diagnostic; it is not a full Kompaneets or Monte-Carlo
+  scattering solver.
+
+These approximations are more defensible than decorative texture or unbounded
+spectral boosts, but they should remain experimental until before/after validation
+shows a clear improvement in physical diagnostics and rendered morphology.

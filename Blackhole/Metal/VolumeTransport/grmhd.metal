@@ -650,6 +650,47 @@ static inline float disk_grmhd_visible_photosphere_weight(float rEmitM,
     return clamp(exp(-0.5 * zeta * zeta), 0.0, 1.0);
 }
 
+// Inverse Compton corona: conservative spectral factor relative to a seed blackbody.
+//
+// Physical basis (Sunyaev & Titarchuk 1980, Rybicki & Lightman §7.6):
+//   Compton y-parameter:  y = 4 (kT_e / m_e c²) × max(τ_es, τ_es²)
+//   Unsaturated thermal Comptonization produces a weak high-frequency tail with
+//   energy index approximately α = -3/2 + sqrt(9/4 + 4/y).  This diagnostic
+//   helper keeps the tail amplitude proportional to y/(1+y), so y -> 0 returns
+//   the seed blackbody instead of an unphysical large boost.
+//
+// thetae_dim:  dimensionless electron temperature kT_e / m_e c²  (≈ thetae from GRMHD)
+// tau_es:      electron-scattering optical depth (estimated from density × κ_es × path)
+// nu:          photon frequency in Hz (comoving)
+// nu_seed:     seed blackbody peak frequency ≈ 2.82 kT_disk / h  (disk photosphere)
+//
+// Returns a bounded factor >= 1. This is a diagnostic visible/NIR corona proxy,
+// not a replacement for a full Kompaneets or Monte-Carlo scattering solve.
+static inline float disk_compton_spectral_factor(float nu,
+                                                  float nu_seed,
+                                                  float thetae_dim,
+                                                  float tau_es)
+{
+    float y = 4.0 * max(thetae_dim, 1e-6) * max(tau_es, tau_es * tau_es);
+    if (!(y > 1e-5)) return 1.0;
+
+    float yEff = clamp(y, 1.0e-4, 3.0);
+    float alpha_c = clamp(-1.5 + sqrt(2.25 + 4.0 / yEff), 0.45, 4.0);
+
+    float nu_safe = max(nu, 1e9);
+    float nu_s    = max(nu_seed, 1e9);
+    float ratio   = max(nu_safe / nu_s, 1.0);
+
+    // Thermal cutoff: ν_cut = 3 kT_e / h ≈ 3 × thetae_dim × m_e c² / h
+    float nu_cut = 3.0 * max(thetae_dim, 1e-6) * 1.236e20;  // m_e c²/h ≈ 1.236e20 Hz
+    nu_cut = clamp(nu_cut, 1e13, 1e18);
+    float cutoff = exp(-max((nu_safe - nu_s) / nu_cut, 0.0));
+
+    float tailAmplitude = clamp(y / (1.0 + y), 0.0, 0.55);
+    float tailShape = pow(ratio, -alpha_c) * cutoff;
+    return clamp(1.0 + tailAmplitude * tailShape, 1.0, 1.55);
+}
+
 static inline float disk_grmhd_weight_power(float w, float p)
 {
     if (!(p > 1e-6)) {
@@ -838,6 +879,32 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
         : thermalization;
     c.sourceThermal = sourceClosure * bNu * sourceMod * dissipationMod;
     c.jThermal = max(P.diskGrmhdEmissionScale, 0.0) * c.aBase * c.sourceThermal;
+
+    // Inverse Compton boost in optically thin plasma (corona / transition layer).
+    //
+    // Physical basis: when free-free opacity is small relative to electron scattering
+    // (c.epsAbs → 0), the medium is an electron-scattering-dominated atmosphere.
+    // Seed photons from the disk photosphere are Compton upscattered by hot electrons,
+    // producing a power-law spectrum above the blackbody peak.
+    //
+    // This is gated to zero in the optically thick disk body (c.epsAbs → 1, LTE) and
+    // peaks in the hot optically thin corona (c.epsAbs → 0, kT_e >> kT_disk).
+    if (P.visibleEmissionModel == 0u || P.visibleEmissionModel == 2u) {
+        float thinGate = clamp(1.0 - c.epsAbs, 0.0, 1.0);   // 1 in corona, 0 at midplane
+        if (thinGate > 1e-4) {
+            // Seed frequency: blackbody peak of the disk photosphere ≈ 2.82 kT_disk / h
+            // Use teK as a proxy (slightly high in corona, but bounded by sourceMod weighting).
+            float kB_over_h = 2.084e10; // k_B / h_Planck in Hz/K
+            float nu_seed = max(2.82 * teK * kB_over_h, 1e10);
+            // Electron-scattering τ proxy from local opacity × a representative path (0.5 m).
+            float tau_es_proxy = clamp(c.aBase * 0.5 * kappaEs / max(kappaTot, 1e-30), 0.0, 2.0);
+            float comptonFactor = disk_compton_spectral_factor(nuComov, nu_seed, thetae, tau_es_proxy);
+            // Blend: conservative 40 % maximum boost to avoid overwhelming the thermal floor.
+            float boost = mix(1.0, max(comptonFactor, 1.0), 0.40 * thinGate);
+            c.jThermal    *= boost;
+            c.sourceThermal *= boost;
+        }
+    }
 
     if (P.visibleEmissionModel == 2u) {
         disk_grmhd_visible_thin_tail_coeffs(rho, thetae, bVec, nuComov, P, c.jThin, c.aThin);

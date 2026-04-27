@@ -232,6 +232,85 @@ static inline bool comp_linear_rgb_is_final_sentinel(float w) {
     return w > 1.25;
 }
 
+static inline float comp_camera_lens_f_number(constant ComposeParams& C) {
+    return max(C.cameraColorParams.z, 0.7);
+}
+
+static inline float comp_camera_focus_depth(constant ComposeParams& C) {
+    return max(C.cameraColorParams.w, 0.0);
+}
+
+static inline uint comp_camera_aperture_blades(constant ComposeParams& C) {
+    return C.cameraFlags & 0xffu;
+}
+
+static inline float comp_camera_aperture_rotation(constant ComposeParams& C) {
+    return (float((C.cameraFlags >> 8u) & 0xffu) / 255.0) * 6.28318530718;
+}
+
+static inline float comp_camera_dof_strength(constant ComposeParams& C) {
+    return (float((C.cameraFlags >> 16u) & 0xffu) / 255.0) * 4.0;
+}
+
+static inline bool comp_camera_dof_enabled(constant ComposeParams& C) {
+    uint profile = (C.cameraProfile != 0u) ? C.cameraProfile : ((C.cameraModel == 2u) ? 2u : 0u);
+    return (C.analysisMode == 0u) &&
+           (profile >= 2u) &&
+           (comp_camera_dof_strength(C) > 1e-5);
+}
+
+static inline float comp_external_depth_from_w(float w, constant ComposeParams& C) {
+    // External compose validation can encode source depth as alpha = 2 + depth.
+    // alpha=2 remains the old "final linear radiance" sentinel and means
+    // "focused/unknown depth", so existing HDR inputs are unchanged.
+    return (w > 2.0001) ? (w - 2.0) : comp_camera_focus_depth(C);
+}
+
+static inline float comp_camera_coc_px(float depth, constant ComposeParams& C) {
+    if (!comp_camera_dof_enabled(C)) return 0.0;
+    float focus = comp_camera_focus_depth(C);
+    if (!(focus > 1e-5) || !(depth > 1e-5)) return 0.0;
+    float frameMin = max(min(float(C.fullInputWidth), float(C.fullInputHeight)), 1.0);
+    float defocus = abs(depth - focus) / max(max(depth, focus), 1e-5);
+    float aperture = 1.0 / comp_camera_lens_f_number(C);
+    // Thin-lens CoC is scene-scale dependent. This calibrated pixel proxy keeps
+    // the physically correct dependencies: wider aperture, farther from focus,
+    // and larger image format produce a larger blur circle.
+    return clamp(frameMin * 0.018 * comp_camera_dof_strength(C) * aperture * defocus, 0.0, 18.0);
+}
+
+static inline float2 comp_camera_aperture_offset(uint i, uint n, float cocPx, constant ComposeParams& C) {
+    float u = (float(i) + 0.5) / max(float(n), 1.0);
+    float theta = (float(i) * 2.39996323) + comp_camera_aperture_rotation(C);
+    float r = sqrt(u);
+    uint blades = comp_camera_aperture_blades(C);
+    if (blades >= 3u) {
+        float nf = float(clamp(blades, 3u, 16u));
+        float sector = 6.28318530718 / nf;
+        float local = fmod(theta + 0.5 * sector, sector) - 0.5 * sector;
+        float edge = cos(0.5 * sector) / max(cos(local), 1e-4);
+        r *= clamp(edge, 0.0, 1.0);
+    }
+    return cocPx * r * float2(cos(theta), sin(theta));
+}
+
+static inline float comp_camera_dof_depth_weight(float centerDepth, float sampleDepth) {
+    if (!(centerDepth > 1e-5) || !(sampleDepth > 1e-5)) return 1.0;
+    float rel = abs(sampleDepth - centerDepth) / max(max(centerDepth, sampleDepth), 1e-5);
+    float sigma = 0.10;
+    return exp(-0.5 * (rel * rel) / max(sigma * sigma, 1e-6));
+}
+
+static inline float comp_camera_aperture_starburst(float theta, constant ComposeParams& C) {
+    uint blades = comp_camera_aperture_blades(C);
+    float rot = comp_camera_aperture_rotation(C);
+    if (blades >= 3u) {
+        float n = float(clamp(blades, 3u, 16u));
+        return pow(abs(cos(0.5 * n * (theta - rot))), 24.0);
+    }
+    return pow(abs(cos(3.0 * theta)), 26.0);
+}
+
 static inline bool comp_grmhd_visible_final_rec(const CollisionInfo rec,
                                                 constant ComposeParams& C)
 {
@@ -424,6 +503,8 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float cloudNormW = 0.0;
     float filament = 0.0;
     float filamentNormW = 0.0;
+    float shearArc = 0.0;
+    float shearArcNormW = 0.0;
     float normRaw2 = 0.0;
     float normLow2 = 0.0;
     constexpr uint modeCount = 64u;
@@ -472,7 +553,7 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         // texture channel. The high-mode gate suppresses broad zonal waves so the
         // body remains clean and only the hot skin receives narrow activity.
         float highGate = smoothstep(5.5, 14.0, abs(kr) + 0.85 * m);
-        float ridge = pow(max(0.0, 0.5 + 0.5 * cos(phase)), 5.0);
+        float ridge = pow(max(0.0, 0.5 + 0.5 * cos(phase)), 7.0);
         float ridgeAmp = amp * highGate;
         filament += ridgeAmp * ridge;
         filamentNormW += ridgeAmp;
@@ -517,6 +598,43 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         cloudNormW += amp;
     }
 
+    // Positive sheared hot-skin arcs. MRI turbulence in a differentially
+    // rotating disk is stretched into azimuthally elongated structures. These
+    // packets live only in disk coordinates, advect with local Keplerian shear,
+    // and feed the hot-skin emissivity budget. They are not albedo, normal, or
+    // screen-space texture, and they never subtract from the photosphere.
+    constexpr uint arcCount = 40u;
+    for (uint i = 0u; i < arcCount; ++i) {
+        float id = float(i) + 1.0;
+        float h0 = fract(id * 0.754877666 + 0.291);
+        float h1 = fract(id * 0.569840291 + 0.743);
+        float h2 = fract(id * 0.438572245 + 0.157);
+        float h3 = fract(id * 0.318309886 + 0.887);
+        float h4 = fract(id * 0.221033321 + 0.463);
+        float h5 = fract(id * 0.141421356 + 0.619);
+
+        float logCenter = mix(0.05, max(logRMax * 0.88, 0.09), h0);
+        float rCenter = rInNorm * exp(logCenter);
+        float omegaCenter = orbitalBoost * pow(max(rCenter, 1.0), -1.5);
+        float phiCenter = twoPi * h1 + omegaCenter * timeRs * mix(0.90, 1.12, h2);
+        float dLog = logR - logCenter;
+        float trailingPitch = mix(5.5, 13.5, h3) * ((h4 < 0.5) ? -1.0 : 1.0);
+        float dPhi = comp_wrap_pi(phi - phiCenter - trailingPitch * dLog);
+
+        float sigmaLog = max(mix(0.010, 0.038, h4), 0.64 * sigmaLogSrc);
+        float sigmaPhi = max(mix(0.115, 0.330, h5), 0.95 * sigmaPhiSrc);
+        float q = (dLog * dLog) / max(sigmaLog * sigmaLog, 1e-6)
+                + (dPhi * dPhi) / max(sigmaPhi * sigmaPhi, 1e-6);
+        float arc = exp(-0.5 * q);
+        // Give arcs a mild inner-disk preference without creating a global
+        // inner glow. The outer taper prevents standing stripes at the disk rim.
+        float radialWeight = pow(max(rCenter / max(rInNorm, 1e-4), 1.0), -0.34)
+                           * (1.0 - smoothstep(0.78, 1.00, logCenter / max(logRMax, 1e-4)));
+        float amp = mix(0.52, 1.22, fract(id * 0.173205081 + 0.337)) * radialWeight;
+        shearArc += amp * arc;
+        shearArcNormW += amp;
+    }
+
     float rawNorm = raw / max(sqrt(normRaw2), 1e-6);
     float lowNorm = low / max(sqrt(normLow2), 1e-6);
     float highNorm = rawNorm - 0.62 * lowNorm;
@@ -528,15 +646,25 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float filamentActivity = smoothstep(0.16 - 0.030 * turbulenceTune,
                                         0.92 - 0.060 * turbulenceTune,
                                         filamentNorm);
+    float shearArcNorm = shearArc / max(0.062 * shearArcNormW, 1e-6);
+    float shearArcActivity = smoothstep(0.13 - 0.035 * turbulenceTune,
+                                        0.66 - 0.065 * turbulenceTune,
+                                        shearArcNorm);
 
     f.raw = clamp(0.5 + 0.22 * rawNorm, 0.0, 1.0);
     f.low = clamp(max(lowNorm, 0.0), 0.0, 1.0);
     f.high = clamp(max(highNorm, 0.0) * (1.0 + 0.10 * turbulenceTune), 0.0, 2.0);
     f.cloud = clamp(cloudActivity, 0.0, 1.0);
-    f.filament = clamp(filamentActivity, 0.0, 1.0);
-    f.activity = clamp(0.40 * smoothstep(0.34, 1.24, f.high)
-                     + 0.32 * f.cloud
-                     + 0.28 * f.filament,
+    f.filament = clamp(max(filamentActivity, 0.72 * shearArcActivity + 0.28 * filamentActivity), 0.0, 1.0);
+    float highActivity = smoothstep(0.38 - 0.035 * turbulenceTune,
+                                    1.12 - 0.055 * turbulenceTune,
+                                    f.high);
+    // The canonical skin should be positive emissive dissipation, not a broad
+    // surface texture. Bias activity toward high/filament components while
+    // retaining cloud packets as secondary support.
+    f.activity = clamp(0.34 * highActivity
+                     + 0.20 * pow(f.cloud, 1.18)
+                     + 0.46 * pow(f.filament, 1.10),
                      0.0, 1.0);
     return f;
 }
@@ -898,14 +1026,17 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             // average unresolved skin heating. Otherwise the same source
             // fluctuation is stretched into contour-like caustic strokes.
             float unresolvedAverage = mix(1.0, 0.36, smoothstep(42.0, 118.0, pathRsLocal));
-            float activityBase = clamp(0.54 * heat.activity + 0.22 * heat.cloud + 0.24 * heat.filament,
+
+            float activityBase = clamp(0.60 * heat.activity + 0.14 * heat.cloud + 0.26 * heat.filament,
                                        0.0, 1.0);
             // Make skin support more intermittent without changing it into a
             // subtractive texture. The skin still receives positive emissivity
             // only; this remaps broad heating into localized dissipation patches
             // while preserving the clean thermal body.
-            float activityIntermittent = pow(max(activityBase, 0.0), 1.16);
+            float activityIntermittent = pow(max(activityBase, 0.0), 1.58);
+            float filamentSupport = smoothstep(0.22, 0.86, max(heat.cloud, heat.filament));
             float activity = clamp(activityIntermittent
+                                 * (0.72 + 0.28 * filamentSupport)
                                  * radialGate
                                  * unresolvedAverage, 0.0, 1.0);
 
@@ -914,18 +1045,21 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             float gBoost = smoothstep(0.85, 1.65, e.g);
             float fCorona = radialGate
                            * exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82))
-                           * (0.030 + 0.055 * heat.cloud + 0.030 * heat.filament)
+                           * (0.024 + 0.045 * heat.cloud + 0.024 * heat.filament)
                            * (0.55 + 0.45 * activity)
                            * (1.0 + 0.35 * turbulenceTune);
-            fCorona = clamp(fCorona, 0.0, 0.055);
+            fCorona = clamp(fCorona, 0.0, 0.045);
 
             float fSkin = radialGate
                         * unresolvedAverage
-                        * (0.050 + 0.455 * activity + 0.185 * heat.cloud + 0.430 * heat.filament)
+                        * (0.004
+                         + 0.520 * activity
+                         + 0.060 * heat.cloud * activity
+                         + 0.320 * heat.filament * smoothstep(0.06, 0.46, activity))
                         * (1.0 + 0.18 * turbulenceTune)
                         * (0.82 + 0.18 * gBoost);
-            fSkin = clamp(fSkin, 0.0, 0.28);
-            float fBody = clamp(1.0 - fSkin - fCorona, 0.70, 1.0);
+            fSkin = clamp(fSkin, 0.0, 0.180);
+            float fBody = clamp(1.0 - fSkin - fCorona, 0.75, 1.0);
             float fNorm = max(fBody + fSkin + fCorona, 1e-6);
             fBody /= fNorm;
             fSkin /= fNorm;
@@ -939,20 +1073,32 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             e.bodyRgb = bodyShape * bodyLum0 * bodyHeat * fBody;
 
             float skinObservedTemp = e.tObserved * (1.58
-                                                 + (1.48 + 0.12 * turbulenceTune) * activity
+                                                 + (1.94 + 0.12 * turbulenceTune) * activity
+                                                 + 0.34 * heat.filament
                                                  + 0.10 * gBoost);
             float3 skinShape = comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
                              * comp_limb_factor(mu, P);
             float skinLum = dot(max(skinShape, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
             skinShape /= max(skinLum, 1e-30);
+            // The branch split is an energy-budget proxy, but the sensor sees a
+            // visible band. A hotter skin should therefore change not only hue
+            // but also visible-band radiance efficiency. Keep this bounded so a
+            // high-temperature filament cannot become a new white membrane.
+            float skinVisibleGain = clamp(pow(max(skinLum / max(bodyLum0, 1e-30), 1e-6), 0.16),
+                                          0.86,
+                                          1.18);
+            // Local magnetic/reconnection heating can raise the visible skin
+            // above a pure photospheric flux split. Keep it bounded and driven
+            // by positive disk-coordinate activity so it reads as self-emissive
+            // hot plasma, not subtractive surface texture.
             float skinDissipationLift = 1.0 + clamp(radialGate
                                                   * unresolvedAverage
-                                                  * (0.34 * activity
-                                                   + 0.16 * heat.cloud
-                                                   + 0.22 * heat.filament),
+                                                  * (0.56 * activity
+                                                   + 0.04 * heat.cloud
+                                                   + 0.56 * heat.filament),
                                                   0.0,
-                                                  0.38);
-            e.skinRgb += skinShape * bodyLum0 * bodyHeat * fSkin * skinDissipationLift;
+                                                  0.92);
+            e.skinRgb += skinShape * bodyLum0 * bodyHeat * fSkin * skinDissipationLift * skinVisibleGain;
             float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
             float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
             float coronaShapeLum = dot(coronaShape, float3(0.2126, 0.7152, 0.0722));
@@ -1977,16 +2123,17 @@ static inline float3 comp_apply_human_vision_pipeline(float3 rgbTm)
     float y = dot(coneRgb, float3(0.2126, 0.7152, 0.0722));
 
     // Human-eye presentation only. This is a display-side observer response:
-    // a mild Naka-Rushton-like photoreceptor compression, CIE-style
-    // mesopic rod/cone blending, ocular-media short-wavelength attenuation,
-    // and highlight bleaching. It does not modify transport radiance.
-    float n = 0.74;
-    float sigma = 0.34;
+    // a Naka-Rushton-like photoreceptor compression, RGB-domain mesopic
+    // rod/cone blending, ocular-media/macular pigment tinting, Hunt-effect
+    // saturation changes, and highlight bleaching. It does not modify
+    // transported/source radiance.
+    float n = 0.70;
+    float sigma = 0.30;
     float yN = pow(max(y, 0.0), n);
     float sN = pow(sigma, n);
     float whiteResp = 1.0 / max(1.0 + sN, 1e-6);
     float receptorY = (yN / max(yN + sN, 1e-6)) / whiteResp;
-    float adaptMix = 0.30 * smoothstep(0.006, 0.45, y) * (1.0 - 0.45 * smoothstep(0.75, 1.0, y));
+    float adaptMix = 0.42 * smoothstep(0.004, 0.42, y) * (1.0 - 0.40 * smoothstep(0.76, 1.0, y));
     float yAdapt = mix(y, clamp(receptorY, 0.0, 1.0), adaptMix);
     float3 out = coneRgb * (yAdapt / max(y, 1e-6));
     y = dot(out, float3(0.2126, 0.7152, 0.0722));
@@ -1996,22 +2143,32 @@ static inline float3 comp_apply_human_vision_pipeline(float3 rgbTm)
     // shift confined to genuinely dim display values: a bright accretion flow
     // should be cone-dominated, while only faint outer flow/stars move toward
     // blue-green low-light perception.
-    float photopic = smoothstep(0.018, 0.145, y);
+    float photopic = smoothstep(0.022, 0.210, y);
     float yScotopic = dot(out, float3(0.050, 0.730, 0.220));
-    float3 rodRgb = yScotopic * float3(0.78, 0.97, 1.04);
+    float3 rodRgb = yScotopic * float3(0.72, 0.98, 1.08);
+    // Apply the Purkinje hue shift without accidentally making dim-adapted
+    // vision darker than the ideal display. Dark adaptation increases
+    // sensitivity; the rod-domain color is therefore luminance-preserving with
+    // a small gain in the mesopic tail.
+    float rodY = dot(rodRgb, float3(0.2126, 0.7152, 0.0722));
+    rodRgb *= (y / max(rodY, 1e-6)) * (1.0 + 0.16 * (1.0 - photopic));
     out = mix(rodRgb, out, photopic);
     y = dot(out, float3(0.2126, 0.7152, 0.0722));
 
-    float bleach = smoothstep(0.58, 0.98, y);
-    float saturation = mix(0.10, 0.96, photopic) * mix(1.0, 0.46, bleach);
+    float bleach = smoothstep(0.54, 0.96, y);
+    float hunt = mix(0.82, 1.08, smoothstep(0.06, 0.42, y));
+    float saturation = mix(0.08, 1.00, photopic) * hunt * mix(1.0, 0.42, bleach);
     out = mix(float3(y), out, saturation);
 
-    // Lens/macular pigment attenuates short wavelengths more in bright fields.
+    // Lens/macular pigment attenuates short wavelengths more in bright fields;
+    // dim mesopic fields keep a subtle Purkinje blue-green bias.
     float media = smoothstep(0.10, 0.95, y);
-    out *= mix(float3(1.0), float3(1.030, 1.000, 0.905), 0.18 * media);
+    float mesopicBlue = 1.0 - photopic;
+    out *= mix(float3(1.0), float3(0.955, 1.010, 1.085), 0.12 * mesopicBlue);
+    out *= mix(float3(1.0), float3(1.040, 1.000, 0.875), 0.24 * media);
 
     float3 bleachedWhite = float3(dot(out, float3(0.2126, 0.7152, 0.0722)));
-    out = mix(out, bleachedWhite, 0.32 * bleach);
+    out = mix(out, bleachedWhite, 0.38 * bleach);
     return clamp(out, 0.0, 1.0);
 }
 
@@ -2063,7 +2220,11 @@ static inline float comp_psf_wing_strength(uint profile, constant ComposeParams&
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return 0.0;
     float flare = clamp(C.cameraFlareStrength, 0.0, 1.0);
     if (profile == 4u) {
-        return clamp(0.010 + 0.018 * C.cameraPsfSigmaPx, 0.0, 0.028);
+        // Human ocular media produces a weak broad veil around bright sources.
+        // Keep it much weaker than cinema flare, but stronger than the old
+        // near-invisible eye wing so room-light validation shows a real
+        // observer-optics difference from scientific output.
+        return clamp(0.016 + 0.030 * C.cameraPsfSigmaPx, 0.0, 0.052);
     }
     float profileBoost = (profile >= 3u) ? 0.018 : ((profile >= 2u) ? 0.012 : 0.004);
     return clamp(profileBoost + 0.010 * C.cameraPsfSigmaPx + 0.050 * flare, 0.0, 0.12);
@@ -2128,6 +2289,15 @@ static inline float3 comp_linear_full_rgb(device const float4* inLinear,
     return rgb;
 }
 
+static inline float comp_linear_full_depth(device const float4* inLinear,
+                                           uint srcX,
+                                           uint srcY,
+                                           constant ComposeParams& C)
+{
+    uint gidx = srcY * C.fullInputWidth + srcX;
+    return comp_external_depth_from_w(inLinear[gidx].w, C);
+}
+
 static inline float3 comp_sample_linear_full_bilinear(device const float4* inLinear,
                                                       float2 pos,
                                                       constant ComposeParams& C)
@@ -2146,6 +2316,50 @@ static inline float3 comp_sample_linear_full_bilinear(device const float4* inLin
     float3 c01 = comp_linear_full_rgb(inLinear, x0, y1, C);
     float3 c11 = comp_linear_full_rgb(inLinear, x1, y1, C);
     return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float comp_sample_linear_full_depth_bilinear(device const float4* inLinear,
+                                                           float2 pos,
+                                                           constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.fullInputWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.fullInputHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.fullInputWidth - 1u);
+    uint y1 = min(y0 + 1u, C.fullInputHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float d00 = comp_linear_full_depth(inLinear, x0, y0, C);
+    float d10 = comp_linear_full_depth(inLinear, x1, y0, C);
+    float d01 = comp_linear_full_depth(inLinear, x0, y1, C);
+    float d11 = comp_linear_full_depth(inLinear, x1, y1, C);
+    return mix(mix(d00, d10, tx), mix(d01, d11, tx), ty);
+}
+
+static inline float3 comp_sample_linear_dof_full(device const float4* inLinear,
+                                                 uint srcX,
+                                                 uint srcY,
+                                                 float3 center,
+                                                 constant ComposeParams& C)
+{
+    float depth = comp_linear_full_depth(inLinear, srcX, srcY, C);
+    float coc = comp_camera_coc_px(depth, C);
+    if (!(coc > 0.35)) return center;
+
+    const uint n = 12u;
+    float2 pos = float2(float(srcX), float(srcY));
+    float3 sum = center * 0.35;
+    float wSum = 0.35;
+    for (uint i = 0u; i < n; ++i) {
+        float2 off = comp_camera_aperture_offset(i, n, coc, C);
+        float sampleDepth = comp_sample_linear_full_depth_bilinear(inLinear, pos + off, C);
+        float w = comp_camera_dof_depth_weight(depth, sampleDepth);
+        sum += w * comp_sample_linear_full_bilinear(inLinear, pos + off, C);
+        wSum += w;
+    }
+    return max(sum / max(wSum, 1e-6), float3(0.0));
 }
 
 static inline float3 comp_add_cinematic_flare_full(float3 base,
@@ -2212,10 +2426,10 @@ static inline float3 comp_add_cinematic_flare_full(float3 base,
     float2 starPos = center - 1.03 * v;
     float3 starSrc = comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, starPos, C), C);
     float theta = atan2(axis.y, axis.x);
-    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
-    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float apertureSpike = comp_camera_aperture_starburst(theta, C);
+    float crossLeak = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
-    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+    float3 star = starSrc * (0.82 * apertureSpike + 0.18 * crossLeak) * starFalloff * float3(1.0, 0.98, 0.94);
 
     float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
@@ -2249,6 +2463,7 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
     float3 cRD = comp_linear_full_rgb(inLinear, xR, yD, C);
     float3 cRU = comp_linear_full_rgb(inLinear, xR, yU, C);
     center = comp_eye_caustic_spike_filter(center, cL, cR, cD, cU, cLD, cLU, cRD, cRU, C);
+    center = comp_sample_linear_dof_full(inLinear, srcX, srcY, center, C);
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float3 sum = center * w0;
@@ -2315,6 +2530,15 @@ static inline float3 comp_linear_tile_rgb(device const float4* inLinear,
     return rgb;
 }
 
+static inline float comp_linear_tile_depth(device const float4* inLinear,
+                                           uint lx,
+                                           uint ly,
+                                           constant ComposeParams& C)
+{
+    uint lidx = ly * C.tileWidth + lx;
+    return comp_external_depth_from_w(inLinear[lidx].w, C);
+}
+
 static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLinear,
                                                       float2 pos,
                                                       constant ComposeParams& C)
@@ -2333,6 +2557,50 @@ static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLin
     float3 c01 = comp_linear_tile_rgb(inLinear, x0, y1, C);
     float3 c11 = comp_linear_tile_rgb(inLinear, x1, y1, C);
     return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+static inline float comp_sample_linear_tile_depth_bilinear(device const float4* inLinear,
+                                                           float2 pos,
+                                                           constant ComposeParams& C)
+{
+    float fx = clamp(pos.x, 0.0, float(C.tileWidth - 1u));
+    float fy = clamp(pos.y, 0.0, float(C.tileHeight - 1u));
+    uint x0 = uint(floor(fx));
+    uint y0 = uint(floor(fy));
+    uint x1 = min(x0 + 1u, C.tileWidth - 1u);
+    uint y1 = min(y0 + 1u, C.tileHeight - 1u);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+
+    float d00 = comp_linear_tile_depth(inLinear, x0, y0, C);
+    float d10 = comp_linear_tile_depth(inLinear, x1, y0, C);
+    float d01 = comp_linear_tile_depth(inLinear, x0, y1, C);
+    float d11 = comp_linear_tile_depth(inLinear, x1, y1, C);
+    return mix(mix(d00, d10, tx), mix(d01, d11, tx), ty);
+}
+
+static inline float3 comp_sample_linear_dof_tile(device const float4* inLinear,
+                                                 uint lx,
+                                                 uint ly,
+                                                 float3 center,
+                                                 constant ComposeParams& C)
+{
+    float depth = comp_linear_tile_depth(inLinear, lx, ly, C);
+    float coc = comp_camera_coc_px(depth, C);
+    if (!(coc > 0.35)) return center;
+
+    const uint n = 12u;
+    float2 pos = float2(float(lx), float(ly));
+    float3 sum = center * 0.35;
+    float wSum = 0.35;
+    for (uint i = 0u; i < n; ++i) {
+        float2 off = comp_camera_aperture_offset(i, n, coc, C);
+        float sampleDepth = comp_sample_linear_tile_depth_bilinear(inLinear, pos + off, C);
+        float w = comp_camera_dof_depth_weight(depth, sampleDepth);
+        sum += w * comp_sample_linear_tile_bilinear(inLinear, pos + off, C);
+        wSum += w;
+    }
+    return max(sum / max(wSum, 1e-6), float3(0.0));
 }
 
 static inline float3 comp_add_cinematic_flare_tile(float3 base,
@@ -2396,10 +2664,10 @@ static inline float3 comp_add_cinematic_flare_tile(float3 base,
     float2 starPos = center - 1.03 * v;
     float3 starSrc = comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, starPos, C), C);
     float theta = atan2(axis.y, axis.x);
-    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
-    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float apertureSpike = comp_camera_aperture_starburst(theta, C);
+    float crossLeak = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
-    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+    float3 star = starSrc * (0.82 * apertureSpike + 0.18 * crossLeak) * starFalloff * float3(1.0, 0.98, 0.94);
 
     float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
@@ -2433,6 +2701,7 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
     float3 cRD = comp_linear_tile_rgb(inLinear, xR, yD, C);
     float3 cRU = comp_linear_tile_rgb(inLinear, xR, yU, C);
     center = comp_eye_caustic_spike_filter(center, cL, cR, cD, cU, cLD, cLU, cRD, cRU, C);
+    center = comp_sample_linear_dof_tile(inLinear, lx, ly, center, C);
     if (profile == 0u || !(C.cameraPsfSigmaPx > 1e-6)) return center;
 
     float3 sum = center * w0;
@@ -2573,10 +2842,10 @@ static inline float3 comp_add_cinematic_flare_collision(float3 base,
     float2 starPos = center - 1.03 * v;
     float3 starSrc = comp_flare_bright_pass_scene(comp_sample_collision_tile_bilinear(inInfo, starPos, P, C), C);
     float theta = atan2(axis.y, axis.x);
-    float spike6 = pow(abs(cos(3.0 * theta)), 26.0);
-    float spike4 = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
+    float apertureSpike = comp_camera_aperture_starburst(theta, C);
+    float crossLeak = pow(abs(cos(2.0 * theta + 0.35)), 18.0);
     float starFalloff = exp(-rNorm * (5.5 + 4.0 * s));
-    float3 star = starSrc * (0.65 * spike6 + 0.35 * spike4) * starFalloff * float3(1.0, 0.98, 0.94);
+    float3 star = starSrc * (0.82 * apertureSpike + 0.18 * crossLeak) * starFalloff * float3(1.0, 0.98, 0.94);
 
     float3 flare = 0.34 * local + 0.20 * bloom + ghosts + 0.45 * star;
     return base + (0.006 + 0.030 * s) * flare;
@@ -2843,10 +3112,13 @@ static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
     // reduces retinal gain, preserving contrast that global exposure would
     // otherwise push into the shoulder. Scientific radiance is left unchanged.
     float expY = max(surroundY, 0.0) * max(C.exposure, 1e-30);
-    float brightGate = smoothstep(0.12, 1.60, expY);
-    float gain = pow(0.42 / max(expY, 1e-5), 0.32);
-    gain = clamp(gain, 0.24, 1.18);
-    return max(rgb * mix(1.0, gain, brightGate), 0.0);
+    float brightGate = smoothstep(0.10, 1.35, expY);
+    float dimGate = 1.0 - smoothstep(0.025, 0.20, expY);
+    float brightGain = clamp(pow(0.40 / max(expY, 1e-5), 0.34), 0.22, 1.12);
+    float dimGain = clamp(pow(0.11 / max(expY, 1e-5), 0.18), 1.0, 1.35);
+    float gain = mix(1.0, brightGain, brightGate);
+    gain = mix(gain, dimGain, 0.55 * dimGate);
+    return max(rgb * gain, 0.0);
 }
 
 static inline float3 comp_eye_surround_full(device const float4* inLinear,

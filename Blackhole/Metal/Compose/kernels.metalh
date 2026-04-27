@@ -67,14 +67,51 @@ kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
             float x = (float(gx) + 0.5) - float(P.fullWidth)  * 0.5;
             float y = (float(gy) + 0.5) - float(P.fullHeight) * 0.5;
 
-            CollisionInfo rec;
-            bool traced = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, rec);
-            float4 linearOut = renderBH_linear_from_collision(traced, rec, P, C);
-            if (traced && rec.hit != 0u) {
-                outLinear[gidx] = linearOut;
-                localHits[localIndex] = 1u;
+            bool thinReferenceBundle = (P.rayBundleSSAA != 0u &&
+                                        FC_PHYSICS_MODE == 0u &&
+                                        P.visibleTeffModel == 3u &&
+                                        FC_TRACE_DEBUG_OFF != 0u);
+            if (thinReferenceBundle) {
+                const float2 ssaaJitter[4] = {
+                    float2(-0.25, -0.25),
+                    float2( 0.25, -0.25),
+                    float2(-0.25,  0.25),
+                    float2( 0.25,  0.25)
+                };
+                float3 rgbSum = float3(0.0);
+                uint hitSamples = 0u;
+                for (uint s = 0u; s < 4u; ++s) {
+                    CollisionInfo subRec;
+                    init_collision_info(subRec);
+                    bool subTraced = trace_single_ray(P,
+                                                       x + ssaaJitter[s].x,
+                                                       y + ssaaJitter[s].y,
+                                                       diskAtlasTex,
+                                                       diskVol0Tex,
+                                                       diskVol1Tex,
+                                                       subRec);
+                    if (subTraced && subRec.hit != 0u) {
+                        // This path averages final source radiance per subray.
+                        // The compose-time thin-reference coverage multiplier is
+                        // only for collision-bundle payloads; per-subray source
+                        // samples represent full infinitesimal rays.
+                        subRec.v_disk.w = 1.0;
+                        hitSamples += 1u;
+                    }
+                    rgbSum += renderBH_linear_from_collision(subTraced, subRec, P, C).xyz;
+                }
+                outLinear[gidx] = float4(rgbSum * 0.25, (hitSamples > 0u) ? 2.0 : -2.0);
+                if (hitSamples > 0u) {
+                    localHits[localIndex] = 1u;
+                }
             } else {
+                CollisionInfo rec;
+                bool traced = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, rec);
+                float4 linearOut = renderBH_linear_from_collision(traced, rec, P, C);
                 outLinear[gidx] = linearOut;
+                if (traced && rec.hit != 0u) {
+                    localHits[localIndex] = 1u;
+                }
             }
         }
     }

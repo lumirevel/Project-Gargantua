@@ -153,6 +153,11 @@ Human observer layer:
   presentation transform and does not modify scientific radiance or debug maps
 - photoreceptor-style response compression and mesopic rod/cone blending in
   `eye` mode. This is an observer model, not an accretion-flow edit.
+- `eye` mode uses a stronger display-side Naka-Rushton-style receptor response
+  than `scientific`, dim-surround gain for dark-adapted regions, highlight gain
+  reduction in bright local surrounds, Hunt-effect saturation changes, Purkinje
+  blue-green bias in dim values, and lens/macular short-wavelength attenuation
+  in bright fields. These are deliberately downstream of source/RT.
 - ocular-media PSF/glare is handled in the eye/camera presentation stage. Do not
   force a black-hole shadow or suppress GRMHD caustics by impact-parameter masks
   in the transport/radiance layer.
@@ -183,7 +188,13 @@ Camera observer layer:
 
 Current caveat: the cinema presentation is intentionally restrained, but its
 large low-level halo is still a presentation artifact. It should be reduced
-before using cinema output as a scientific illustration. The scientific and eye
+before using cinema output as a scientific illustration. Cinema mode now also
+supports a limited thin-lens depth-of-field approximation when the source buffer
+contains depth. It uses `--camera-f-number`, `--camera-focus-depth`,
+`--camera-dof-strength`, `--camera-aperture-blades`, and
+`--camera-aperture-rotation` to form a circle-of-confusion and polygonal
+aperture gather. This is a camera presentation effect, not a source-physics
+edit. The scientific and eye
 outputs are the preferred review targets for source-model work.
 
 ## Diagnostics
@@ -192,6 +203,106 @@ Use `--realism-debug` with `g`, `emissivity`, `beaming`, `photosphere`,
 `atmosphere`, `corona`, `perturbation`, `hdr`, `temperature`, `tau`, `density`,
 or `radial-tau`.
 These maps disable camera presentation so the output remains a direct diagnostic.
+
+## Presentation Validation Harness
+
+Use the validation harness when changing eye/cinema response, exposure, glare, or
+source/presentation boundaries:
+
+```bash
+python3 scripts/validate_presentation_modes.py \
+  --source-model canonical-visible-disk-v1 \
+  --width 384 \
+  --height 216 \
+  --out-dir /private/tmp/bh_presentation_validation
+```
+
+The script renders the same source model as:
+
+- `scientific`
+- `eye`
+- `cinema`
+- absolute branch previews for total, body, skin, and corona
+- normalized branch/activity diagnostics
+
+It writes `metrics.json`, `summary.md`, and a contact sheet. The key sanity
+checks are:
+
+- eye/cinema should keep high luminance-gradient correlation with scientific
+  output, so presentation does not invent morphology.
+- branch-ratio diagnostics should agree with numeric body/skin/corona means.
+- absolute branch previews should be interpreted with the same fixed preview
+  scale, not as normalized brightness maps.
+- `activity_vs_total_residual_corr_active` is a source-survival check: it should
+  be positive when the hot-skin activity field is visible in the final source,
+  not only in normalized debug maps.
+- Use `--stable-debug-trace` for slower Kerr/debug validation sweeps on
+  interactive Apple GPUs; it routes debug maps through the stable collision
+  buffer path instead of direct HDR trace maps.
+
+If eye/cinema only look good while scientific source validation fails, treat it
+as a source-model problem. If morphology correlations collapse without a clear
+optical reason, treat it as a presentation bug.
+
+For a black-hole-independent sanity check, render a small everyday HDR
+ray-traced scene and feed that HDR file into the actual Metal compose stage:
+
+```bash
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --width 420 \
+  --height 240 \
+  --color-chart \
+  --bokeh-targets \
+  --out-dir /private/tmp/bh_eye_rt_validation
+```
+
+Use `--color-chart` when validating human-eye chroma behavior and `--bokeh-targets`
+when validating camera aperture/DOF behavior. Both are validation scene features;
+they do not change black-hole source physics.
+
+For depth-of-field validation, render a slow CPU thin-lens reference and compare
+it with the Metal compose-stage approximation:
+
+```bash
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --width 140 \
+  --height 80 \
+  --spp 1 \
+  --focus-depth 2.5 \
+  --f-number 1.0 \
+  --dof-strength 4.0 \
+  --aperture-blades 6 \
+  --lens-reference-spp 12 \
+  --exposure 1.0 \
+  --out-dir /private/tmp/bh_eye_rt_metal_lens_reference_fixed
+```
+
+Use fixed exposure for this comparison. Separate auto-exposure solves make the
+compose approximation and thin-lens reference visually incomparable.
+
+This CPU harness renders a simple room with a ceiling area light, a metal sphere,
+a glass sphere, and a diffuse plastic sphere. It writes a float4 linear32 HDR
+file, then calls:
+
+```bash
+./Blackhole/run_pipeline.sh \
+  --compose-hdr-in <scene.linear32f32> \
+  --width <w> \
+  --height <h> \
+  --presentation scientific|eye|cinema \
+  --output <png>
+```
+
+`--compose-hdr-in` is a presentation-only path. It bypasses black-hole tracing
+and uses the existing HDR32 file-backed Metal compose kernels, including
+exposure solve, eye response, camera response, PSF/glare, and sensor noise.
+The input format is tightly defined as row-major `float4` linear RGB with
+`w > 1.25`; the alpha sentinel tells compose to treat `xyz` as final source
+radiance rather than a disk cloud/branch diagnostic. `w=2` means unknown or
+focused depth, while `w=2+depth` optionally provides a source-depth proxy for
+cinema depth-of-field validation. It is not an astrophysics test; it answers
+whether eye/cinema behavior remains plausible on familiar radiance before
+source-model changes are judged through those observer layers.
 
 ## Near-Term Upgrade Hooks
 

@@ -832,7 +832,15 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
     if (FC_PHYSICS_MODE == 2u) {
-        T *= disk_precision_texture_factor(hitState.dxy, hitState.phiHit, hitState.hitPos.z, P);
+        // Physical atmospheric temperature profile replacing Perlin texture.
+        // Eddington T(τ) with MRI magnetic surface heating at τ ~ 0.3–1
+        // (see disk_eddington_atmosphere_temp in disk_models.metal).
+        float hNorm_hit  = abs(hitState.hitPos.z) / max(P.he, 1e-6);
+        float tauMid_hit = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
+        T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
+        // MRI turbulent heating: use diskPrecisionTexture (precision-mode texture parameter)
+        float mriAmp_s = max(P.diskPrecisionTexture, P.diskTurbulence);
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_s, P);
     }
 
     trace_store_schwarzschild_surface_hit(info, hitState, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -966,7 +974,11 @@ static inline bool trace_commit_kerr_surface_hit_impl(constant Params& P,
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
     if (FC_PHYSICS_MODE == 2u) {
-        T *= disk_precision_texture_factor(hitState.dxy, hitState.phiHit, hitState.hitPos.z, P);
+        float hNorm_hit  = abs(hitState.hitPos.z) / max(P.he, 1e-6);
+        float tauMid_hit = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
+        T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
+        float mriAmp_k = max(P.diskPrecisionTexture, P.diskTurbulence);
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_k, P);
     }
 
     trace_store_kerr_surface_hit(info, hitState, massLen, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -3007,7 +3019,15 @@ static inline void volume_integrate_segment(float3 p0,
                                            : disk_effective_temperature(r, diskInner, P);
         float T = TBackbone * tempScale;
         if (FC_PHYSICS_MODE == 2u && !dataDrivenVolume) {
-            T *= disk_precision_texture_factor(r, phi, pos.z, P);
+            // Eddington vertical atmosphere + MRI turbulent heating fluctuation.
+            // Together these replace the Perlin noise texture: the Eddington profile
+            // sets T(τ) from the disk photosphere inward, while MRI heating adds
+            // α-disk-scaled spatial fluctuations with correlation length ~ H.
+            float hNorm_vol  = abs(pos.z) / max(P.he, 1e-6);
+            float tauMid_vol = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
+            T = disk_eddington_atmosphere_temp(hNorm_vol, tauMid_vol, T);
+            float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
+            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, P);
         }
 
         if (dataDrivenVolume) {
@@ -3071,11 +3091,18 @@ static inline void volume_integrate_segment(float3 p0,
             continue;
         }
 
+        // Physical vertical opacity: Gaussian density ρ(z) ∝ exp(-z²/2H²).
+        // This gives an optically thick midplane and optically thin corona,
+        // replacing the top-hat from verticalEdgeGate that was used previously.
+        float H_sigma   = max(P.he, 1e-6);
+        float zOverH_sq = (pos.z / H_sigma) * (pos.z / H_sigma);
+        float gaussVertical = exp(-0.5 * zOverH_sq);
+
         float emiss = densityEff
                     * mix(0.95, 2.10, clumpGate)
                     * pow(max(T / 6000.0, 1e-4), 2.4)
                     * 1.35;
-        float dTau = min(tauScaleLegacy * densityEff * ds, 2.4);
+        float dTau = min(tauScaleLegacy * densityEff * gaussVertical * ds, 2.4);
         float trans = exp(-A.tau);
         float contrib = trans * emiss * ds;
         if (contrib > 0.0) {
@@ -3528,9 +3555,19 @@ static inline void renderBH_core_bundle(constant Params& P,
         out.emit_z_norm = max(sumVisibleXYZ.z, 0.0);
         out.noise = -100.0; // Sentinel: visible XYZ pre-averaged in render stage.
     } else if (thinReferenceBundle && bundleLinearAnchors && sumHitWeight > 0.0) {
-        // Thin visible reference keeps the center/first-hit source coordinate so
-        // lensed caustics are not shifted by averaging unrelated source points.
-        // The bundle contributes only a coverage factor for partial-hit pixels.
+        // Thin visible reference may use the four traced sub-pixel hits as a
+        // source-footprint sample, but only when they agree on one coherent disk
+        // patch. Around caustics or partial disk silhouettes the source points
+        // can be unrelated; keep the center/first-hit coordinate there and use
+        // the bundle only as a coverage factor.
+        float invW = 1.0 / max(sumHitWeight, 1e-6);
+        float phiCoherence = length(float2(sumEmitPhiCos, sumEmitPhiSin)) * invW;
+        bool coherentThinPatch = (hitCoverage > 0.999) && (phiCoherence > 0.965);
+        if (coherentThinPatch) {
+            out.emit_r_norm = max(sumEmitR * invW, 0.0);
+            out.emit_phi = atan2(sumEmitPhiSin, sumEmitPhiCos);
+            out.emit_z_norm = max(sumEmitZ * invW, 0.0);
+        }
         out.v_disk.w = clamp(hitCoverage, 0.0, 1.0);
     } else if (bundleLinearAnchors) {
         out.emit_r_norm = max(sumEmitR, 0.0);

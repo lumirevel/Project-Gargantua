@@ -48,6 +48,7 @@ struct RenderTracePhaseInput {
     let cameraSensorParams: SIMD4<Float>
     let cameraNoiseParams: SIMD4<Float>
     let cameraColorParams: SIMD4<Float>
+    let cameraFlags: UInt32
     let composeCameraPsfSigmaArg: Float
     let composeCameraReadNoiseArg: Float
     let composeCameraShotNoiseArg: Float

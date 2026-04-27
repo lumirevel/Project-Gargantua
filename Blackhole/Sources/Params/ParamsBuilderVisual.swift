@@ -14,6 +14,11 @@ struct CameraCalibration {
     var sensorParams: SIMD4<Float>
     var noiseParams: SIMD4<Float>
     var colorParams: SIMD4<Float>
+    var lensFNumber: Float?
+    var lensFocusDepth: Float?
+    var lensDofStrength: Float?
+    var apertureBlades: UInt32?
+    var apertureRotation: Float?
     var psfSigmaPixels: Float?
     var readNoise: Float?
     var shotNoise: Float?
@@ -43,6 +48,10 @@ private struct CameraCalibrationJSON: Decodable {
     var peakQuantumEfficiency: Double?
     var pixelPitchMicrons: Double?
     var lensFNumber: Double?
+    var lensFocusDepth: Double?
+    var lensDofStrength: Double?
+    var apertureBlades: Int?
+    var apertureRotation: Double?
     var lensVignettingStops: Double?
     var psfSigmaPixels: Double?
     var flareStrength: Double?
@@ -63,6 +72,11 @@ private enum CameraCalibrationFactory {
             sensorParams: SIMD4<Float>(1, 0, 0, 0),
             noiseParams: .zero,
             colorParams: SIMD4<Float>(1, 0, 0, 0),
+            lensFNumber: nil,
+            lensFocusDepth: nil,
+            lensDofStrength: nil,
+            apertureBlades: nil,
+            apertureRotation: nil,
             psfSigmaPixels: nil,
             readNoise: nil,
             shotNoise: nil,
@@ -94,6 +108,11 @@ private enum CameraCalibrationFactory {
             c.sensorParams = SIMD4<Float>(1.0, 7.0, 0.20, 0.0)
             c.noiseParams = SIMD4<Float>(0.10, 0.24, 0.08, 0.0)
             c.colorParams = SIMD4<Float>(1.035, 0.55, 0, 0)
+            c.lensFNumber = 2.8
+            c.lensFocusDepth = 4.35
+            c.lensDofStrength = 1.0
+            c.apertureBlades = 7
+            c.apertureRotation = 0.10
             return c
         case 3:
             var c = identity(profileName: profileName, profileID: profileID)
@@ -106,6 +125,11 @@ private enum CameraCalibrationFactory {
             c.sensorParams = SIMD4<Float>(1.0, 8.5, 0.14, 0.0)
             c.noiseParams = SIMD4<Float>(0.18, 0.42, 0.20, 0.16)
             c.colorParams = SIMD4<Float>(1.08, 0.0, 0, 0)
+            c.lensFNumber = 4.0
+            c.lensFocusDepth = 4.35
+            c.lensDofStrength = 0.75
+            c.apertureBlades = 9
+            c.apertureRotation = 0.0
             return c
         default:
             return identity(profileName: profileName, profileID: profileID)
@@ -137,6 +161,21 @@ private enum CameraCalibrationFactory {
             c.noiseParams.w = Float(raw.toeStrength ?? Double(c.noiseParams.w))
             c.colorParams.x = Float(raw.saturation ?? Double(c.colorParams.x))
             c.colorParams.y = Float(raw.displayShoulder ?? Double(c.colorParams.y))
+            if let f = raw.lensFNumber {
+                c.lensFNumber = Float(max(f, 0.1))
+            }
+            if let focus = raw.lensFocusDepth {
+                c.lensFocusDepth = Float(max(focus, 0.0))
+            }
+            if let strength = raw.lensDofStrength {
+                c.lensDofStrength = Float(clamp(strength, 0.0, 4.0))
+            }
+            if let blades = raw.apertureBlades {
+                c.apertureBlades = UInt32(max(0, min(blades, 16)))
+            }
+            if let rotation = raw.apertureRotation {
+                c.apertureRotation = Float(rotation)
+            }
             applyPhysicalSensorModel(raw, to: &c)
             return c
         } catch {
@@ -232,6 +271,7 @@ struct VisualSettings {
     let cameraSensorParams: SIMD4<Float>
     let cameraNoiseParams: SIMD4<Float>
     let cameraColorParams: SIMD4<Float>
+    let cameraFlags: UInt32
     let cameraPsfSigmaArg: Float
     let cameraReadNoiseArg: Float
     let cameraShotNoiseArg: Float
@@ -452,6 +492,30 @@ enum ParamsBuilderVisual {
             FileHandle.standardError.write(Data("warn: --camera-flare is only active for cinematic/photo camera profiles\n".utf8))
         }
 
+        let lensFNumberDefault: Double = {
+            if let f = cameraCalibration.lensFNumber { return Double(f) }
+            if cameraModelID == 2 || cameraProfileID == 2 { return 2.8 }
+            if cameraProfileID == 3 { return 4.0 }
+            return 8.0
+        }()
+        let lensFNumberArg = Float(max(0.7, doubleArg("--camera-f-number", default: lensFNumberDefault)))
+        let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
+        let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
+        let lensDofDefault: Double = {
+            if let s = cameraCalibration.lensDofStrength { return Double(s) }
+            return (cameraModelID == 2 || cameraProfileID >= 2) ? 1.0 : 0.0
+        }()
+        let lensDofStrengthArg = Float(max(0.0, min(4.0, doubleArg("--camera-dof-strength", default: lensDofDefault))))
+        let apertureBladesArg = UInt32(max(0, min(16, intArg("--camera-aperture-blades", default: Int(cameraCalibration.apertureBlades ?? 7)))))
+        let apertureRotationTurns = Float(doubleArg("--camera-aperture-rotation", default: Double(cameraCalibration.apertureRotation ?? 0.0)))
+        let dofByte = UInt32(max(0, min(255, Int(round(Double(lensDofStrengthArg) / 4.0 * 255.0)))))
+        let rotationTurns = apertureRotationTurns - floor(apertureRotationTurns)
+        let rotationByte = UInt32(max(0, min(255, Int(round(Double(rotationTurns) * 255.0)))))
+        let cameraFlags = (apertureBladesArg & 0xff) | ((rotationByte & 0xff) << 8) | ((dofByte & 0xff) << 16)
+        var cameraColorParams = cameraCalibration.colorParams
+        cameraColorParams.z = lensFNumberArg
+        cameraColorParams.w = lensFocusDepthArg
+
         let backgroundRawArg = stringArg("--background", default: "").lowercased()
         let backgroundStarsRawArg = stringArg("--bg-stars", default: "").lowercased()
         let backgroundModeName: String = {
@@ -622,7 +686,8 @@ enum ParamsBuilderVisual {
             cameraDisplayB: cameraCalibration.displayB,
             cameraSensorParams: cameraCalibration.sensorParams,
             cameraNoiseParams: cameraCalibration.noiseParams,
-            cameraColorParams: cameraCalibration.colorParams,
+            cameraColorParams: cameraColorParams,
+            cameraFlags: cameraFlags,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,

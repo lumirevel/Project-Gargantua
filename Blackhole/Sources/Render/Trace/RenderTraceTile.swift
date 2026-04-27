@@ -70,7 +70,7 @@ enum RenderTraceTileSupport {
             diskNoiseModel: input.params.diskNoiseModel,
             cameraProfile: input.cameraProfileID,
             realismProfile: input.realismProfileID,
-            cameraFlags: 0,
+            cameraFlags: input.cameraFlags,
             cameraSceneR: input.cameraSceneR,
             cameraSceneG: input.cameraSceneG,
             cameraSceneB: input.cameraSceneB,

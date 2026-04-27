@@ -40,9 +40,10 @@ Body/photosphere:
 - uses the thin-disk ray/disk-intersection path
 - uses ISCO/horizon/spin-aware inner radius
 - uses the existing NT/Page-Thorne-like visible temperature profile
-- defaults to a hot visible-disk calibration near `T0 = 22000 K`; this keeps the
-  canonical disk in a physically more plausible blue-white thermal regime while
-  avoiding immediate white saturation in the scientific display
+- defaults to a visible-disk calibration near `T0 = 18000 K`; this keeps the
+  disk in a hot blue-white thermal regime while preserving more visible-band
+  contrast than the earlier 22000 K default. Use `--teff-T0` for explicit
+  temperature-scale sweeps.
 - uses visible blackbody/graybody spectral integration before RGB display
 - uses relativistic frequency shift from the trace record
 - disables Perlin/fBm/albedo/normal/roughness texture in the canonical path
@@ -110,10 +111,28 @@ Current calibrated default:
   --disk-turbulence 2.0
 ```
 
+The default metric remains explicit/reproducible rather than assuming an
+astrophysical spin. For a more realistic spinning-black-hole scenario, use a
+Kerr sweep and state the spin in the render metadata:
+
+```bash
+./Blackhole/run_pipeline.sh \
+  --source-model canonical-visible-disk-v1 \
+  --metric kerr \
+  --spin 0.6 \
+  --presentation scientific \
+  --quality hq
+```
+
+Validation note: in the current camera setup, moderate Kerr spin (`a ~ 0.6`)
+adds stronger inner-disk/lensing hierarchy without making the disk body as
+smooth and enlarged as very high spin. Treat spin as a physical scene parameter,
+not a hidden presentation preset.
+
 The selected tuning keeps the bright-region branch balance approximately:
 
-- body/photosphere: 72%
-- hot skin: 27%
+- body/photosphere: 75%
+- hot skin: 24%
 - corona: 1%
 
 This balance is intentionally body-dominant. The skin should enrich the source
@@ -145,6 +164,39 @@ B = corona / total
 `activity` is the unit heating/activity field used by the positive skin branch.
 Do not compare the visual brightness of absolute branch previews against the
 normalized maps; use the ratio map or numeric metrics for branch balance.
+
+Recommended source-survival check:
+
+```bash
+python3 scripts/validate_presentation_modes.py \
+  --source-model canonical-visible-disk-v1 \
+  --width 384 \
+  --height 216 \
+  --quality preview \
+  --disk-turbulence 2.0 \
+  --stable-debug-trace
+```
+
+For physically richer review renders, use an explicit Kerr scene parameter
+rather than a hidden source-model preset:
+
+```bash
+python3 scripts/validate_presentation_modes.py \
+  --source-model canonical-visible-disk-v1 \
+  --width 384 \
+  --height 216 \
+  --quality preview \
+  --disk-turbulence 2.0 \
+  --stable-debug-trace \
+  --extra --metric kerr --spin 0.6
+```
+
+Important numeric checks:
+
+- `skin_ratio_mean_active` and `skin_abs_share_mean_active` should agree within a few percent.
+- `activity_vs_skin_abs_corr_active` should be positive; otherwise the heating field is not actually feeding the skin branch.
+- `activity_vs_total_residual_corr_active` should be positive for review scenes; otherwise skin energy exists but is visually buried by transfer/geometry.
+- `abs_total_vs_scientific_corr_active` should stay high, so scientific display is not changing source morphology.
 
 ## Legacy / Experimental Source Families
 

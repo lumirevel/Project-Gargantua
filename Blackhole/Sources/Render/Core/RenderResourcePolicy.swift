@@ -48,8 +48,12 @@ struct RenderResourcePolicy {
              config.visibleTeffModelID == 3 &&
              config.composeAnalysisMode >= 31 &&
              config.composeAnalysisMode <= 42)
+        let thinVisibleReferenceRayBundleDirectSafe =
+            (config.diskPhysicsModeID == 0 &&
+             config.visibleTeffModelID == 3 &&
+             config.diskGrmhdDebugID == 0)
         directLinearUnsafeReason = {
-            if config.rayBundleActive { return "ray bundle requires collision fields" }
+            if config.rayBundleActive && !thinVisibleReferenceRayBundleDirectSafe { return "ray bundle requires collision fields" }
             if config.visibleModeEnabled { return "visible mode requires collision fields" }
             if config.composeAnalysisMode != 0 && !thinVisibleReferenceDebugSafe { return "analysis mode requires collision fields" }
             if config.diskGrmhdDebugID != 0 { return "GRMHD debug output requires collision fields" }
@@ -59,7 +63,7 @@ struct RenderResourcePolicy {
         directLinearTraceSafe =
             useInMemoryCollisions &&
             config.discardCollisionOutput &&
-            !config.rayBundleActive &&
+            (!config.rayBundleActive || thinVisibleReferenceRayBundleDirectSafe) &&
             !config.visibleModeEnabled &&
             (config.composeAnalysisMode == 0 || thinVisibleReferenceDebugSafe) &&
             config.diskGrmhdDebugID == 0 &&

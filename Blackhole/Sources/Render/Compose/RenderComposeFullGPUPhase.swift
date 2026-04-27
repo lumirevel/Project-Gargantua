@@ -147,7 +147,7 @@ enum RenderComposeFullGPUPhase {
             diskNoiseModel: params.diskNoiseModel,
             cameraProfile: cameraProfileID,
             realismProfile: realismProfileID,
-            cameraFlags: 0,
+            cameraFlags: config.cameraFlags,
             cameraSceneR: config.cameraSceneR,
             cameraSceneG: config.cameraSceneG,
             cameraSceneB: config.cameraSceneB,

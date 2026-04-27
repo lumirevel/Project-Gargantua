@@ -424,7 +424,7 @@ enum RenderComposeLegacyPhase {
             backgroundMode: backgroundModeID, backgroundStarDensity: backgroundStarDensityArg,
             backgroundStarStrength: backgroundStarStrengthArg, backgroundNebulaStrength: backgroundNebulaStrengthArg,
             preserveHighlightColor: preserveHighlightColor, diskNoiseModel: params.diskNoiseModel,
-            cameraProfile: cameraProfileID, realismProfile: realismProfileID, cameraFlags: 0,
+            cameraProfile: cameraProfileID, realismProfile: realismProfileID, cameraFlags: config.cameraFlags,
             cameraSceneR: config.cameraSceneR, cameraSceneG: config.cameraSceneG, cameraSceneB: config.cameraSceneB,
             cameraDisplayR: config.cameraDisplayR, cameraDisplayG: config.cameraDisplayG, cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams, cameraNoiseParams: config.cameraNoiseParams,

@@ -7,6 +7,8 @@ struct ResolvedRenderConfig {
     var preset: String = "balanced"
     var outPath: String = "collisions.bin"
     var linear32OutPath: String = ""
+    var composeHDRInputPath: String = ""
+    var composeExternalHDRInput: Bool = false
     var imageOutPath: String = ""
     var composeGPU: Bool = false
     var gpuFullCompose: Bool = false
@@ -212,6 +214,7 @@ struct ResolvedRenderConfig {
     var cameraSensorParams: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)
     var cameraNoiseParams: SIMD4<Float> = .zero
     var cameraColorParams: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)
+    var cameraFlags: UInt32 = 0
     var cameraPsfSigmaArg: Float = 0.0
     var cameraReadNoiseArg: Float = 0.0
     var cameraShotNoiseArg: Float = 0.0

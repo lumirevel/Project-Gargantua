@@ -39,7 +39,7 @@ struct ComposeParams {
     uint  diskNoiseModel; // 0=streamline, 1=perlin soft, 2/3=legacy perlin variants
     uint  cameraProfile; // 0=ideal, 1=scientific, 2=cinema digital, 3=full-frame photo
     uint  realismProfile; // 0=off, 1=physical, 2=observational, 3=cinematic
-    uint  cameraFlags;
+    uint  cameraFlags; // bits: aperture blades, rotation byte, DOF strength byte
     float4 cameraSceneR;
     float4 cameraSceneG;
     float4 cameraSceneB;
@@ -48,7 +48,7 @@ struct ComposeParams {
     float4 cameraDisplayB;
     float4 cameraSensorParams; // gain, fullWell, shoulderMix, blackLevel
     float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
-    float4 cameraColorParams; // saturation, displayShoulder, reserved, reserved
+    float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
 };
 
 struct ComposeSolveParams {

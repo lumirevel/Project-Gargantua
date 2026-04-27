@@ -49,7 +49,9 @@ enum RenderComposeHDRIntermediatePhase {
         let outHeight = policy.outHeight
         let linearCloudBins: UInt32 = 2048
         let linearLumBins: UInt32 = 4096
-        let lumRange = composeLuminanceLogRange(diskPhysicsModeID: config.diskPhysicsModeID)
+        let lumRange = config.composeExternalHDRInput
+            ? (min: Float(-8.0), max: Float(8.0))
+            : composeLuminanceLogRange(diskPhysicsModeID: config.diskPhysicsModeID)
         let linearLumLogMin: Float = lumRange.min
         let linearLumLogMax: Float = lumRange.max
 
@@ -91,7 +93,7 @@ enum RenderComposeHDRIntermediatePhase {
             diskNoiseModel: input.params.diskNoiseModel,
             cameraProfile: cameraProfileID,
             realismProfile: realismProfileID,
-            cameraFlags: 0,
+            cameraFlags: config.cameraFlags,
             cameraSceneR: config.cameraSceneR,
             cameraSceneG: config.cameraSceneG,
             cameraSceneB: config.cameraSceneB,

@@ -69,6 +69,110 @@ static inline float disk_half_thickness_m(float rEmitM, constant Params& P) {
     return P.he;
 }
 
+// --- Physical atmosphere / turbulence helpers ----------------------------------
+
+// Complementary error function via Abramowitz & Stegun 7.1.26 (max error < 1.5e-7).
+static inline float disk_erfc_approx(float x) {
+    float t = 1.0 / (1.0 + 0.3275911 * x);
+    float poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+                + t * (-1.453152027 + t * 1.061405429))));
+    return clamp(poly * exp(-x * x), 0.0, 1.0);
+}
+
+// Cumulative optical depth from the disk surface (|z| → ∞) down to height hNorm = |z|/H.
+// Assumes Gaussian vertical density: ρ(z) = ρ_mid exp(-z²/2H²).
+// τ(hNorm) = τ_mid/2 × erfc(hNorm/√2), where τ_mid is the full column (midplane to ∞).
+static inline float disk_tau_from_surface(float hNorm, float tauMid) {
+    float x = max(hNorm, 0.0) * 0.7071067811865f; // hNorm / sqrt(2)
+    return clamp(tauMid * 0.5 * disk_erfc_approx(x), 0.0, tauMid);
+}
+
+// Eddington atmosphere temperature at optical depth τ(z), with MRI magnetic surface heating.
+//
+// Physical basis:
+//   Eddington (1926): T⁴(τ) = (3/4) T_eff⁴ × (τ + 2/3)  → T = T_eff at τ = 2/3
+//   MRI buoyancy concentrates ~30 % of viscous dissipation near the photosphere
+//   (Hirose et al. 2006, Blaes et al. 2011), producing a temperature excess at τ ~ 0.3–1.
+//
+// T_col_photo: color temperature at the photosphere = f_col × T_eff (caller-supplied).
+// Returns the color temperature at height hNorm = |z|/H using tauMid for the column.
+static inline float disk_eddington_atmosphere_temp(float hNorm, float tauMid,
+                                                    float T_col_photo) {
+    float tau = disk_tau_from_surface(hNorm, tauMid);
+
+    // Eddington profile (normalised so that h = 1 at τ = 2/3, i.e. at the photosphere).
+    float eddNorm = pow(max(0.75 * (tau + 2.0/3.0), 1e-8), 0.25);
+
+    // Magnetic surface heating: Gaussian peak at τ_peak ≈ 0.5 in log-τ space.
+    float tau_peak = 0.5;
+    float log_tau_ratio = log(max(tau, 1e-5) / tau_peak);
+    float f_heat = 0.32 * exp(-0.5 * log_tau_ratio * log_tau_ratio / 0.64);
+
+    return max(T_col_photo * eddNorm * pow(1.0 + f_heat, 0.25), 0.0);
+}
+
+// MRI-motivated turbulent heating fluctuation – physically replaces Perlin FBM texture.
+//
+// Physical basis (α-disk + MRI theory):
+//   δT/T ~ (α × H/r)^(1/4)   (thermal fluctuation amplitude from stress-to-flux relation)
+//   turbulence is represented as deterministic disk-coordinate shearing modes,
+//   not as screen-space or material texture.  Modes live in (log r, phi) and
+//   advect with Omega_K(r), approximating large-scale MRI/stress fluctuations
+//   that survive photospheric averaging.
+//
+// diskTurbulence is used as an α proxy; P.he is the disk scale height H.
+// disk_mri_heating_factor: amplitude-parameterised version.
+// amp:  fluctuation strength (0–1). Controls δT/T directly so callers can pass
+//       either diskTurbulence or diskPrecisionTexture as appropriate.
+static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
+                                                  float amp, constant Params& P) {
+    amp = clamp(amp, 0.0, 1.0);
+    if (!(amp > 1e-6)) return 1.0;
+
+    float H   = max(P.he, 1e-6);
+    float rs  = max(P.rs, 1e-6);
+    float rRs = max(dxy / rs, 1.0001);
+
+    float HoverR = max(H / max(dxy, 1e-6), 1e-4);
+    float deltaAmp = amp * pow(max(HoverR, 1e-4), 0.25);
+    float logR = log(max(rRs, 1.0001));
+    float omegaK = 1.0 / max(pow(rRs, 1.5), 1e-6);
+    float shearPhi = phi - P.diskFlowTime * omegaK;
+    constexpr float twoPi = 6.283185307179586;
+
+    float fluct = 0.0;
+    float norm2 = 0.0;
+    constexpr uint modeCount = 16u;
+    for (uint i = 0u; i < modeCount; ++i) {
+        float id = float(i) + 1.0;
+        float h0 = fract(id * 0.754877666 + 0.113);
+        float h1 = fract(id * 0.569840291 + 0.217);
+        float h2 = fract(id * 0.438572245 + 0.431);
+        float h3 = fract(id * 0.318309886 + 0.173);
+        float h4 = fract(id * 0.221033321 + 0.619);
+
+        float m = floor(mix(2.0, 13.999, h0));
+        float kr = mix(0.75, 10.0, h1) * ((h2 < 0.5) ? -1.0 : 1.0);
+        float kMag = sqrt(kr * kr + m * m);
+        float ampMode = pow(max(kMag, 1.0), -0.8333333) * mix(0.78, 1.22, h3);
+        float phase = kr * logR + m * (shearPhi * mix(0.82, 1.18, h4)) + twoPi * h3;
+        fluct += ampMode * cos(phase);
+        norm2 += ampMode * ampMode;
+    }
+
+    fluct /= max(sqrt(norm2), 1e-6);
+    float radialGate = smoothstep(1.05, 1.9, rRs) * (1.0 - smoothstep(10.0, 18.0, rRs));
+    float verticalGate = exp(-z * z / max(2.0 * H * H, 1e-12));
+    float delta = fluct * deltaAmp * radialGate * verticalGate;
+    return clamp(exp(clamp(delta - 0.5 * deltaAmp * deltaAmp, -0.50, 0.50)), 0.55, 1.75);
+}
+
+static inline float disk_mri_heating_factor(float dxy, float phi, float z, constant Params& P) {
+    return disk_mri_heating_factor_amp(dxy, phi, z, clamp(P.diskTurbulence, 0.0, 1.0), P);
+}
+
+// --- End physical atmosphere helpers -------------------------------------------
+
 static inline float disk_nt_flux_shape(float rM, float rMsM, float a) {
     if (!(rM > rMsM)) return 0.0;
     float aSafe = clamp(a, -0.999, 0.999);
@@ -808,18 +912,16 @@ static inline float disk_classic_stripe_noise(float r, float phi, float z, const
     return clamp(n * radialEdge * verticalEdge, 0.0, 1.0);
 }
 
+// NOTE: This function previously applied Perlin FBM + phase-wave texture to temperature.
+// It is now replaced by disk_mri_heating_factor(), which derives fluctuation amplitude
+// and correlation length from α-disk / MRI physics (H scale, α proxy) rather than from
+// an arbitrary noise frequency. The diskPrecisionTexture parameter continues to gate it.
 static inline float disk_precision_texture_factor(float dxy, float phi, float z, constant Params& P) {
     float amp = clamp(P.diskPrecisionTexture, 0.0, 1.0);
     if (!(amp > 1e-6)) return 1.0;
-    float centered = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
-    float rsSafe = max(P.rs, 1e-6);
-    float rr = dxy / rsSafe;
-    float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(10.0, 18.0, rr));
-    float vertical = exp(-abs(z) / max(1.5 * P.he, 1e-6));
-    float phaseWave = sin(7.0 * phi + 0.55 * log(max(rr, 1.0)));
-    float micro = 0.72 * centered + 0.28 * phaseWave;
-    float fac = 1.0 + (0.48 * amp * radial * vertical) * micro;
-    return clamp(fac, 0.20, 2.10);
+    // Pass diskPrecisionTexture as the amplitude so the caller-controlled strength
+    // is preserved, while the spatial structure is now physically derived from MRI.
+    return disk_mri_heating_factor_amp(dxy, phi, z, amp, P);
 }
 
 static inline float disk_flow_radial_mix(float rRs, constant Params& P) {
