@@ -160,6 +160,11 @@ def render_stages(args: argparse.Namespace, out_dir: Path) -> Dict[str, Path]:
 
     delta = final - no_bloom
     positive = np.maximum(delta, 0.0)
+    negative = np.maximum(no_bloom - final, 0.0)
+    positive_luma = luma(positive)
+    negative_luma = luma(negative)
+    positive_mean = float(np.mean(positive_luma))
+    negative_mean = float(np.mean(negative_luma))
     metrics = {
         "stages": {k: str(v) for k, v in paths.items()},
         "presentation": args.presentation,
@@ -168,8 +173,20 @@ def render_stages(args: argparse.Namespace, out_dir: Path) -> Dict[str, Path]:
         "bloom_only_is_display_space_proxy": True,
         "bloom_scale": args.bloom_scale,
         "mean_abs_delta": float(np.mean(np.abs(delta))),
-        "positive_delta_luma_mean": float(np.mean(luma(positive))),
-        "positive_delta_luma_p99": float(np.percentile(luma(positive), 99.0)),
+        "positive_delta_luma_mean": positive_mean,
+        "positive_delta_luma_p95": float(np.percentile(positive_luma, 95.0)),
+        "positive_delta_luma_p99": float(np.percentile(positive_luma, 99.0)),
+        "positive_delta_luma_p999": float(np.percentile(positive_luma, 99.9)),
+        "positive_delta_luma_max": float(np.max(positive_luma)),
+        "positive_delta_coverage_gt_0_01": float(np.mean(positive_luma > 0.01)),
+        "positive_delta_coverage_gt_0_05": float(np.mean(positive_luma > 0.05)),
+        "negative_delta_luma_mean": negative_mean,
+        "negative_delta_luma_p95": float(np.percentile(negative_luma, 95.0)),
+        "negative_delta_luma_p99": float(np.percentile(negative_luma, 99.0)),
+        "negative_delta_luma_max": float(np.max(negative_luma)),
+        "redistribution_negative_to_positive_luma_mean_ratio": float(
+            negative_mean / max(positive_mean, 1e-9)
+        ),
         "final_luma_mean": float(np.mean(luma(final))),
         "tone_mapped_no_bloom_luma_mean": float(np.mean(luma(no_bloom))),
     }
