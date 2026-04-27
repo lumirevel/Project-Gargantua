@@ -98,6 +98,7 @@ enum ParamsBuilderRuntime {
         case "hdr", "hdr-rich", "hdrrich": composeLookID = 5
         case "realistic", "natural", "observational": composeLookID = 6
         case "structure", "detail", "log-detail", "grmhd-detail": composeLookID = 7
+        case "sensor", "sensor-filmic", "camera-filmic", "display-filmic": composeLookID = 8
         default: composeLookID = 0
         }
         return (composeLook, composeLookID)

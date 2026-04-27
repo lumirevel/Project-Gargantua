@@ -2963,17 +2963,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
     if (physicalVolumeDebug && C.analysisMode == 32u) {
         return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     }
-    if (C.look != 4u) {
-        float shoulder = smoothstep(0.55, 1.0, lumTm);
-        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
-        float desat;
-        if (C.preserveHighlightColor != 0u) {
-            desat = (C.look == 5u) ? 0.03 : 0.08;
-        } else {
-            desat = (C.look == 5u) ? 0.08 : 0.24;
-        }
-        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
-    }
+    rgbTm = comp_apply_highlight_desaturation(rgbTm, lumTm, C.look, C.preserveHighlightColor);
     rgbTm = comp_apply_look(rgbTm, C.look);
     rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
@@ -3016,17 +3006,7 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     if (FC_PHYSICS_MODE == 3u && C.analysisMode == 32u) {
         return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     }
-    if (C.look != 4u) {
-        float shoulder = smoothstep(0.55, 1.0, lumTm);
-        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
-        float desat;
-        if (C.preserveHighlightColor != 0u) {
-            desat = (C.look == 5u) ? 0.03 : 0.08;
-        } else {
-            desat = (C.look == 5u) ? 0.08 : 0.24;
-        }
-        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
-    }
+    rgbTm = comp_apply_highlight_desaturation(rgbTm, lumTm, C.look, C.preserveHighlightColor);
     rgbTm = comp_apply_look(rgbTm, C.look);
     rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
