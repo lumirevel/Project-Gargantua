@@ -3200,16 +3200,13 @@ static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
                                               float glareY,
                                               constant ComposeParams& C)
 {
-    // Local adaptation belongs before the eye tone curve: a bright local field
-    // reduces retinal gain, preserving contrast that global exposure would
-    // otherwise push into the shoulder. Scientific radiance is left unchanged.
+    // Keep pre-tonemap adaptation conservative. Disability glare is modeled
+    // primarily as additive veiling luminance below, not as local darkening
+    // around bright sources. Scientific radiance is left unchanged.
     float expY = max(surroundY, 0.0) * max(C.exposure, 1e-30);
-    float brightGate = smoothstep(0.10, 1.35, expY);
     float dimGate = 1.0 - smoothstep(0.025, 0.20, expY);
-    float brightGain = clamp(pow(0.40 / max(expY, 1e-5), 0.34), 0.22, 1.12);
     float dimGain = clamp(pow(0.11 / max(expY, 1e-5), 0.18), 1.0, 1.35);
-    float gain = mix(1.0, brightGain, brightGate);
-    gain = mix(gain, dimGain, 0.55 * dimGate);
+    float gain = mix(1.0, dimGain, 0.35 * dimGate);
 
     // Bright-source glare in the eye is not just reduced gain. Intraocular
     // scatter adds an equivalent veiling luminance to nearby retinal regions,

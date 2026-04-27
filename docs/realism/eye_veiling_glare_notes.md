@@ -4,13 +4,13 @@ Branch: `codex/interpreter-camera-v1`
 
 ## Observed Issue
 
-The room RT eye presentation can make regions close to bright lights read unnaturally dark. The scientific and no-optics comparisons showed that this was not caused by physical light generation or by the room RT source itself. The issue sits in the visual interpreter: bright local surround adaptation reduced retinal gain, but the eye model did not add enough equivalent veiling luminance from intraocular scatter.
+The room RT eye presentation can make regions close to bright lights read unnaturally dark. The scientific and no-optics comparisons showed that this was not caused by physical light generation or by the room RT source itself. The issue sits in the visual interpreter: bright local surround adaptation reduced retinal gain in places where the perceptual glare model should mostly add equivalent veiling luminance from intraocular scatter.
 
 ## Scientific Interpretation
 
-Real glare in the human eye is not only a gain reduction around bright sources. Forward scatter in the ocular media superimposes stray light on the retinal image, reducing contrast. Lighting literature describes this as disability glare or equivalent veiling luminance: a luminance veil that has the same contrast-reducing effect as scattered retinal illuminance.
+Real glare in the human eye is not primarily a local gain reduction around bright sources. Forward scatter in the ocular media superimposes stray light on the retinal image, reducing contrast. Lighting literature describes this as disability glare or equivalent veiling luminance: a luminance veil that has the same contrast-reducing effect as scattered retinal illuminance.
 
-This means a bright lamp should usually wash out nearby contrast before it produces a clean black halo. A local gain-only model can look wrong because it darkens the surround without adding the scatter veil that the eye would see.
+This means a bright lamp should usually wash out nearby contrast before it produces a clean black halo. A local gain model can look wrong if it darkens the surround in response to the lamp instead of adding the scatter veil that the eye would see.
 
 References used for this interpreter change:
 
@@ -26,9 +26,10 @@ References used for this interpreter change:
 
 ## Implemented Improvement
 
-`comp_eye_scene_adapt_rgb` now adds a restrained neutral veiling-luminance proxy near bright sources:
+`comp_eye_scene_adapt_rgb` now treats eye glare as a restrained neutral veiling-luminance proxy near bright sources:
 
-- local surround luminance still drives eye adaptation gain,
+- local surround luminance only drives a conservative low-light adaptation lift,
+- bright surround luminance no longer directly darkens scene RGB before tone mapping,
 - a separate distance-weighted bright-pass sample drives the scatter veil,
 - gated by `cameraPsfSigmaPx`, so diagnostics that disable optical PSF also disable this added veil,
 - added before the eye tone curve, keeping the effect in the eye/display interpreter,
@@ -46,7 +47,7 @@ The current implementation therefore adds:
 - `comp_eye_scene_glare_tile`
 - `comp_eye_glare_source_y`
 
-These helpers collect bright-pass scene luminance from nearby and farther samples with lower weight at the farther radius. The resulting `glareY` is passed separately into `comp_eye_scene_adapt_rgb`, so a dark wall average no longer incorrectly removes the veil caused by a nearby lamp.
+These helpers collect bright-pass scene luminance from nearby and farther samples with lower weight at the farther radius. The resulting `glareY` is passed separately into `comp_eye_scene_adapt_rgb`, so a dark wall average no longer incorrectly removes the veil caused by a nearby lamp. Bright-source glare now reduces visible contrast by adding a veil, not by multiplying the local image darker.
 
 ## How To Inspect
 
