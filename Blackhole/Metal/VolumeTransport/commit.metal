@@ -167,9 +167,16 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
             raw = pow(clamp(prepared.gMean, 1e-4, 1e4), 3.0);
         } else if (P.diskGrmhdDebugView == 20u) {
             // Raw radiance should expose the integrated observed signal, not a
-            // per-sample peak. For visible GRMHD this is the accumulated
-            // photopic/XYZ scalar prepared above before interpreter effects.
-            raw = max(prepared.scalarI, 0.0);
+            // per-sample peak or scalar fallback. For visible GRMHD, use the
+            // same accumulated visible luminance that the normal volumetric path
+            // stores as XYZ, before interpreter/camera effects.
+            if (volumeA.visibleSpectrumMode == 1u) {
+                raw = (FC_PHYSICS_MODE == 2u)
+                    ? max(volumeA.IVisNu.y, 0.0)
+                    : max(volume_visible_bands_to_xyz(volumeA, P).y, 0.0);
+            } else {
+                raw = max(dot(max(volumeA.IVisNu, float3(0.0)), float3(0.13344, 0.85742, 0.00914)), 0.0);
+            }
         } else if (P.diskGrmhdDebugView == 23u) {
             raw = (volumeA.tauOneSource > 0.0) ? volumeA.tauOneSource : max(volumeA.maxSource, 0.0);
         } else if (P.diskGrmhdDebugView == 24u) {

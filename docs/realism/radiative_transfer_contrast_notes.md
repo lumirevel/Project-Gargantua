@@ -72,10 +72,17 @@ These diagnostics are intentionally physics-side. They expose whether the
 photospheric body is dominating the raw signal before any camera/interpreter
 work, and they do not change the rendered radiance.
 
-`raw-radiance` now explicitly emits the integrated observed scalar radiance from
-the prepared GRMHD visible hit instead of falling through ambiguous debug
-routing. This makes the diagnostic represent post-transfer physical signal
-before interpreter/camera effects.
+`raw-radiance` now explicitly emits the accumulated visible luminance used by
+the GRMHD visible/XYZ path instead of a per-sample peak or scalar fallback. This
+makes the diagnostic represent post-transfer physical signal before
+interpreter/camera effects.
+
+The compose stage now routes GRMHD state diagnostics as scalar physical maps for
+`raw-radiance`, post-transfer branch radiance, emission-layer, body/source
+proxies, `transfer-saturation`, `body-ratio`, and `skin-body-balance`. This
+prevents debug payload fields from being reinterpreted as visible spectral
+anchors during visible-volume renders. It is diagnostic plumbing only and does
+not alter the final non-debug radiance path.
 
 Use these together:
 

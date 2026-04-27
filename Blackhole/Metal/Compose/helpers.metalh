@@ -1434,8 +1434,8 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                  P.diskVolumeMode != 0u &&
                                  ((C.analysisMode >= 11u && C.analysisMode <= 16u) ||
                                   C.analysisMode == 19u ||
-                                  (C.analysisMode >= 20u && C.analysisMode <= 29u) ||
-                                  (C.analysisMode >= 33u && C.analysisMode <= 57u) ||
+                                  (C.analysisMode >= 20u && C.analysisMode <= 30u) ||
+                                  (C.analysisMode >= 33u && C.analysisMode <= 68u) ||
                                   C.analysisMode == 65u));
     if (FC_PHYSICS_MODE == 3u || precisionVolumeDebug) {
         if (C.analysisMode == 65u) { // physical hit mask
@@ -1484,10 +1484,13 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
             float p = clamp(rec.noise, 0.0, 1.0);
             return float3(p);
         }
-        if ((C.analysisMode >= 20u && C.analysisMode <= 29u) ||
-            (C.analysisMode >= 33u && C.analysisMode <= 56u) ||
-            C.analysisMode == 66u) {
+        if ((C.analysisMode >= 20u && C.analysisMode <= 30u) ||
+            (C.analysisMode >= 33u && C.analysisMode <= 64u) ||
+            (C.analysisMode >= 66u && C.analysisMode <= 68u)) {
             float raw = max(rec.emit_r_norm, 0.0);
+            if (C.analysisMode == 30u) { // raw post-transfer radiance/luminance
+                return float3(raw);
+            }
             if (C.analysisMode == 23u) { // fluid speed proxy |v|/c
                 return comp_debug_ramp(clamp(raw, 0.0, 1.0));
             }
@@ -1607,7 +1610,29 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                 raw = max(rec.direct_world.w, 0.0);
                 if (!(raw > 0.0)) return float3(0.0);
                 return comp_debug_ramp(clamp(raw / 6.0, 0.0, 1.0));
+            } else if (C.analysisMode == 58u) { // post-transfer thermal radiance contribution
+                lo = -8.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 59u) { // post-transfer cloud/skin radiance contribution
+                lo = -8.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 60u) { // post-transfer body/photosphere radiance contribution
+                lo = -8.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 61u) { // emission-weighted vertical layer |z|/r
+                return comp_debug_ramp(clamp(raw / 0.18, 0.0, 1.0));
+            } else if (C.analysisMode == 62u) { // emission-weighted body layer gate
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 63u) { // post-transfer corona radiance contribution
+                lo = -8.0;
+                hi = 4.0;
+            } else if (C.analysisMode == 64u) { // local body/photosphere source proxy
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
             } else if (C.analysisMode == 66u) { // transfer saturation 1-exp(-tau)
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 67u) { // photospheric body fraction after transfer
+                return comp_debug_ramp(clamp(raw, 0.0, 1.0));
+            } else if (C.analysisMode == 68u) { // skin/corona balance after transfer
                 return comp_debug_ramp(clamp(raw, 0.0, 1.0));
             } else if (C.analysisMode == 57u) { // max local GRMHD phi/field residual sampled by the ray
                 return comp_debug_ramp(clamp(raw / 1.25, 0.0, 1.0));
@@ -2958,6 +2983,11 @@ static inline float3 comp_shade(const CollisionInfo rec,
         if (!(lumRaw > 1e-37)) return float3(0.0);
         return comp_debug_ramp(comp_grmhd_raw_log_debug_t(lumRaw));
     }
+    if (physicalVolumeDebug &&
+        (C.analysisMode == 65u || C.analysisMode == 66u ||
+         C.analysisMode == 67u || C.analysisMode == 68u)) {
+        return clamp(rgb, 0.0, 1.0);
+    }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
     if (physicalVolumeDebug && C.analysisMode == 31u) {
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
@@ -2989,6 +3019,8 @@ static inline float3 comp_shade(const CollisionInfo rec,
 
 static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
 {
+    bool physicalVolumeDebug = (FC_PHYSICS_MODE == 3u) ||
+                               (FC_PHYSICS_MODE == 2u && C.analysisMode != 0u);
     if (C.realismProfile == 5u &&
         (C.analysisMode == 34u || C.analysisMode == 35u ||
          C.analysisMode == 36u || C.analysisMode == 38u)) {
@@ -3006,10 +3038,15 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
         // no longer match the physical branch diagnostics.
         return clamp(rgb, 0.0, 1.0);
     }
-    if (FC_PHYSICS_MODE == 3u && C.analysisMode == 30u) {
+    if (physicalVolumeDebug && C.analysisMode == 30u) {
         float lumRaw = dot(max(rgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
         if (!(lumRaw > 1e-37)) return float3(0.0);
         return comp_debug_ramp(comp_grmhd_raw_log_debug_t(lumRaw));
+    }
+    if (physicalVolumeDebug &&
+        (C.analysisMode == 65u || C.analysisMode == 66u ||
+         C.analysisMode == 67u || C.analysisMode == 68u)) {
+        return clamp(rgb, 0.0, 1.0);
     }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
     if (FC_PHYSICS_MODE == 3u && C.analysisMode == 31u) {
