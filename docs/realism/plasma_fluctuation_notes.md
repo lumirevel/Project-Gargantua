@@ -222,6 +222,39 @@ channel transitions because it is a scalar/debug routing view; final radiance
 and `teff`/body/skin diagnostics should be used together when judging physical
 smoothness.
 
+## Photospheric Body Heating Perturbation
+
+The remaining gray-plastic disk look is partly caused by the visible reference
+body using an analytic radial photosphere while most GRMHD turbulence is routed
+to the skin/cloud branch. That makes the optically thick body physically
+plausible in radius, but too axisymmetric in local source temperature.
+
+The reference-skin mode now applies a small bounded temperature perturbation to
+the photospheric body before evaluating `B_nu(T)`. The perturbation is derived
+from existing fixed-`(r,z)` azimuthal GRMHD residuals and local magnetic/stress
+heating proxies:
+
+- positive residuals plus magnetic/stress support modestly heat the local body
+- negative residuals modestly cool it
+- the perturbation is clamped to `0.94..1.12` in temperature
+
+This is not procedural texture and not display-side contrast. It changes the
+physical source function used by transfer so turbulent structure can survive
+even where the photosphere is optically thick.
+
+The same mode also moves the visible body support away from a purely
+midplane-centered Gaussian and toward a tau-surface-like photospheric shell. A
+midplane-filled emissivity volume integrates into a smooth gray plate; an
+optically thick disk should expose a luminous photospheric layer. The shell is
+still broad and bounded, so it does not turn the disk into a razor-thin
+geometric decal.
+
+Preview validation at `160x160` against the previous hot-skin smoothing commit
+showed the body-isolated branch mean luma decrease from `0.1680` to `0.1547`
+while active-region contrast rose from `0.4170` to `0.4478`. The final
+blue-dominant fraction stayed essentially flat (`0.0796` to `0.0779`), so the
+change is not reintroducing the hard blue inner mask.
+
 ## Remaining Scientific Risk
 
 - The public GRMHD snapshot may not contain enough non-axisymmetric contrast at

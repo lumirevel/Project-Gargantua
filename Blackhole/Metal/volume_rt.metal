@@ -2209,6 +2209,20 @@ static inline void volume_integrate_segment(float3 p0,
                                                        * (0.42 + 0.58 * hybridBoundary);
                                     float hybridNtT = disk_visible_teff(r, P);
                                     float hybridBodyT = max(hybridParamT, hybridNtT);
+                                    if (referenceSkinMode) {
+                                        // Let MRI/GRMHD heating perturb the optically
+                                        // thick photospheric source itself. Without
+                                        // this, the body is nearly an axisymmetric
+                                        // Planck slab and only the thin skin carries
+                                        // turbulent structure.
+                                        float bodyResidualAmp = smoothstep(0.025, 0.82, dataFlowResidualAmp);
+                                        float bodyPositiveResidual = smoothstep(0.01, 0.90, max(dataFlowResidualLog, 0.0) * bodyResidualAmp);
+                                        float bodyNegativeResidual = smoothstep(0.01, 0.85, max(-dataFlowResidualLog, 0.0) * bodyResidualAmp);
+                                        float bodyStressHeat = max(residualStressGate, residualMagGate);
+                                        float bodyTempLogPerturb = 0.075 * bodyPositiveResidual * (0.45 + 0.55 * bodyStressHeat)
+                                                                 - 0.045 * bodyNegativeResidual * (1.0 - 0.35 * bodyStressHeat);
+                                        hybridBodyT *= clamp(exp(bodyTempLogPerturb), 0.94, 1.12);
+                                    }
                                     float hybridBodySource = volume_planck_nu(nuComov, hybridBodyT, P);
                                     float hybridSkinTempBoost = 1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate;
                                     if (referenceSkinMode) {
@@ -2247,7 +2261,15 @@ static inline void volume_integrate_segment(float3 p0,
                                         : mix(0.026, 0.052, smoothstep(7.0, 58.0, rRs));
                                     float hybridLayerCoord = abs(zNorm) / max(rRs * hybridHOverR, 1.0e-4);
                                     float hybridMidplane = exp(-0.5 * hybridLayerCoord * hybridLayerCoord);
-                                    float hybridBodySupport = hybridEdgeGate * hybridOuterGate * hybridMidplane * hybridBodyVisibleSupport;
+                                    float hybridBodyVertical = hybridMidplane;
+                                    if (referenceSkinMode) {
+                                        // The visible reference body is an
+                                        // optically thick photosphere, not a
+                                        // volume-filling gray midplane slab.
+                                        float bodyPhotosphereShell = exp(-0.5 * pow((hybridLayerCoord - 0.85) / 0.55, 2.0));
+                                        hybridBodyVertical = clamp(0.18 * hybridMidplane + 0.82 * bodyPhotosphereShell, 0.0, 1.0);
+                                    }
+                                    float hybridBodySupport = hybridEdgeGate * hybridOuterGate * hybridBodyVertical * hybridBodyVisibleSupport;
                                     float hybridOpacityAnchor = max(comps.aBase * thermalAbsorptionWeight * radialThermalWeight, 1.0e-30);
                                     hybridBodyGate = clamp(hybridBodySupport, 0.0, 1.0);
                                     bodyProxy = hybridBodyGate;
