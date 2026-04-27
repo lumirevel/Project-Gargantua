@@ -1342,23 +1342,22 @@ static inline float comp_canonical_abs_branch_debug_scale() {
     return 6.8e-18;
 }
 
+static inline float comp_grmhd_log_window_t(float raw, float logLo, float logHi) {
+    float logLum = log(max(raw, 1e-38)) * 0.4342944819032518;
+    return clamp((logLum - logLo) / max(logHi - logLo, 1e-6), 0.0, 1.0);
+}
+
 static inline float comp_grmhd_raw_log_debug_t(float lumRaw) {
     // Keep raw-log as a diagnostic range independent from the exposure
     // histogram. Calibrated GRMHD hot-flow radiance is intentionally far
     // below the older saturated 1e2...1e12 histogram range.
-    constexpr float logLo = -8.0;
-    constexpr float logHi = 4.0;
-    float logLum = log(max(lumRaw, 1e-38)) * 0.4342944819032518;
-    return clamp((logLum - logLo) / max(logHi - logLo, 1e-6), 0.0, 1.0);
+    return comp_grmhd_log_window_t(lumRaw, -8.0, 4.0);
 }
 
 static inline float comp_grmhd_visible_radiance_detail_t(float lumRaw) {
     // Detail view for the calibrated visible-reference photosphere. This is a
     // diagnostic-only narrower log window; it does not alter stored radiance.
-    constexpr float logLo = -2.8;
-    constexpr float logHi = -1.2;
-    float logLum = log(max(lumRaw, 1e-38)) * 0.4342944819032518;
-    return clamp((logLum - logLo) / max(logHi - logLo, 1e-6), 0.0, 1.0);
+    return comp_grmhd_log_window_t(lumRaw, -2.8, -1.2);
 }
 
 static inline float3 comp_thin_hybrid_debug_rgb(const ThinHybridRealismSample s,
@@ -1444,7 +1443,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                  ((C.analysisMode >= 11u && C.analysisMode <= 16u) ||
                                   C.analysisMode == 19u ||
                                   (C.analysisMode >= 20u && C.analysisMode <= 30u) ||
-                                  (C.analysisMode >= 33u && C.analysisMode <= 69u) ||
+                                  (C.analysisMode >= 33u && C.analysisMode <= 72u) ||
                                   C.analysisMode == 65u));
     if (FC_PHYSICS_MODE == 3u || precisionVolumeDebug) {
         if (C.analysisMode == 65u) { // physical hit mask
@@ -1495,7 +1494,7 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
         }
         if ((C.analysisMode >= 20u && C.analysisMode <= 30u) ||
             (C.analysisMode >= 33u && C.analysisMode <= 64u) ||
-            (C.analysisMode >= 66u && C.analysisMode <= 69u)) {
+            (C.analysisMode >= 66u && C.analysisMode <= 72u)) {
             float raw = max(rec.emit_r_norm, 0.0);
             if (C.analysisMode == 30u) { // raw post-transfer radiance/luminance
                 return float3(raw);
@@ -1645,6 +1644,12 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                 return comp_debug_ramp(clamp(raw, 0.0, 1.0));
             } else if (C.analysisMode == 69u) { // visible raw radiance detail, narrow log window
                 return comp_debug_ramp(comp_grmhd_visible_radiance_detail_t(raw));
+            } else if (C.analysisMode == 70u) { // source-function detail, narrow log window
+                return comp_debug_ramp(comp_grmhd_log_window_t(raw, -14.9, -14.3));
+            } else if (C.analysisMode == 71u) { // pre-transfer emissivity detail, narrow log window
+                return comp_debug_ramp(comp_grmhd_log_window_t(raw, -2.0, 2.0));
+            } else if (C.analysisMode == 72u) { // post-transfer radiance detail, narrow log window
+                return comp_debug_ramp(comp_grmhd_log_window_t(raw, -8.0, -6.0));
             } else if (C.analysisMode == 57u) { // max local GRMHD phi/field residual sampled by the ray
                 return comp_debug_ramp(clamp(raw / 1.25, 0.0, 1.0));
             }
@@ -2997,7 +3002,8 @@ static inline float3 comp_shade(const CollisionInfo rec,
     if (physicalVolumeDebug &&
         (C.analysisMode == 65u || C.analysisMode == 66u ||
          C.analysisMode == 67u || C.analysisMode == 68u ||
-         C.analysisMode == 69u)) {
+         C.analysisMode == 69u || C.analysisMode == 70u ||
+         C.analysisMode == 71u || C.analysisMode == 72u)) {
         return clamp(rgb, 0.0, 1.0);
     }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);
@@ -3058,7 +3064,8 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     if (physicalVolumeDebug &&
         (C.analysisMode == 65u || C.analysisMode == 66u ||
          C.analysisMode == 67u || C.analysisMode == 68u ||
-         C.analysisMode == 69u)) {
+         C.analysisMode == 69u || C.analysisMode == 70u ||
+         C.analysisMode == 71u || C.analysisMode == 72u)) {
         return clamp(rgb, 0.0, 1.0);
     }
     float3 rgbExp = rgb * max(C.exposure, 1e-30);

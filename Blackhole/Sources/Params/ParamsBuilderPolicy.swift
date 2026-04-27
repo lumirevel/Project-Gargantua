@@ -451,6 +451,12 @@ enum ParamsBuilderPolicy {
             diskGrmhdDebugID = 58
         case "raw-radiance-detail", "raw_detail", "raw-radiance-narrow", "radiance-detail", "visible-radiance-detail":
             diskGrmhdDebugID = 59
+        case "source-detail", "source_narrow", "source-function-detail", "j-over-alpha-detail":
+            diskGrmhdDebugID = 60
+        case "emissivity-detail", "emissivity_narrow", "emissivity-pre-transfer-detail", "jthermal-weighted-detail":
+            diskGrmhdDebugID = 61
+        case "radiance-post-transfer-detail", "post-transfer-radiance-detail", "ithermal-detail":
+            diskGrmhdDebugID = 62
         case "path", "path-length", "ray-path", "time-delay", "ct":
             diskGrmhdDebugID = 45
         case "impact", "impact-parameter", "b-impact", "ray-impact":
@@ -458,7 +464,7 @@ enum ParamsBuilderPolicy {
         case "flow-residual", "residual", "phi-residual", "data-residual", "texture-residual":
             diskGrmhdDebugID = 47
         default:
-            fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak, pol, thetae, sigma, beta-inv, speed, gamma, tau, optical_depth, alpha, samples, invalid, beaming, raw-radiance, raw-log, raw-radiance-detail, post-exposure, post-tonemap, source, tau1-r, tau1-depth, tau-wide, optical_depth_wide, alpha-wide, emission-radius, bmag, epsabs, abase, acool, jthermal, jthin, source-thermal, source-thin, branch-ratio, thin-weight, jthermal-weighted, emissivity-pre-transfer, thermal-alpha-pre, thermal-alpha-post, corona-weight, jthermal-cloud, thermal-cloud-ratio, ithermal, radiance-post-transfer, ithermal-cloud, ithermal-body, ithermal-corona, emission-layer, body-layer-gate, body-proxy, hit-mask, transfer-saturation, body-ratio, skin-body-balance, path, impact, flow-residual")
+            fail("invalid --disk-grmhd-debug \(diskGrmhdDebugName). use one of: off, rho, b2, jnu, inu, teff, g, y, peak, pol, thetae, sigma, beta-inv, speed, gamma, tau, optical_depth, alpha, samples, invalid, beaming, raw-radiance, raw-log, raw-radiance-detail, source-detail, emissivity-detail, radiance-post-transfer-detail, post-exposure, post-tonemap, source, tau1-r, tau1-depth, tau-wide, optical_depth_wide, alpha-wide, emission-radius, bmag, epsabs, abase, acool, jthermal, jthin, source-thermal, source-thin, branch-ratio, thin-weight, jthermal-weighted, emissivity-pre-transfer, thermal-alpha-pre, thermal-alpha-post, corona-weight, jthermal-cloud, thermal-cloud-ratio, ithermal, radiance-post-transfer, ithermal-cloud, ithermal-body, ithermal-corona, emission-layer, body-layer-gate, body-proxy, hit-mask, transfer-saturation, body-ratio, skin-body-balance, path, impact, flow-residual")
         }
         if diskPhysicsModeID != 3 && diskPhysicsModeID != 2 && diskGrmhdDebugID != 0 {
             FileHandle.standardError.write(Data("warn: --disk-grmhd-debug is only active in grmhd mode or precision volume mode\n".utf8))

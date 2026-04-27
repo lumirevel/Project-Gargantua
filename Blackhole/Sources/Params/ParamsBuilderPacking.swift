@@ -6,6 +6,15 @@ extension ParamsBuilder {
         if config.diskPhysicsModeID == 3 && config.visibleModeEnabled && config.visibleExpressiveMode {
             visibleFlags |= 1
         }
+        let diskGrmhdTraceDebugView: UInt32 = {
+            switch config.diskGrmhdDebugID {
+            case 59: return 20 // raw-radiance-detail displays the existing raw radiance payload.
+            case 60: return 23 // source-detail displays the existing source-function payload.
+            case 61: return 39 // emissivity-detail displays the existing weighted-emissivity payload.
+            case 62: return 48 // radiance-post-transfer-detail displays the existing thermal-radiance payload.
+            default: return config.diskGrmhdDebugID
+            }
+        }()
 
         return PackedParams(
             width: UInt32(config.width),
@@ -98,7 +107,7 @@ extension ParamsBuilder {
             diskGrmhdEmissionScale: Float(config.diskGrmhdEmissionScaleArg),
             diskGrmhdAbsorptionScale: Float(config.diskGrmhdAbsorptionScaleArg),
             diskGrmhdVelScale: Float(config.diskGrmhdVelScaleArg),
-            diskGrmhdDebugView: config.diskGrmhdDebugID,
+            diskGrmhdDebugView: diskGrmhdTraceDebugView,
             diskPolarizedRT: (config.diskPhysicsModeID == 3 && config.diskPolarizedRTEnabled) ? 1 : 0,
             diskPolarizationFrac: Float(config.diskPolarizationFracArg),
             diskFaradayRotScale: Float(config.diskFaradayRotScaleArg),

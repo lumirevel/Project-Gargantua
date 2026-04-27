@@ -108,15 +108,53 @@ hidden by the broader debug scale; `radiance-post-transfer` and
 `transfer-saturation` remain nearly uniform, so source-function/opacity closure
 is still the next physical bottleneck to inspect.
 
+Follow-up comparison added the same kind of narrow-window diagnostics for the
+transfer chain:
+
+```bash
+--disk-grmhd-debug source-detail
+--disk-grmhd-debug emissivity-detail
+--disk-grmhd-debug radiance-post-transfer-detail
+```
+
+These views reuse the existing source-function, weighted thermal emissivity,
+and post-transfer thermal radiance accumulators. They only change the debug
+mapping window, not the physical transfer or final image. They are intended to
+answer a narrower question: does contrast disappear in local emissivity, in the
+`j/alpha` source-function closure, or only after optical-depth integration?
+The Swift packing layer keeps these detail views tied to the same trace-side
+payload IDs as their broad views, so the comparison changes only the display
+window used by the physics diagnostic.
+The initial ranges are calibrated from the current 160 px visible-disk cache:
+source around `log10(S) ~= -14.8`, weighted emissivity around
+`log10(int j ds) ~= -2..2`, and post-transfer thermal radiance around
+`log10(I) ~= -8..-6`.
+
+Validation of these detail maps showed:
+
+- `emissivity-detail` exposes substantially more structure than the broad
+  emissivity map (`active_cv` about `0.17` vs `0.05` in the 160 px cache).
+- `source-detail` exposes weak source-function variation (`active_cv` about
+  `0.30`, but most pixels remain near the floor).
+- `radiance-post-transfer-detail` remains spatially flat for the current
+  scalar thermal accumulator, while `raw-radiance-detail` still shows strong
+  structure (`active_cv` about `0.41`). This means the next physical
+  investigation should compare the scalar `intIThermal` diagnostic against the
+  visible XYZ/band-integrated radiance path; the visible radiance path preserves
+  structure that the scalar thermal branch diagnostic does not.
+
 Use these together:
 
 ```bash
 --disk-grmhd-debug emissivity-pre-transfer
+--disk-grmhd-debug emissivity-detail
 --disk-grmhd-debug raw-radiance-detail
 --disk-grmhd-debug radiance-post-transfer
+--disk-grmhd-debug radiance-post-transfer-detail
 --disk-grmhd-debug optical_depth
 --disk-grmhd-debug transfer-saturation
 --disk-grmhd-debug source
+--disk-grmhd-debug source-detail
 --disk-grmhd-debug body-ratio
 --disk-grmhd-debug skin-body-balance
 ```
