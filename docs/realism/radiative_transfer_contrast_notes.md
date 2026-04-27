@@ -143,6 +143,22 @@ Validation of these detail maps showed:
   visible XYZ/band-integrated radiance path; the visible radiance path preserves
   structure that the scalar thermal branch diagnostic does not.
 
+The `radiance-post-transfer` payload now uses the actual visible accumulated
+luminance (`IVisNu` converted to XYZ/Y where needed) when the visible-spectrum
+path is active. The older scalar thermal accumulator is still used as a
+fallback for non-visible scalar paths. This keeps the diagnostic aligned with
+the render contract meaning of post-transfer radiance instead of accidentally
+showing only a branch bookkeeping scalar.
+
+After this correction, the current 160 px visible-disk cache shows
+`radiance-post-transfer-detail` matching `raw-radiance-detail` (`active_cv`
+about `0.41`). The broad `radiance-post-transfer` map still looks compressed
+because its display window is intentionally wide, but the detail map proves the
+post-transfer visible radiance retains the same spatial structure as the raw
+visible radiance. The earlier flat `radiance-post-transfer-detail` result was a
+diagnostic payload bug, not evidence that transfer had erased all visible
+structure.
+
 Use these together:
 
 ```bash

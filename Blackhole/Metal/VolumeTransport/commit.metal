@@ -226,7 +226,13 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
             float branchTotal = max(volumeA.intIThermal + volumeA.intIThin, 1e-30);
             raw = clamp(volumeA.intIThermalCloud / branchTotal, 0.0, 1.0);
         } else if (P.diskGrmhdDebugView == 48u) {
-            raw = max(volumeA.intIThermal, 0.0);
+            if (volumeA.visibleSpectrumMode == 1u) {
+                raw = (FC_PHYSICS_MODE == 2u)
+                    ? max(volumeA.IVisNu.y, 0.0)
+                    : max(volume_visible_bands_to_xyz(volumeA, P).y, 0.0);
+            } else {
+                raw = max(volumeA.intIThermal, 0.0);
+            }
         } else if (P.diskGrmhdDebugView == 49u) {
             raw = max(volumeA.intIThermalCloud, 0.0);
         } else if (P.diskGrmhdDebugView == 50u) {
