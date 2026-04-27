@@ -55,6 +55,13 @@ path. It deliberately does not add new post-processing, tone mapping, bloom,
 exposure, or procedural texture. It gives the renderer a clear public source
 model name for testing cloud-like structure from plasma fluctuations.
 
+The optically thin visible/NIR tail now keeps a smaller continuity floor in
+`disk_grmhd_visible_thin_tail_coeffs`: `0.004 + 0.996 * tailActivation` instead
+of `0.012 + 0.988 * tailActivation`. This keeps the dense volume from glowing
+uniformly and makes the candidate more dependent on hot/magnetized plasma cells.
+The change is intentionally limited to the synchrotron/plasma-tail emissivity
+path.
+
 The script help also now lists existing physics controls that were already parsed
 by Swift but were hard to discover from the public pipeline:
 

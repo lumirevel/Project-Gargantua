@@ -271,10 +271,10 @@ static inline void disk_grmhd_visible_thin_tail_coeffs(float rho,
     // better than the older, too-flat B^(1+0.5 alpha) proxy.
     float bState = pow(bRatio, 1.0 + alphaLocal);
     float thetaState = pow(thetaRatio, 0.95);
-    // Keep a tiny numerical floor for continuity, but do not let the whole dense
-    // disk volume emit as a visible synchrotron tail. The previous 12% floor
-    // turned real GRMHD columns into a white silhouette and hid turbulent state.
-    float nonthermalFraction = 0.012 + 0.988 * tailActivation;
+    // Keep only a tiny numerical floor for continuity. This optically thin
+    // plasma diagnostic should be selected by hot/magnetized cells; a larger
+    // floor makes the whole dense volume glow and hides turbulent state.
+    float nonthermalFraction = 0.004 + 0.996 * tailActivation;
     // Let the visible/NIR roll-off vary with local plasma state. A fixed cutoff
     // makes the GRMHD fields affect only brightness, so the render becomes
     // nearly monochrome even when rho/B/theta_e structure is present. This is a
