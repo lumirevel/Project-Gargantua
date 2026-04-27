@@ -182,6 +182,20 @@ python3 scripts/validate_presentation_on_rt_scene.py \
   --transparent-dof-reference \
   --lens-reference-spp 8 \
   --bokeh-targets
+git diff --check
+BH_DERIVED_DATA_PATH=/private/tmp/ProjectGargantuaCameraInterpreterDerivedData \
+BH_ETA_HISTORY=/private/tmp/bh_transparent_roi_heatmap_validation/eta.json \
+python3 scripts/validate_presentation_on_rt_scene.py \
+  --out-dir /private/tmp/bh_transparent_roi_heatmap_validation \
+  --width 96 \
+  --height 54 \
+  --spp 1 \
+  --focus-depth 4.35 \
+  --f-number 1.4 \
+  --dof-strength 1.8 \
+  --transparent-dof-reference \
+  --lens-reference-spp 4 \
+  --bokeh-targets
 ```
 
 Passed:
@@ -202,6 +216,9 @@ Passed:
   multi-layer transparent DOF reference on the same room RT scene.
 - Transparent DOF validation metrics include a glass ROI block so local glass
   errors are not hidden by whole-image averages.
+- Transparent DOF validation now writes a glass ROI crop sheet and optional ROI
+  error heatmaps versus stochastic thin-lens and multi-layer transparent DOF
+  references.
 
 Failed:
 
@@ -231,6 +248,8 @@ Known environment warning:
 - Current diagnostics use repeated renders, which are slow but avoid same-render buffer growth.
 - Same-render auxiliary buffers would need memory and synchronization review.
 - Full-resolution behavior of sensor-filmic and diagnostics has not been profiled.
+- The transparent DOF ROI crop/error artifacts are validation images only; they
+  are not production buffers and should not be committed as generated outputs.
 
 ### Merge Risks With Physics Branch
 
@@ -257,6 +276,8 @@ Check during later integration:
 - `tone_mapped_no_bloom` before judging bloom/glare,
 - `bloom_only` and negative redistribution metrics before changing flare strength,
 - `sensor-filmic` against existing looks on the same physical input.
+- glass ROI crop sheet and ROI error heatmaps before accepting a transparent or
+  multi-layer DOF merge.
 
 Do not overwrite:
 

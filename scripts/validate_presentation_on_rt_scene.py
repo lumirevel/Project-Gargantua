@@ -26,6 +26,8 @@ from PIL import Image, ImageDraw
 
 
 EPS = 1e-4
+RESAMPLE_BICUBIC = getattr(getattr(Image, "Resampling", Image), "BICUBIC")
+RESAMPLE_NEAREST = getattr(getattr(Image, "Resampling", Image), "NEAREST")
 ROOT = Path(__file__).resolve().parents[1]
 RUN_PIPELINE = ROOT / "Blackhole" / "run_pipeline.sh"
 GPU_ROOM_RT = ROOT / "scripts" / "generate_room_rt_hdr_gpu.swift"
@@ -802,6 +804,59 @@ def masked_luma_corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
     return corr(luminance(a)[mask], luminance(b)[mask])
 
 
+def mask_bbox(mask: np.ndarray, pad: int = 4) -> Tuple[int, int, int, int]:
+    ys, xs = np.where(mask)
+    if xs.size == 0 or ys.size == 0:
+        return 0, 0, mask.shape[1], mask.shape[0]
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad + 1, mask.shape[1])
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + pad + 1, mask.shape[0])
+    return x0, y0, x1, y1
+
+
+def save_roi_sheet(items: List[Tuple[str, Path]], mask: np.ndarray, out_path: Path, scale: int = 4) -> None:
+    x0, y0, x1, y1 = mask_bbox(mask)
+    crops = []
+    for label, path in items:
+        im = Image.open(path).convert("RGB").crop((x0, y0, x1, y1))
+        im = im.resize((im.width * scale, im.height * scale), RESAMPLE_BICUBIC)
+        crops.append((label, im))
+    if not crops:
+        return
+    w, h = crops[0][1].size
+    label_h = 24
+    sheet = Image.new("RGB", (len(crops) * w, h + label_h), (10, 10, 10))
+    draw = ImageDraw.Draw(sheet)
+    for i, (label, im) in enumerate(crops):
+        x = i * w
+        draw.rectangle([x, 0, x + w, label_h], fill=(18, 18, 18))
+        draw.text((x + 6, 6), label, fill=(235, 235, 235))
+        sheet.paste(im, (x, label_h))
+    sheet.save(out_path)
+
+
+def save_roi_error_heatmap(reference: np.ndarray,
+                           candidate: np.ndarray,
+                           mask: np.ndarray,
+                           out_path: Path,
+                           scale: int = 4) -> None:
+    x0, y0, x1, y1 = mask_bbox(mask)
+    err = np.mean(np.abs(reference[y0:y1, x0:x1] - candidate[y0:y1, x0:x1]), axis=-1)
+    roi_mask = mask[y0:y1, x0:x1]
+    active = err[roi_mask]
+    norm = float(np.percentile(active, 99.0)) if active.size else float(np.percentile(err, 99.0))
+    heat = np.clip(err / max(norm, 1e-6), 0.0, 1.0)
+    rgb = np.zeros((heat.shape[0], heat.shape[1], 3), dtype=np.float32)
+    rgb[..., 0] = heat
+    rgb[..., 1] = np.clip(1.4 * heat - 0.25, 0.0, 1.0)
+    rgb[..., 2] = np.clip(1.0 - 1.6 * heat, 0.0, 1.0) * 0.25
+    rgb[~roi_mask] *= 0.22
+    im = Image.fromarray((np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+    im = im.resize((im.width * scale, im.height * scale), RESAMPLE_NEAREST)
+    im.save(out_path)
+
+
 def corr(a: np.ndarray, b: np.ndarray) -> float:
     aa = a.astype(np.float64).reshape(-1)
     bb = b.astype(np.float64).reshape(-1)
@@ -1086,6 +1141,13 @@ def main() -> None:
     cine = np.asarray(Image.open(paths["cinema"]).convert("RGB"), dtype=np.float32) / 255.0
     sci_y = luminance(sci)
     glass_mask = glass_roi_mask(args.width, args.height)
+    roi_sheet = out_dir / "rt_room_glass_roi_sheet.png"
+    roi_items = [("scientific", paths["scientific"]), ("eye", paths["eye"]), ("cinema", paths["cinema"])]
+    if lens_reference_path is not None:
+        roi_items.append(("thin-lens ref", lens_reference_path))
+    if transparent_dof_path is not None:
+        roi_items.append(("multi-layer DOF", transparent_dof_path))
+    save_roi_sheet(roi_items, glass_mask, roi_sheet)
     metrics = {
         "scene": "room_area_light_metal_glass_plastic",
         "presentation_backend": presentation_backend,
@@ -1119,10 +1181,16 @@ def main() -> None:
         "cinema_luma_corr_vs_scientific": corr(sci_y, luminance(cine)),
         "eye_rgb_mae_vs_scientific": float(np.mean(np.abs(eye - sci))),
         "cinema_rgb_mae_vs_scientific": float(np.mean(np.abs(cine - sci))),
-        "outputs": {k: str(v) for k, v in paths.items()} | {"sheet": str(sheet), "hdr_input": str(hdr_path)},
+        "outputs": {k: str(v) for k, v in paths.items()} | {
+            "sheet": str(sheet),
+            "glass_roi_sheet": str(roi_sheet),
+            "hdr_input": str(hdr_path),
+        },
     }
     if lens_reference_path is not None:
         ref = np.asarray(Image.open(lens_reference_path).convert("RGB"), dtype=np.float32) / 255.0
+        lens_error_path = out_dir / "rt_room_glass_roi_error_vs_thin_lens.png"
+        save_roi_error_heatmap(ref, cine, glass_mask, lens_error_path)
         ref_y = luminance(ref)
         cine_y = luminance(cine)
         metrics["thin_lens_reference"] = image_stats(ref)
@@ -1132,8 +1200,11 @@ def main() -> None:
         metrics["glass_roi"]["cinema_luma_corr_vs_thin_lens_reference"] = masked_luma_corr(cine, ref, glass_mask)
         metrics["glass_roi"]["cinema_mae_vs_thin_lens_reference"] = masked_mae(cine, ref, glass_mask)
         metrics["outputs"]["thin_lens_reference_cinema"] = str(lens_reference_path)
+        metrics["outputs"]["glass_roi_error_vs_thin_lens_reference"] = str(lens_error_path)
     if transparent_dof_path is not None:
         layered = np.asarray(Image.open(transparent_dof_path).convert("RGB"), dtype=np.float32) / 255.0
+        layered_error_path = out_dir / "rt_room_glass_roi_error_vs_transparent_multilayer_dof.png"
+        save_roi_error_heatmap(layered, cine, glass_mask, layered_error_path)
         layered_y = luminance(layered)
         cine_y = luminance(cine)
         metrics["transparent_multilayer_dof"] = image_stats(layered)
@@ -1143,6 +1214,7 @@ def main() -> None:
         metrics["glass_roi"]["cinema_luma_corr_vs_transparent_multilayer_dof"] = masked_luma_corr(cine, layered, glass_mask)
         metrics["glass_roi"]["cinema_mae_vs_transparent_multilayer_dof"] = masked_mae(cine, layered, glass_mask)
         metrics["outputs"]["transparent_multilayer_dof_cinema"] = str(transparent_dof_path)
+        metrics["outputs"]["glass_roi_error_vs_transparent_multilayer_dof"] = str(layered_error_path)
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     (out_dir / "summary.md").write_text(
         "# Everyday RT Presentation Validation\n\n"

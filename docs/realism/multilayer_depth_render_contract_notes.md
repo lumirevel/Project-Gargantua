@@ -128,10 +128,25 @@ Before enabling production multi-layer DOF:
 
 - compare final RGB, tone-mapped-no-bloom, and raw layer previews,
 - inspect glass/transparent ROI metrics rather than only whole-image averages,
+- inspect glass/transparent ROI crop sheets and error heatmaps against
+  layer-aware or stochastic lens references,
 - verify memory growth at target resolution,
 - verify no CPU-GPU synchronization regression,
 - document packed ABI changes and alignment,
 - keep a single-depth fallback path.
+
+## Reference Basis
+
+The current branch follows the standard limitation called out by practical DOF
+implementations: post-process blur based on a single depth buffer is useful for
+opaque previews but breaks on semi-transparent or multi-layer pixels. GPU Gems
+discusses post-process DOF as a depth-buffer approximation, while PBRT's camera
+models use aperture/lens sampling as the physically grounded reference path.
+
+References:
+
+- NVIDIA GPU Gems 3, "Practical Post-Process Depth of Field": https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-28-practical-post-process-depth-field
+- PBRT v4, "Projective Camera Models": https://www.pbr-book.org/4ed/Cameras_and_Film/Projective_Camera_Models
 
 ## Current Branch Status
 
@@ -139,7 +154,8 @@ Implemented in this branch:
 
 - validation-only multi-layer transparent DOF reference for the room RT scene,
 - stochastic thin-lens reference path,
-- glass ROI metrics to make transparent DOF errors visible.
+- glass ROI metrics to make transparent DOF errors visible,
+- glass ROI crop sheet and error heatmaps for local visual inspection.
 
 Deferred:
 

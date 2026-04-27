@@ -59,6 +59,21 @@ The script writes:
 Metrics now include a glass-sphere ROI block so transparent DOF differences are
 not hidden by whole-image averages.
 
+The script also writes glass-focused visual diagnostics:
+
+- `rt_room_glass_roi_sheet.png`: cropped comparison of scientific, eye,
+  cinema, stochastic thin-lens reference when requested, and multi-layer
+  transparent DOF reference when requested.
+- `rt_room_glass_roi_error_vs_thin_lens.png`: cropped heatmap of cinema output
+  error versus the stochastic aperture-sampled reference when
+  `--lens-reference-spp` is enabled.
+- `rt_room_glass_roi_error_vs_transparent_multilayer_dof.png`: cropped heatmap
+  of cinema output error versus the layer-aware transparent DOF reference when
+  `--transparent-dof-reference` is enabled.
+
+These images are diagnostic-only. They make the known single-depth transparency
+failure local and visible before any production render-contract change.
+
 This does not change the black-hole renderer's physical source model or packed
 physics outputs. It also does not pretend the production compose path has a full
 multi-layer depth contract. It creates an interpreter-side reference image for
@@ -74,6 +89,7 @@ References:
 
 - NVIDIA GPU Gems 3, "Practical Post-Process Depth of Field": https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-28-practical-post-process-depth-field
 - NVIDIA GPU Gems, "Depth of Field: A Survey of Techniques": https://developer.nvidia.com/gpugems/gpugems/part-iv-image-processing/chapter-23-depth-field-survey-techniques
+- PBRT v4, "Projective Camera Models": https://www.pbr-book.org/4ed/Cameras_and_Film/Projective_Camera_Models
 - Eidos-Montreal, "Depth Proxy Transparency Rendering": https://www.eidosmontreal.com/news/depth-proxy-transparency-rendering/
 
 ## Files
