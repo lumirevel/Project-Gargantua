@@ -1435,8 +1435,12 @@ static inline float3 comp_linear_rgb_precloud(const CollisionInfo rec,
                                  ((C.analysisMode >= 11u && C.analysisMode <= 16u) ||
                                   C.analysisMode == 19u ||
                                   (C.analysisMode >= 20u && C.analysisMode <= 29u) ||
-                                  (C.analysisMode >= 33u && C.analysisMode <= 56u)));
+                                  (C.analysisMode >= 33u && C.analysisMode <= 57u) ||
+                                  C.analysisMode == 65u));
     if (FC_PHYSICS_MODE == 3u || precisionVolumeDebug) {
+        if (C.analysisMode == 65u) { // physical hit mask
+            return float3(1.0);
+        }
         if (C.analysisMode >= 11u && C.analysisMode <= 14u) {
             float raw = 0.0;
             float lo = -30.0;

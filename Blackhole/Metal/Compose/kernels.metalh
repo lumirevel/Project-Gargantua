@@ -4,6 +4,9 @@ static inline float4 renderBH_linear_from_collision(bool traced,
                                                     constant ComposeParams& C)
 {
     if (!traced || rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            return float4(float3(0.0), 2.0);
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         return float4(bg, -2.0);
     }
@@ -146,6 +149,10 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
 
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gidx] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gidx] = float4(bg, -2.0);
         return;
@@ -191,6 +198,10 @@ kernel void composeLinearRGBLite(constant Params& P [[buffer(0)]],
 
     CollisionInfo rec = unpack_collision_lite32(inInfo[gidx]);
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gidx] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gidx] = float4(bg, -2.0);
         return;
@@ -219,6 +230,10 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
     if (gid >= count) return;
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gid] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
         return;
@@ -256,6 +271,10 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
     if (gid >= count) return;
     CollisionInfo rec = unpack_collision_lite32(inInfo[gid]);
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gid] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
         return;
