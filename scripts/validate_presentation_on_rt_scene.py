@@ -123,6 +123,8 @@ class Scene:
         plastic = Material("diffuse", np.array([0.96, 0.22, 0.10], dtype=np.float32))
         metal = Material("metal", np.array([0.92, 0.88, 0.78], dtype=np.float32), roughness=0.035)
         glass = Material("glass", np.array([0.94, 0.98, 1.00], dtype=np.float32), ior=1.48)
+        rear_dark = Material("diffuse", np.array([0.05, 0.055, 0.06], dtype=np.float32))
+        rear_light = Material("diffuse", np.array([0.96, 0.94, 0.82], dtype=np.float32))
         amber_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([55.0, 34.0, 13.0], dtype=np.float32))
         blue_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([12.0, 24.0, 60.0], dtype=np.float32))
         white_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([62.0, 58.0, 48.0], dtype=np.float32))
@@ -143,6 +145,12 @@ class Scene:
             Sphere(np.array([-0.85, -0.45, -1.75], dtype=np.float32), 0.55, metal),
             Sphere(np.array([0.35, -0.50, -1.45], dtype=np.float32), 0.50, glass),
             Sphere(np.array([1.05, -0.62, -2.10], dtype=np.float32), 0.38, plastic),
+            # Rear-wall contrast target behind the glass sphere. It makes
+            # back-surface refraction visible in interpreter/camera validation.
+            Plane(np.array([0.0, 0.0, -2.985], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_dark, ((-0.02, 0.38), (-0.76, -0.36), "xy")),
+            Plane(np.array([0.0, 0.0, -2.984], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_light, ((0.38, 0.78), (-0.76, -0.36), "xy")),
+            Plane(np.array([0.0, 0.0, -2.983], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_light, ((-0.02, 0.38), (-0.36, 0.04), "xy")),
+            Plane(np.array([0.0, 0.0, -2.982], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_dark, ((0.38, 0.78), (-0.36, 0.04), "xy")),
         ]
         if bokeh_targets:
             # Small self-luminous spheres at different depths. They deliberately
