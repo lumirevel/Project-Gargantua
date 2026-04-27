@@ -835,7 +835,7 @@ apply_science_regime_defaults() {
       append_swift_default --visible-policy "physical"
       append_swift_default --visible-emission-model "blackbody"
       append_swift_default --teff-model "grmhd-hybrid"
-      append_swift_default --thermal-transfer-mode "tau-surface"
+      append_swift_default --thermal-transfer-mode "volume"
       append_swift_default --thin-photosphere "on"
       append_swift_default --thin-h-over-r-base "0.018"
       append_swift_default --thin-h-over-r-inner "0.012"

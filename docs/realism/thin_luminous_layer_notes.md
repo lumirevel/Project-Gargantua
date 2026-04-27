@@ -25,6 +25,8 @@ The cleanest current path is not a new shader model. The renderer already has th
 
 The safe implementation is a named source model, `thin-luminous-layer-candidate`, that activates those existing controls for GRMHD visible thermal transfer. Existing presets remain unchanged.
 
+Follow-up diagnostic renders against an evolved GRMHD cache showed that the original `tau-surface` shortcut made the candidate appear too compact relative to the canonical visible disk. The candidate now keeps the thin photosphere/layer weighting but uses full `volume` transfer by default, so the emitting layer remains physically constrained while the observed radiance is not collapsed to a single local tau surface.
+
 ## Safest implementation point
 
 `Blackhole/run_pipeline.sh` is the safest implementation point because it can define one physics source candidate using existing Swift/Metal parameters:
@@ -33,13 +35,13 @@ The safe implementation is a named source model, `thin-luminous-layer-candidate`
 ./run_pipeline.sh --source-model thin-luminous-layer-candidate ...
 ```
 
-The candidate uses GRMHD mode, visible physical blackbody transfer, a GRMHD-hybrid temperature model, tau-surface transfer, and a narrower Gaussian photosphere layer. It does not add new Metal fields, new packed parameters, or new public shader logic.
+The candidate uses GRMHD mode, visible physical blackbody transfer, a GRMHD-hybrid temperature model, full volume transfer, and a narrower Gaussian photosphere layer. It does not add new Metal fields, new packed parameters, or new public shader logic.
 
 ## Risks
 
 - This candidate requires a GRMHD volume or HDF5-to-volume input; it is not a standalone analytic thin-disk render.
 - A very thin H/R layer can miss structure if the volume resolution in `z` is too coarse.
-- Tau-surface transfer is physically interpretable as a photosphere approximation, but it is still an approximation and should be compared against full volume RT.
+- The previous tau-surface shortcut is physically interpretable as a photosphere approximation, but it can make the apparent disk too compact. Keep comparing it against full volume RT before making it a production default.
 - The candidate may underrepresent optically thin corona or hot-skin emission because it intentionally disables the corona layer by default.
 
 ## Validation method
@@ -55,3 +57,8 @@ Minimum validation:
   - `--source-model thin-luminous-layer-candidate --disk-grmhd-debug raw-radiance`
 
 The layer is behaving as intended only if `thin-weight` and `emission-layer` show a narrow emitting region while `raw-radiance` and `optical_depth` remain physically structured rather than display-tuned.
+
+Additional extent check:
+
+- Compare `thin-luminous-layer-candidate` against the same candidate with `--thermal-transfer-mode tau-surface`.
+- The full-volume default should keep the thin-layer diagnostics while avoiding a visibly undersized disk caused by collapsing radiance to only the first tau-surface sample.
