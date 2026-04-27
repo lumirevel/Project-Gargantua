@@ -252,6 +252,14 @@ static inline void trace_store_volume_hit(thread const VolumeAccum& volumeA,
             float body = max(volumeA.intIThermalBody, 0.0);
             float skin = max(volumeA.intIThermalCloud + volumeA.intIThermalCorona, 0.0);
             raw = clamp(skin / max(body + skin, 1e-30), 0.0, 1.0);
+        } else if (P.diskGrmhdDebugView == 59u) {
+            if (volumeA.visibleSpectrumMode == 1u) {
+                raw = (FC_PHYSICS_MODE == 2u)
+                    ? max(volumeA.IVisNu.y, 0.0)
+                    : max(volume_visible_bands_to_xyz(volumeA, P).y, 0.0);
+            } else {
+                raw = max(dot(max(volumeA.IVisNu, float3(0.0)), float3(0.13344, 0.85742, 0.00914)), 0.0);
+            }
         } else if (P.diskGrmhdDebugView == 47u) {
             raw = max(volumeA.maxFlowResidual, 0.0);
         }

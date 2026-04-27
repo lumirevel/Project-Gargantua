@@ -2348,20 +2348,34 @@ static inline void volume_integrate_segment(float3 p0,
                                         0.0,
                                         1.0
                                     );
-                                    if (referenceSkinMode) {
-                                        hybridCoronaGate = clamp(
-                                            pow(max(residualMagGate, 1.0e-4), 0.95)
+	                                    if (referenceSkinMode) {
+	                                        hybridCoronaGate = clamp(
+	                                            pow(max(residualMagGate, 1.0e-4), 0.95)
                                             * pow(max(residualHotGate, 1.0e-4), 0.85)
                                             * (0.16 + 0.84 * hybridPositiveResidual)
                                             * hybridCoronaLayer
                                             * hybridCoronaInner
                                             * coronaLayerWeight,
                                             0.0,
+	                                            1.0
+	                                        );
+	                                    }
+                                    if (referenceSkinMode) {
+                                        // Keep the weak transfer screen tied to the
+                                        // same photospheric layer that emits. A
+                                        // broad midplane absorption slab saturates
+                                        // tau almost uniformly and averages away
+                                        // the structured source before diagnostics
+                                        // can inspect it.
+                                        float referenceOpacityLayer = clamp(
+                                            max(hybridBodyGate, 0.45 * hybridSkinLayer * hybridInnerGate),
+                                            0.0,
                                             1.0
                                         );
+                                        aCom *= clamp(0.32 + 0.68 * referenceOpacityLayer, 0.32, 1.0);
                                     }
-                                }
-                                float smoothBodyFloorWeight = 0.08 * bodyProxy * denseBodyGate;
+	                                }
+	                                float smoothBodyFloorWeight = 0.08 * bodyProxy * denseBodyGate;
                                 float thermalContinuumLocalWeight = 1.0;
                                 switch (P.grmhdSmoothWeightMode) {
                                     case 1u:

@@ -84,10 +84,35 @@ prevents debug payload fields from being reinterpreted as visible spectral
 anchors during visible-volume renders. It is diagnostic plumbing only and does
 not alter the final non-debug radiance path.
 
+The visible reference-skin body now also ties its weak absorption screen to the
+same photospheric layer that emits the body and skin. Earlier changes moved body
+emission toward a tau-surface-like layer, but the residual absorption screen
+remained broader and could drive nearly uniform transfer saturation. The screen
+still has a floor, so this is not a global opacity removal; it prevents
+off-photosphere volume from acting like a gray slab over the structured source.
+
+Added a narrow-window raw visible-radiance diagnostic:
+
+```bash
+--disk-grmhd-debug raw-radiance-detail
+```
+
+This stores the same accumulated visible luminance as `raw-radiance` but maps it
+through a narrower diagnostic log window during compose. It is diagnostic-only:
+the stored radiance and final image path are unchanged. The current 160 px
+visible-disk cache shows why this matters: `raw-radiance` has active
+coefficient-of-variation about `0.019`, while `raw-radiance-detail` shows the
+same signal with active coefficient-of-variation about `0.402`. This indicates
+that some physically meaningful variation survives in the raw signal but is
+hidden by the broader debug scale; `radiance-post-transfer` and
+`transfer-saturation` remain nearly uniform, so source-function/opacity closure
+is still the next physical bottleneck to inspect.
+
 Use these together:
 
 ```bash
 --disk-grmhd-debug emissivity-pre-transfer
+--disk-grmhd-debug raw-radiance-detail
 --disk-grmhd-debug radiance-post-transfer
 --disk-grmhd-debug optical_depth
 --disk-grmhd-debug transfer-saturation
