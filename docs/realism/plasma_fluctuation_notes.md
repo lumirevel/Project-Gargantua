@@ -85,9 +85,18 @@ but a visible disk needs a luminous photospheric body.
 This candidate routes through GRMHD visible thermal transfer with:
 
 - a visible photospheric disk body: `--grmhd-smooth-weight visible-reference-skin`
-- positive GRMHD hot-skin emissivity: `--grmhd-cloud-emission-scale 0.95`
+- positive GRMHD hot-skin emissivity: `--grmhd-cloud-emission-scale 1.80`
 - no procedural Perlin clouds and no camera/display changes
-- `teff-T0=9500`, `teff-p=0.68`, and scientific presentation by default
+- `teff-T0=6500`, `teff-p=0.62`, `grmhd-smooth-emission-scale=1.55`,
+  and scientific presentation by default
+
+The earlier `9500 K / body 2.50 / skin 0.95` candidate looked like a gray
+plastic disk in scientific output because the smooth photospheric body dominated
+and the blackbody color sat near white. The current default intentionally lowers
+the visible photosphere temperature scale and shifts more signal into the
+positive hot/magnetized skin branch. In the same GRMHD cache, the measured final
+contrast rose from about `0.412` to `0.699` without changing camera or display
+mapping.
 
 Use this when testing a film-visible disk body with physically sourced plasma
 structure. Use `grmhd-plasma-fluctuation-candidate` only when the goal is to
