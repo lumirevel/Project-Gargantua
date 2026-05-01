@@ -43,10 +43,19 @@ struct RenderResourcePolicy {
         let directLinearModelSafe =
             (config.diskPhysicsModeID == 0 && (config.diskModelResolved == "flow" || config.diskModelResolved == "atlas")) ||
             (config.diskPhysicsModeID == 3 && params.diskVolumeFormat == 1 && params.diskVolumeMode != 0)
+        let thinVisibleReferenceDebugSafe =
+            (config.diskPhysicsModeID == 0 &&
+             config.visibleTeffModelID == 3 &&
+             config.composeAnalysisMode >= 31 &&
+             config.composeAnalysisMode <= 42)
+        let thinVisibleReferenceRayBundleDirectSafe =
+            (config.diskPhysicsModeID == 0 &&
+             config.visibleTeffModelID == 3 &&
+             config.diskGrmhdDebugID == 0)
         directLinearUnsafeReason = {
-            if config.rayBundleActive { return "ray bundle requires collision fields" }
+            if config.rayBundleActive && !thinVisibleReferenceRayBundleDirectSafe { return "ray bundle requires collision fields" }
             if config.visibleModeEnabled { return "visible mode requires collision fields" }
-            if config.composeAnalysisMode != 0 { return "analysis mode requires collision fields" }
+            if config.composeAnalysisMode != 0 && !thinVisibleReferenceDebugSafe { return "analysis mode requires collision fields" }
             if config.diskGrmhdDebugID != 0 { return "GRMHD debug output requires collision fields" }
             if !directLinearModelSafe { return "disk model is not validated for direct HDR" }
             return ""
@@ -54,9 +63,9 @@ struct RenderResourcePolicy {
         directLinearTraceSafe =
             useInMemoryCollisions &&
             config.discardCollisionOutput &&
-            !config.rayBundleActive &&
+            (!config.rayBundleActive || thinVisibleReferenceRayBundleDirectSafe) &&
             !config.visibleModeEnabled &&
-            config.composeAnalysisMode == 0 &&
+            (config.composeAnalysisMode == 0 || thinVisibleReferenceDebugSafe) &&
             config.diskGrmhdDebugID == 0 &&
             directLinearModelSafe
         workingSetCap = Int(min(device.recommendedMaxWorkingSetSize, UInt64(Int.max)))
@@ -71,11 +80,16 @@ struct RenderResourcePolicy {
         directLinearThresholdBytes = 256 * 1024 * 1024
         let grmhdScalarDirectDefault =
             (config.diskPhysicsModeID == 3 && !config.visibleModeEnabled && config.diskGrmhdDebugID == 0)
+        let thinVisibleReferenceDirectDefault =
+            (config.diskPhysicsModeID == 0 &&
+             config.visibleTeffModelID == 3 &&
+             config.diskGrmhdDebugID == 0 &&
+             (config.composeAnalysisMode == 0 || thinVisibleReferenceDebugSafe))
         directLinearPreferred =
             directLinearTraceSafe &&
             (
                 config.traceHDRDirectMode == "on" ||
-                (config.traceHDRDirectMode == "auto" && (grmhdScalarDirectDefault || outSize >= directLinearThresholdBytes))
+                (config.traceHDRDirectMode == "auto" && (grmhdScalarDirectDefault || thinVisibleReferenceDirectDefault || outSize >= directLinearThresholdBytes))
             )
         projectedDirectLinearBytes = approxTextureBytes + linearOutSize + fullComposeOutBytes
         projectedFullComposeBytes = approxTextureBytes + outSize + linearOutSize + fullComposeOutBytes

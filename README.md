@@ -75,15 +75,23 @@ Notes:
 
 More natural observational profile:
 ```bash
-./run_pipeline.sh --width 1200 --height 1200 --preset realistic --output blackhole_realistic.png
+./run_pipeline.sh --width 1200 --height 1200 --preset realistic --presentation-mode eye --output blackhole_realistic.png
 ```
 
-The `realistic` preset keeps the existing geodesic/lensing path but changes thin-disk image formation:
-- NT-like thin-disk color temperature is used for the surface spectrum.
-- Relativistic `g` is preserved in spectral accumulation and receives a modest extra photographic beaming emphasis.
-- Disk-space shear perturbations are evaluated from `(r, phi, time)`, not from image coordinates.
-- A thin atmosphere and faint inner corona are blended in compose, without making the disk a thick torus.
-- The camera path uses neutral filmic tone mapping, weak scientific PSF/noise, and a modest lensed star background.
+Presentation modes separate physical transport/source modeling from observer modeling:
+- `--presentation-mode scientific` is the ideal-master/diagnostic presentation: no eye/camera response, no flare, no background by default.
+- `--presentation-mode eye` is the recommended human-observer presentation for `--preset realistic`: no camera sensor noise/flare by default, observational thin-disk source profile, restrained human-vision color adaptation, and background context.
+- `--presentation-mode cinema` enables camera/sensor/lens presentation defaults.
+- `--scientific-master-out master.linear32f32` keeps an HDR32 scientific-master intermediate and defaults presentation to `scientific`.
+
+The `realistic` preset keeps the existing geodesic/lensing path scientific while changing only presentation defaults:
+- `--realism-profile physical` is the strict thin-disk baseline: NT-like color-temperature/emissivity, spectral emission, g-factor, and no phenomenological atmosphere/corona/microstructure layer.
+- `--realism-profile observational` enables a phenomenological thin-disk surface layer for visual exploration. Its opacity is tied to a Shakura-Sunyaev-inspired radial proxy, but it is not a solved GRMHD or full radiative-transfer model.
+- `--realism-profile cinematic` is the stronger look-development profile, not the strict science baseline.
+- `--camera-profile scientific` applies the default lens/sensor response after ray tracing and HDR composition.
+- `--camera-profile cinema-digital` or `full-frame` shifts realism toward camera/lens/sensor behavior rather than modifying geodesic tracing.
+- `--camera-profile-json path/to/profile.json` overrides the built-in camera response with explicit calibration parameters.
+- `docs/camera_profile.example.json` is a starting point for a hand-fit camera response profile; `docs/camera_profiles/` contains sensor-physics-oriented examples.
 
 Realism debug maps:
 ```bash
@@ -91,15 +99,28 @@ Realism debug maps:
 ./run_pipeline.sh --preset realistic --realism-debug emissivity --output debug_emissivity.png
 ./run_pipeline.sh --preset realistic --realism-debug beaming --output debug_beaming.png
 ./run_pipeline.sh --preset realistic --realism-debug perturbation --output debug_perturbation.png
+./run_pipeline.sh --preset realistic --realism-debug temperature --output debug_temperature.png
+./run_pipeline.sh --preset realistic --realism-debug tau --output debug_tau.png
+./run_pipeline.sh --preset realistic --realism-debug density --output debug_density.png
+./run_pipeline.sh --preset realistic --realism-debug radial-tau --output debug_radial_tau.png
 ```
 
 Debug values:
 - `g`: raw frequency-shift factor map.
 - `emissivity`: normalized Novikov-Thorne-like radial emissivity.
-- `beaming`: approaching/receding weighting.
+- `beaming`: relativistic transport beaming diagnostic; this is not an extra render multiplier.
 - `photosphere`, `atmosphere`, `corona`: component-only contributions.
 - `perturbation`: disk-coordinate turbulence/shear field.
 - `hdr`: pre-tone-map HDR luminance map.
+- `temperature`: observed thin-disk color-temperature proxy after g-factor and disk-space variation.
+- `tau`: thin-atmosphere optical-depth proxy.
+- `density`: disk-space density/opacity modulation proxy.
+- `radial-tau`: thin-disk radial opacity baseline before turbulent modulation.
+- `--camera-profile {ideal|scientific|cinema-digital|full-frame}`: post-render camera/lens/sensor response profile.
+- `--camera-profile-json <path>`: custom camera calibration profile, for example `docs/camera_profile.example.json` or `docs/camera_profiles/imx455_full_frame_astro_like.json`.
+- Direct response keys include `sceneMatrix`, `displayMatrix`, `sensorGain`, `fullWell`, `shoulderMix`, `blackLevel`, `vignette`, `chromaNoiseMix`, `rowNoise`, `toeStrength`, `saturation`, and `displayShoulder`.
+- Physical camera keys include `fullWellElectrons`, `readNoiseElectrons`, `peakQuantumEfficiency`, `darkCurrentElectronsPerSecond`, `exposureSeconds`, `dsnuElectrons`, `prnuPercent`, `pixelPitchMicrons`, `lensFNumber`, `lensVignettingStops`, `psfSigmaPixels`, and `flareStrength`; these are converted to the renderer's internal camera response/noise/PSF parameters unless the direct keys or CLI overrides are provided.
+- `--realism-profile {off|physical|observational|cinematic}`: thin-disk realism/presentation profile; use `physical` for strict comparisons and `observational`/`cinematic` for phenomenological surface structure.
 
 ## Kerr Render
 
@@ -179,7 +200,7 @@ python3 Blackhole/scripts/export_stage3_bridge.py --input collisions.bin --csv c
 Disk model selector:
 - `--disk-model flow`: force streamline flow disk
 - `--disk-model procedural`: legacy alias for `flow`
-- `--disk-model perlin`: force classic Perlin texture disk (pre-streamline style)
+- `--disk-model perlin`: legacy alias for `perlin-ec7` Perlin texture disk (pre-streamline style)
 - `--disk-model atlas`: force atlas disk (`--disk-atlas` required, non-precision render path)
 - `--disk-model auto`: default. non-precision에서는 atlas 입력이 있으면 atlas를 쓰고, precision에서는 flow로 렌더
 - `--disk-model` (형성 방식)과 `--disk-mode` (물리 모드)는 분리되어 동작
@@ -373,7 +394,7 @@ Physical disk controls:
 - `--disk-ic-amp <>=0>`: HDF5 초기조건 섭동 강도(현상론적 seeded perturbation, default `0`, 비활성)
 - `--disk-ic-seed <int>`: HDF5 초기조건 섭동 시드 (default `1337`)
 - `--disk-ic-scale <cells>`: HDF5 초기조건 섭동 상관 길이(셀 단위, default `12`)
-- `--background {off|stars}`: miss ray 배경 (default: cinematic/realistic profile에서 `stars`, 나머지는 `off`)
+- `--background {off|stars}`: miss ray 배경 (default: cinematic/realistic look에서 `stars`, 나머지는 `off`)
 - `--bg-stars {on|off}`: `--background`의 on/off 별칭
 - `--bg-star-density <0..4>`: 별 밀도
 - `--bg-star-strength <0..4>`: 별 밝기

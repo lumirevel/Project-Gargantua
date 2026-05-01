@@ -73,7 +73,11 @@ enum ParamsBuilderSummary {
         rayBundleJacobianActive: Bool,
         rayBundleJacobianStrengthArg: Double,
         rayBundleFootprintClampArg: Double,
+        composeLook: String,
+        presentationModeName: String,
         cameraModelName: String,
+        cameraProfileName: String,
+        realismProfileName: String,
         cameraPsfSigmaArg: Float,
         cameraReadNoiseArg: Float,
         cameraShotNoiseArg: Float,
@@ -91,7 +95,7 @@ enum ParamsBuilderSummary {
         downsampleArg: Int,
         composeAnalysisMode: UInt32
     ) -> String {
-        "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), cameraModel=(name=\(cameraModelName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), io=(composeGPU=\(composeGPU),gpuFullCompose=\(gpuFullCompose),discardCollisions=\(discardCollisionOutput),hdrFileIntermediate=\(useLinear32Intermediate),traceHDRPreference=\(traceHDRDirectMode)), downsample=\(downsampleArg), analysisMode=\(composeAnalysisMode)"
+        "render config preset=\(preset) \(width)x\(height), cam=(\(camXFactor),\(camYFactor),\(camZFactor))rs, fov=\(fovDeg), roll=\(rollDeg), rcp=\(rcp), diskH=\(diskHFactor)rs, maxSteps=\(maxStepsArg), metric=\(metricName), spin=\(spinArg), kerrSubsteps=\(kerrSubstepsArg), kerrTol=\(kerrTolArg), kerrEscape=\(kerrEscapeMultArg), kerrScale=(\(kerrRadialScaleArg),\(kerrAzimuthScaleArg),\(kerrImpactScaleArg)), diskModel=\(diskModelResolved), diskFlow=(t=\(diskFlowTimeArg),omega=\(diskOrbitalBoostArg),vr=\(diskRadialDriftArg),turb=\(diskTurbulenceArg),omegaIn=\(diskOrbitalBoostInnerArg),omegaOut=\(diskOrbitalBoostOuterArg),vrIn=\(diskRadialDriftInnerArg),vrOut=\(diskRadialDriftOuterArg),turbIn=\(diskTurbulenceInnerArg),turbOut=\(diskTurbulenceOuterArg),dt=\(diskFlowStepArg),steps=\(diskFlowStepsArg)), diskPhysics=(mode=\(diskPhysicsModeArg),mdotEdd=\(diskMdotEddArg),eta=\(diskRadiativeEfficiencyArg),plunge=\(diskPlungeFloorArg),thickScale=\(diskThickScaleArg),fcol=\(diskColorFactorArg),ret=\(diskReturningRadArg),retBounces=\(diskReturnBouncesArg),rtSteps=\(diskRTStepsArg),albedo=\(diskScatteringAlbedoArg),texture=\(diskPrecisionTextureArg),precisionClouds=\(diskPrecisionCloudsEnabled),cloudCoverage=\(diskCloudCoverageArg),cloudTau=\(diskCloudOpticalDepthArg),cloudPorosity=\(diskCloudPorosityArg),cloudShadow=\(diskCloudShadowStrengthArg)), diskAtlas=(enabled=\(diskAtlasEnabled),size=\(diskAtlasWidth)x\(diskAtlasHeight),temp=\(diskAtlasTempScaleArg),density=\(diskAtlasDensityBlendArg),vr=\(diskAtlasVrScaleArg),vphi=\(diskAtlasVphiScaleArg),rMin=\(diskAtlasRMin),rMax=\(diskAtlasRMax),rWarp=\(diskAtlasRWarp)), diskVolume=(enabled=\(diskVolumeEnabled),size=\(diskVolumeR)x\(diskVolumePhi)x\(diskVolumeZ),rMin=\(diskVolumeRMin),rMax=\(diskVolumeRMax),zMax=\(diskVolumeZMax),tauScale=\(diskVolumeTauScaleArg)), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg)), look=\(composeLook), presentation=\(presentationModeName), camera=(model=\(cameraModelName),profile=\(cameraProfileName),psf=\(cameraPsfSigmaArg),readNoise=\(cameraReadNoiseArg),shotNoise=\(cameraShotNoiseArg),flare=\(cameraFlareStrengthArg)), realismProfile=\(realismProfileName), background=(mode=\(backgroundModeName),density=\(backgroundStarDensityArg),strength=\(backgroundStarStrengthArg),nebula=\(backgroundNebulaStrengthArg)), tileSize=\(tileSize), io=(composeGPU=\(composeGPU),gpuFullCompose=\(gpuFullCompose),discardCollisions=\(discardCollisionOutput),hdrFileIntermediate=\(useLinear32Intermediate),traceHDRPreference=\(traceHDRDirectMode)), downsample=\(downsampleArg), analysisMode=\(composeAnalysisMode)"
     }
 
     static func grmhdConfigLine(
@@ -128,7 +132,19 @@ enum ParamsBuilderSummary {
         photosphereRhoThresholdResolved: Double,
         visibleEmissionModelName: String,
         visibleSynchAlphaArg: Double,
+        visibleSynchScaleArg: Double,
         visibleKappaArg: Double,
+        thinPhotosphereEnabled: Bool,
+        thinRadialTaperEnabled: Bool,
+        thinHOverRBaseArg: Double,
+        thinHOverRInnerArg: Double,
+        thinHOverROuterArg: Double,
+        thinWeightPowerEmissionArg: Double,
+        thinWeightPowerAbsorptionArg: Double,
+        coronaLayerEnabled: Bool,
+        coronaHOverRArg: Double,
+        coronaWeightPowerArg: Double,
+        visibleThermalTransferModeID: UInt32,
         coolAbsorptionEnabled: Bool,
         coolDustToGasArg: Double,
         coolDustKappaVArg: Double,
@@ -146,6 +162,6 @@ enum ParamsBuilderSummary {
         rayBundleJacobianStrengthArg: Double,
         rayBundleFootprintClampArg: Double
     ) -> String {
-        "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), visibleKappa=\(visibleKappaArg), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
+        "visible config enabled=\(visibleModeEnabled), policy=\(visiblePolicyName), samples=\(visibleSamplesArg), teffModel=\(visibleTeffModelName), teff=(T0=\(visibleTeffT0Arg),r0Rs=\(visibleTeffR0RsArg),p=\(visibleTeffPArg)), thinDisk=(M=\(visibleBhMassArg),mdot=\(visibleMdotArg),rInRs=\(visibleRInRsArg)), photosphereRho=\(photosphereRhoThresholdResolved), emissionModel=\(visibleEmissionModelName), synchAlpha=\(visibleSynchAlphaArg), synchScale=\(visibleSynchScaleArg), visibleKappa=\(visibleKappaArg), thinPhotosphere=(enabled=\(thinPhotosphereEnabled),taper=\(thinRadialTaperEnabled),hBase=\(thinHOverRBaseArg),hInner=\(thinHOverRInnerArg),hOuter=\(thinHOverROuterArg),pJ=\(thinWeightPowerEmissionArg),pA=\(thinWeightPowerAbsorptionArg)), coronaLayer=(enabled=\(coronaLayerEnabled),hOverR=\(coronaHOverRArg),power=\(coronaWeightPowerArg)), thermalTransfer=\(visibleThermalTransferModeID == 1 ? "tau-surface" : "volume"), coolAbsorption=(enabled=\(coolAbsorptionEnabled),dustToGas=\(coolDustToGasArg),dustKappaV=\(coolDustKappaVArg),dustBeta=\(coolDustBetaArg),dustTsub=\(coolDustTSubArg),dustTwidth=\(coolDustTWidthArg),gasKappa0=\(coolGasKappa0Arg),gasNuSlope=\(coolGasNuSlopeArg),clump=\(coolClumpStrengthArg)), exposureMode=\(exposureModeName), exposureEV=\(exposureEVArg), rayBundle=(requested=\(rayBundleEnabled),active=\(rayBundleActive),jacobian=\(rayBundleJacobianActive),jacStrength=\(rayBundleJacobianStrengthArg),clamp=\(rayBundleFootprintClampArg))"
     }
 }

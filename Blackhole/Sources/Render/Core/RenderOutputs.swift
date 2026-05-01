@@ -106,7 +106,11 @@ struct RenderMeta: Codable {
     var outputHeight: Int
     var exposure: Double
     var look: String
+    var presentationMode: String
     var cameraModel: String
+    var cameraProfile: String
+    var cameraProfileJSON: String
+    var realismProfile: String
     var cameraPsfSigmaPx: Double
     var cameraReadNoise: Double
     var cameraShotNoise: Double
@@ -264,7 +268,11 @@ enum RenderOutputs {
             outputHeight: outHeight,
             exposure: Double(composeExposure),
             look: config.composeLook,
+            presentationMode: config.presentationModeName,
             cameraModel: config.cameraModelName,
+            cameraProfile: config.cameraProfileName,
+            cameraProfileJSON: config.cameraProfileJSONPath,
+            realismProfile: config.realismProfileName,
             cameraPsfSigmaPx: Double(config.cameraPsfSigmaArg),
             cameraReadNoise: Double(config.cameraReadNoiseArg),
             cameraShotNoise: Double(config.cameraShotNoiseArg),

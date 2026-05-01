@@ -1,0 +1,23 @@
+{
+  "name": "generic-full-frame-calibrated",
+  "sceneMatrix": [
+    [1.030, 0.000, 0.000],
+    [0.000, 1.005, 0.000],
+    [0.000, 0.000, 0.985]
+  ],
+  "displayMatrix": [
+    [1.055, 0.010, -0.018],
+    [0.006, 1.008, 0.000],
+    [-0.010, 0.020, 0.990]
+  ],
+  "sensorGain": 1.0,
+  "fullWell": 8.5,
+  "shoulderMix": 0.14,
+  "blackLevel": 0.0,
+  "vignette": 0.18,
+  "chromaNoiseMix": 0.42,
+  "rowNoise": 0.20,
+  "toeStrength": 0.16,
+  "saturation": 1.08,
+  "displayShoulder": 0.0
+}

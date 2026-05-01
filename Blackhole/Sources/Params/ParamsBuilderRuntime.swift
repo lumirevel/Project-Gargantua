@@ -33,6 +33,8 @@ enum ParamsBuilderRuntime {
             return PresetDefaults(camX: 4.8, camY: 0.0, camZ: 0.55, fov: 58.0, roll: -18.0, rcp: 9.0, diskH: 0.08, maxSteps: 1600)
         case "eht":
             return PresetDefaults(camX: 8.4, camY: 0.0, camZ: 0.10, fov: 30.0, roll: 0.0, rcp: 4.4, diskH: 0.20, maxSteps: 2000)
+        case "thin-disk", "thin-observer", "accretion-disk":
+            return PresetDefaults(camX: 0.0, camY: -18.0, camZ: 5.5, fov: 58.0, roll: -18.0, rcp: 9.0, diskH: 0.01, maxSteps: 1800)
         default:
             return PresetDefaults(camX: 22.0, camY: 0.0, camZ: 0.9, fov: 58.0, roll: -18.0, rcp: 9.0, diskH: 0.01, maxSteps: 1600)
         }
@@ -79,7 +81,13 @@ enum ParamsBuilderRuntime {
         diskPhysicsModeID: UInt32
     ) -> (composeLook: String, composeLookID: UInt32) {
         let hasLookArg = cliArguments.contains("--look")
-        let defaultLookName = ((diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && !hasLookArg) ? "balanced" : preset
+        let presentationModeRaw = stringArg("--presentation-mode", default: "").lowercased()
+        let scientificPresentation = ["scientific", "science", "master"].contains(presentationModeRaw)
+        let defaultLookName: String = {
+            if scientificPresentation && !hasLookArg { return "linear" }
+            if (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && !hasLookArg { return "balanced" }
+            return preset
+        }()
         let composeLook = stringArg("--look", default: defaultLookName).lowercased()
         let composeLookID: UInt32
         switch composeLook {
@@ -89,6 +97,7 @@ enum ParamsBuilderRuntime {
         case "none", "linear": composeLookID = 4
         case "hdr", "hdr-rich", "hdrrich": composeLookID = 5
         case "realistic", "natural", "observational": composeLookID = 6
+        case "structure", "detail", "log-detail", "grmhd-detail": composeLookID = 7
         default: composeLookID = 0
         }
         return (composeLook, composeLookID)

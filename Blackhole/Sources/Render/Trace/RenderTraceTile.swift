@@ -68,9 +68,18 @@ enum RenderTraceTileSupport {
             backgroundNebulaStrength: input.backgroundNebulaStrengthArg,
             preserveHighlightColor: input.preserveHighlightColor,
             diskNoiseModel: input.params.diskNoiseModel,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0
+            cameraProfile: input.cameraProfileID,
+            realismProfile: input.realismProfileID,
+            cameraFlags: input.cameraFlags,
+            cameraSceneR: input.cameraSceneR,
+            cameraSceneG: input.cameraSceneG,
+            cameraSceneB: input.cameraSceneB,
+            cameraDisplayR: input.cameraDisplayR,
+            cameraDisplayG: input.cameraDisplayG,
+            cameraDisplayB: input.cameraDisplayB,
+            cameraSensorParams: input.cameraSensorParams,
+            cameraNoiseParams: input.cameraNoiseParams,
+            cameraColorParams: input.cameraColorParams
         )
         updateBuffer(linearParamBuf, with: &linearTileParams)
     }

@@ -15,6 +15,7 @@ struct DiskVolumeAssembly {
     let diskVolumeRMin: Double
     let diskVolumeRMax: Double
     let diskVolumeZMax: Double
+    let diskVolumeRWarp: Double
     let diskVol0PathResolved: String
     let diskVol1PathResolved: String
     let photosphereRhoThresholdResolved: Double
@@ -60,6 +61,7 @@ enum ParamsBuilderDiskVolume {
         let diskVolumeRMin = max(0.0, diskVolumeResource.metaRMin ?? 1.0)
         let diskVolumeRMax = max(diskVolumeRMin + 1e-6, diskVolumeResource.metaRMax ?? max(rcp, diskVolumeRMin + 0.1))
         let diskVolumeZMax = max(1e-4, diskVolumeResource.metaZMax ?? 0.35)
+        let diskVolumeRWarp = max(1e-3, diskVolumeResource.metaRWarp ?? 1.0)
         let photosphereRhoThresholdResolved = ParamsBuilderAssets.clampPhotosphereThreshold(
             diskPhysicsModeID: diskPhysicsModeID,
             visibleModeEnabled: visibleModeEnabled,
@@ -83,6 +85,7 @@ enum ParamsBuilderDiskVolume {
             diskVolumeRMin: diskVolumeRMin,
             diskVolumeRMax: diskVolumeRMax,
             diskVolumeZMax: diskVolumeZMax,
+            diskVolumeRWarp: diskVolumeRWarp,
             diskVol0PathResolved: diskVolumeResource.vol0PathResolved,
             diskVol1PathResolved: diskVolumeResource.vol1PathResolved,
             photosphereRhoThresholdResolved: photosphereRhoThresholdResolved

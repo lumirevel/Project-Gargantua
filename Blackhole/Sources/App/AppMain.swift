@@ -28,6 +28,10 @@ enum AppMain {
         }
         built.resolvedConfig = nil
         built.packedParams = nil
-        try Renderer.render(config: &resolvedConfig, params: packedParams)
+        if !resolvedConfig.composeHDRInputPath.isEmpty {
+            try Renderer.composeHDRInput(config: &resolvedConfig, params: packedParams)
+        } else {
+            try Renderer.render(config: &resolvedConfig, params: packedParams)
+        }
     }
 }

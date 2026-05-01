@@ -33,6 +33,8 @@ enum RenderComposeHDRIntermediatePhase {
         let composePrecisionID = config.composePrecisionID
         let composeAnalysisMode = config.composeAnalysisMode
         let composeCameraModelID = config.composeCameraModelID
+        let cameraProfileID = (composeAnalysisMode == 0) ? config.cameraProfileID : 0
+        let realismProfileID = config.realismProfileID
         let composeCameraPsfSigmaArg = config.composeCameraPsfSigmaArg
         let composeCameraReadNoiseArg = config.composeCameraReadNoiseArg
         let composeCameraShotNoiseArg = config.composeCameraShotNoiseArg
@@ -47,8 +49,11 @@ enum RenderComposeHDRIntermediatePhase {
         let outHeight = policy.outHeight
         let linearCloudBins: UInt32 = 2048
         let linearLumBins: UInt32 = 4096
-        let linearLumLogMin: Float = (config.diskPhysicsModeID == 3) ? -36.0 : 8.0
-        let linearLumLogMax: Float = (config.diskPhysicsModeID == 3) ? 4.0 : 20.0
+        let lumRange = config.composeExternalHDRInput
+            ? (min: Float(-8.0), max: Float(8.0))
+            : composeLuminanceLogRange(diskPhysicsModeID: config.diskPhysicsModeID)
+        let linearLumLogMin: Float = lumRange.min
+        let linearLumLogMax: Float = lumRange.max
 
         let composeBHLinearTilePipeline = runtime.composeBHLinearTilePipeline
         let lumHistLinearTileCloudPipeline = runtime.lumHistLinearTileCloudPipeline
@@ -86,9 +91,18 @@ enum RenderComposeHDRIntermediatePhase {
             backgroundStarDensity: backgroundStarDensityArg, backgroundStarStrength: backgroundStarStrengthArg,
             backgroundNebulaStrength: backgroundNebulaStrengthArg, preserveHighlightColor: preserveHighlightColor,
             diskNoiseModel: input.params.diskNoiseModel,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0
+            cameraProfile: cameraProfileID,
+            realismProfile: realismProfileID,
+            cameraFlags: config.cameraFlags,
+            cameraSceneR: config.cameraSceneR,
+            cameraSceneG: config.cameraSceneG,
+            cameraSceneB: config.cameraSceneB,
+            cameraDisplayR: config.cameraDisplayR,
+            cameraDisplayG: config.cameraDisplayG,
+            cameraDisplayB: config.cameraDisplayB,
+            cameraSensorParams: config.cameraSensorParams,
+            cameraNoiseParams: config.cameraNoiseParams,
+            cameraColorParams: config.cameraColorParams
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -125,19 +139,22 @@ enum RenderComposeHDRIntermediatePhase {
             guard let lumHistBuf = device.makeBuffer(length: lumHistBytes, options: .storageModeShared) else {
                 fail("failed to allocate linear32 luminance histogram buffer")
             }
+            let exposureSettings = composeExposureSolveSettings(
+                lookID: composeLookID,
+                presentationModeID: config.presentationModeID,
+                realismProfileID: realismProfileID,
+                diskPhysicsModeID: config.diskPhysicsModeID,
+                diskVolumeEnabled: config.diskVolumeEnabled
+            )
             var solveParams = ComposeSolveParams(
                 cloudQuantileLow: 0.08,
                 cloudQuantileHigh: 0.92,
-                lumQuantile: 0.995,
-                targetWhite: {
-                    var v = composeTargetWhite(composeLookID)
-                    if config.diskVolumeEnabled && config.diskPhysicsModeID != 3 { v *= 2.2 }
-                    return v
-                }(),
-                pFloor: (config.diskPhysicsModeID == 3) ? 1e-30 : 1e-12,
-                _pad0: 0,
-                _pad1: 0,
-                _pad2: 0
+                lumQuantile: exposureSettings.highQuantile,
+                targetWhite: exposureSettings.targetWhite,
+                pFloor: exposureSettings.pFloor,
+                lumMidQuantile: exposureSettings.midQuantile,
+                targetMid: exposureSettings.targetMid,
+                maxExposureBoost: exposureSettings.maxExposureBoost
             )
             guard let solveParamBuf = device.makeBuffer(bytes: &solveParams, length: MemoryLayout<ComposeSolveParams>.stride, options: []) else {
                 fail("failed to allocate linear32 exposure solve param buffer")
@@ -220,7 +237,11 @@ enum RenderComposeHDRIntermediatePhase {
             let solveResult = solveResultBuf.contents().bindMemory(to: ComposeSolveResult.self, capacity: 1).pointee
             resolvedComposeExposure = solveResult.exposure
             composeParamsTemplate.exposure = resolvedComposeExposure
-            print("lum(hist) p50=\(solveResult.p50), p99.5=\(solveResult.p995), mode=hdr32-file")
+            if exposureSettings.midQuantile > 0.0 {
+                print("lum(hist) p50=\(solveResult.p50), p\(Int(exposureSettings.midQuantile * 100))=\(solveResult.pMid), p99.5=\(solveResult.p995), mode=hdr32-file, exposureBoost<=\(exposureSettings.maxExposureBoost)")
+            } else {
+                print("lum(hist) p50=\(solveResult.p50), p99.5=\(solveResult.p995), mode=hdr32-file")
+            }
         }
 
         print("exposure=\(resolvedComposeExposure) (auto=\(config.autoExposureEnabled), mode=hdr32-file)")

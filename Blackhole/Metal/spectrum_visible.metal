@@ -26,7 +26,7 @@ struct ComposeParams {
     uint  lumBins;
     float lumLogMin;
     float lumLogMax;
-    uint  cameraModel; // 0=legacy, 1=scientific, 2=cinematic
+    uint  cameraModel; // 0=legacy, 1=scientific sensor, 2=cinematic camera, 3=human eye
     float cameraPsfSigmaPx;
     float cameraReadNoise;
     float cameraShotNoise;
@@ -37,9 +37,18 @@ struct ComposeParams {
     float backgroundNebulaStrength;
     uint  preserveHighlightColor; // 1=reduce highlight desaturation to keep visible chroma
     uint  diskNoiseModel; // 0=streamline, 1=perlin soft, 2/3=legacy perlin variants
-    uint  _pad0;
-    uint  _pad1;
-    uint  _pad2;
+    uint  cameraProfile; // 0=ideal, 1=scientific, 2=cinema digital, 3=full-frame photo
+    uint  realismProfile; // 0=off, 1=physical, 2=observational, 3=cinematic
+    uint  cameraFlags; // bits: aperture blades, rotation byte, DOF strength byte
+    float4 cameraSceneR;
+    float4 cameraSceneG;
+    float4 cameraSceneB;
+    float4 cameraDisplayR;
+    float4 cameraDisplayG;
+    float4 cameraDisplayB;
+    float4 cameraSensorParams; // gain, fullWell, shoulderMix, blackLevel
+    float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
+    float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
 };
 
 struct ComposeSolveParams {
@@ -48,9 +57,9 @@ struct ComposeSolveParams {
     float lumQuantile;
     float targetWhite;
     float pFloor;
-    float _pad0;
-    float _pad1;
-    float _pad2;
+    float lumMidQuantile;
+    float targetMid;
+    float maxExposureBoost;
 };
 
 struct ComposeSolveResult {
@@ -59,7 +68,7 @@ struct ComposeSolveResult {
     float p50;
     float p995;
     float exposure;
-    float _pad0;
+    float pMid;
     uint  cloudSamples;
     uint  lumSamples;
 };
@@ -130,7 +139,20 @@ static inline float comp_realistic_like(float x) {
     return clamp(precise::pow(y, 0.98), 0.0, 1.0);
 }
 
+static inline float comp_structure_like(float x) {
+    float xb = min(max(x, 0.0), 1e12);
+    // Presentation-only log luma mapping for GRMHD hot-flow inspection.
+    // It keeps radiance untouched before compose, but makes faint optically
+    // thin structure visible without using false-color debug output.
+    float y = log2(1.0 + 9.0 * xb) / log2(10.0);
+    y = clamp(y, 0.0, 1.0);
+    float toe = smoothstep(0.0, 0.08, y);
+    y = mix(0.48 * y, y, toe);
+    return clamp(precise::pow(y, 0.74), 0.0, 1.0);
+}
+
 static inline float comp_tonemap_luma(float x, uint look) {
+    if (look == 7u) return comp_structure_like(x); // --look structure
     if (look == 6u) return comp_realistic_like(x); // --look realistic
     if (look == 5u) return comp_hdr_like(x); // --look hdr
     if (look == 3u) return comp_agx_like(x); // --look agx
@@ -179,6 +201,13 @@ static inline float3 comp_apply_look(float3 rgb, uint look) {
         float contrast = smoothstep(0.02, 0.92, y);
         out = mix(out, out * (0.96 + 0.08 * contrast), 0.45);
         out = precise::pow(clamp(out, 0.0, 1.0), float3(1.01));
+        return clamp(out, 0.0, 1.0);
+    }
+    if (look == 7u) { // structure
+        float y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float sat = 1.02 - 0.20 * smoothstep(0.72, 1.0, y);
+        float3 out = mix(float3(y), rgb, sat);
+        out = precise::pow(clamp(out, 0.0, 1.0), float3(0.92));
         return clamp(out, 0.0, 1.0);
     }
     return clamp(rgb, 0.0, 1.0);
@@ -312,7 +341,10 @@ static inline void comp_visible_xyz_from_three_band_inu(float3 iNuVisObs,
         return;
     }
 
-    const float3 lamNm3 = float3(650.0, 550.0, 450.0);
+    // CIE-fit spectral anchors, not display RGB primaries. A grid search over
+    // 2500K-50000K blackbodies reduced RMS xy chromaticity error by ~7x versus
+    // the old 650/550/450nm anchors under this same CIE approximation.
+    const float3 lamNm3 = float3(650.0, 520.0, 425.0);
     const float3 lamM3 = lamNm3 * 1e-9;
     float3 iLam3 = iNuClamped * P.c / max(lamM3 * lamM3, float3(1e-30));
 

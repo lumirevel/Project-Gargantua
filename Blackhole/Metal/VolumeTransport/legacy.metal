@@ -101,23 +101,12 @@ static inline bool volume_integrate_thick_sample(float3 pos,
             }
         }
         float prRay = mix(pr0, pr1, t);
-        KerrCovMetric diskCov = kerr_cov_metric(rM, 0.5 * M_PI, a);
-        float uDen = -(diskCov.gtt
-                     + 2.0 * omega * diskCov.gtphi
-                     + omega * omega * diskCov.gphiphi
-                     + diskCov.grr * drdt * drdt);
-        if (!(uDen > 1e-12)) {
+        if (!disk_kerr_flow_gfactor(rM, a, omega, drdt, LzConst, prRay, g)) {
             drdt = 0.0;
-            uDen = -(diskCov.gtt
-                   + 2.0 * omega * diskCov.gtphi
-                   + omega * omega * diskCov.gphiphi);
+            if (!disk_kerr_flow_gfactor(rM, a, omega, drdt, LzConst, prRay, g)) {
+                g = 1.0;
+            }
         }
-        float u_t = 1.0 / sqrt(max(uDen, 1e-12));
-        float E_emit = u_t * (1.0 - omega * LzConst - drdt * prRay);
-        if (!(E_emit > 1e-8)) {
-            E_emit = u_t * max(1.0 - omega * LzConst, 1e-8);
-        }
-        g = clamp(1.0 / max(E_emit, 1e-8), 1e-4, 1e4);
     }
     if (!isfinite(g)) g = 1.0;
 
