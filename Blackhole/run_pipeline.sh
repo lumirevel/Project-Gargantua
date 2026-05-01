@@ -569,6 +569,7 @@ source_model_to_science_regime() {
 
 apply_source_model_defaults() {
   [[ "$SOURCE_MODEL_SET" -eq 1 ]] || return 0
+  _PRE_CANONICAL_SOURCE_MODEL="$SOURCE_MODEL_VALUE"
   SOURCE_MODEL_VALUE="$(canonical_source_model "$SOURCE_MODEL_VALUE")"
   case "$SOURCE_MODEL_VALUE" in
     canonical-visible-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
@@ -789,7 +790,9 @@ apply_science_regime_defaults() {
           GRMHD_TEMPERATURE_T0_DEFAULT="6500"
           ;;
       esac
-      if [[ "${SOURCE_MODEL_VALUE:-}" == "grmhd-visible-disk-skin-candidate" ]]; then
+      if [[ "${SOURCE_MODEL_VALUE:-}" == "grmhd-visible-disk-skin-candidate" ||
+            ( "${SOURCE_MODEL_VALUE:-}" == "grmhd-temperature-flow-scientific" &&
+              "${_PRE_CANONICAL_SOURCE_MODEL:-}" == "grmhd-visible-disk-skin-candidate" ) ]]; then
         GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=1
         # Keep the film-visible candidate in an optical photosphere regime:
         # several-thousand-K gas still contributes visible red/near-red photons,

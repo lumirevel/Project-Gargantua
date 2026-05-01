@@ -27,17 +27,23 @@ enum MetalPipelines {
         metric: Int32,
         physicsMode: UInt32,
         visibleMode: UInt32,
-        traceDebugOff: UInt32
+        traceDebugOff: UInt32,
+        grmhdWeightMode: UInt32,
+        visibleEmissionMode: UInt32
     ) -> MTLFunctionConstantValues {
         let fc = MTLFunctionConstantValues()
         var m = metric
         var p = physicsMode
         var v = visibleMode
         var d = traceDebugOff
+        var w = grmhdWeightMode
+        var e = visibleEmissionMode
         fc.setConstantValue(&m, type: .int, index: 0)
         fc.setConstantValue(&p, type: .uint, index: 1)
         fc.setConstantValue(&v, type: .uint, index: 2)
         fc.setConstantValue(&d, type: .uint, index: 3)
+        fc.setConstantValue(&w, type: .uint, index: 4)
+        fc.setConstantValue(&e, type: .uint, index: 5)
         return fc
     }
 
@@ -50,13 +56,17 @@ enum MetalPipelines {
         physicsMode: UInt32,
         visibleMode: UInt32,
         traceDebugOff: UInt32,
+        grmhdWeightMode: UInt32,
+        visibleEmissionMode: UInt32,
         compileCollisionCompose: Bool = true
     ) throws -> RenderPipelines {
         let fc = makeFunctionConstants(
             metric: metric,
             physicsMode: physicsMode,
             visibleMode: visibleMode,
-            traceDebugOff: traceDebugOff
+            traceDebugOff: traceDebugOff,
+            grmhdWeightMode: grmhdWeightMode,
+            visibleEmissionMode: visibleEmissionMode
         )
 
         func specializedFunction(_ name: String) -> MTLFunction {

@@ -4,6 +4,8 @@ constant int  FC_METRIC [[function_constant(0)]];
 constant uint FC_PHYSICS_MODE [[function_constant(1)]];
 constant uint FC_VISIBLE_MODE [[function_constant(2)]];
 constant uint FC_TRACE_DEBUG_OFF [[function_constant(3)]];
+constant uint FC_GRMHD_WEIGHT_MODE [[function_constant(4)]];
+constant uint FC_VISIBLE_EMISSION_MODE [[function_constant(5)]];
 
 // Hot-path helper: keep algebraically equivalent x^(3/2) while avoiding generic pow().
 static inline float pow_1p5(float x) {

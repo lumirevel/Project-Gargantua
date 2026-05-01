@@ -79,6 +79,8 @@ enum RenderSetup {
             physicsMode: config.diskPhysicsModeID,
             visibleMode: UInt32((config.diskPhysicsModeID == 3 && config.visibleModeEnabled) ? 1 : 0),
             traceDebugOff: UInt32(config.diskGrmhdDebugID == 0 ? 1 : 0),
+            grmhdWeightMode: config.grmhdSmoothWeightModeID,
+            visibleEmissionMode: config.visibleEmissionModelID,
             compileCollisionCompose: compileCollisionCompose
         )
 

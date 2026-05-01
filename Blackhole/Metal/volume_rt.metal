@@ -1775,7 +1775,7 @@ static inline void volume_integrate_segment(float3 p0,
             float dataFlowMod = 1.0;
             float dataFlowResidualLog = 0.0;
             float dataFlowResidualAmp = 0.0;
-            if (texStrength > 1e-5 && P.visibleTeffModel == 3u && P.visibleEmissionModel == 0u) {
+            if (texStrength > 1e-5 && P.visibleTeffModel == 3u && FC_VISIBLE_EMISSION_MODE == 0u) {
                 // Preserve actual GRMHD azimuthal structure in the thermal visible
                 // branch. Use fixed-(r,z) phi residuals rather than r/z high-pass
                 // terms: r/z differencing turns smooth axisymmetric stratification
@@ -1829,7 +1829,7 @@ static inline void volume_integrate_segment(float3 p0,
                 bool polarized = (P.diskPolarizedRT != 0u);
                 bool tauSurfaceVisible = (!expressiveVisible &&
                                           !polarized &&
-                                          P.visibleEmissionModel == 0u &&
+                                          FC_VISIBLE_EMISSION_MODE == 0u &&
                                           P.visibleThermalTransferMode == 1u &&
                                           P.visiblePhotosphereRhoThreshold <= 0.0);
                 // Use direct visible-band quadrature for all non-expressive GRMHD
@@ -1913,6 +1913,7 @@ static inline void volume_integrate_segment(float3 p0,
 
                 uint spectralBandCount = cieQuadratureVisible ? 9u : 3u;
                 float dYVis = 0.0;
+#pragma clang loop unroll(disable)
                 for (uint k = 0u; k < spectralBandCount; ++k) {
                     if (tauSurfaceVisible && ((A.tauSurfaceMask & (1u << k)) != 0u)) {
                         continue;
@@ -1956,7 +1957,7 @@ static inline void volume_integrate_segment(float3 p0,
                         }
                         A.maxSourceThermal = max(A.maxSourceThermal, comps.sourceThermal);
                         A.maxSourceThin = max(A.maxSourceThin, comps.sourceThin);
-                        if (P.visibleEmissionModel == 2u) {
+                        if (FC_VISIBLE_EMISSION_MODE == 2u) {
                             // Hybrid GRMHD visible transport:
                             // keep the optically thick thermal photosphere, but
                             // do not let its smooth j/alpha source function erase
@@ -1982,7 +1983,7 @@ static inline void volume_integrate_segment(float3 p0,
                                 A.intAlphaThermalPost += max(aBaseEff + aCoolEff, 0.0) * ds;
                             }
 	                        } else {
-	                            if (P.visibleEmissionModel == 0u) {
+	                            if (FC_VISIBLE_EMISSION_MODE == 0u) {
 	                                float cloudOpacityMod = disk_grmhd_thermal_cloud_opacity_mod(rho, thetae, bVec, P);
 	                                float cloudSourceMod = 1.0;
 	                                float thermalFillingMod = 1.0;
@@ -2103,14 +2104,14 @@ static inline void volume_integrate_segment(float3 p0,
 			                                                          0.018, 8.40);
 		                                }
                                 jThermalCloudEff = max(jCloudThin * cloudPatternMod, 0.0);
-                                bool plasmaBodySkinMode = (P.grmhdSmoothWeightMode == 4u);
-                                bool positivePlasmaMode = (P.grmhdSmoothWeightMode == 5u);
-	                                bool hotSkinMode = (P.grmhdSmoothWeightMode >= 6u && P.grmhdSmoothWeightMode <= 9u);
-	                                bool hotSkinCoronaMode = (P.grmhdSmoothWeightMode == 9u);
-	                                bool hybridVisibleDiskMode = (P.grmhdSmoothWeightMode >= 10u && P.grmhdSmoothWeightMode <= 13u);
-	                                bool hybridVisibleCoronaMode = (P.grmhdSmoothWeightMode == 13u);
-	                                bool referenceSkinMode = (P.grmhdSmoothWeightMode == 14u || P.grmhdSmoothWeightMode == 15u);
-	                                bool referenceSkinCoronaMode = (P.grmhdSmoothWeightMode == 15u);
+                                bool plasmaBodySkinMode = (FC_GRMHD_WEIGHT_MODE == 4u);
+                                bool positivePlasmaMode = (FC_GRMHD_WEIGHT_MODE == 5u);
+	                                bool hotSkinMode = (FC_GRMHD_WEIGHT_MODE >= 6u && FC_GRMHD_WEIGHT_MODE <= 9u);
+	                                bool hotSkinCoronaMode = (FC_GRMHD_WEIGHT_MODE == 9u);
+	                                bool hybridVisibleDiskMode = (FC_GRMHD_WEIGHT_MODE >= 10u && FC_GRMHD_WEIGHT_MODE <= 13u);
+	                                bool hybridVisibleCoronaMode = (FC_GRMHD_WEIGHT_MODE == 13u);
+	                                bool referenceSkinMode = (FC_GRMHD_WEIGHT_MODE == 14u || FC_GRMHD_WEIGHT_MODE == 15u);
+	                                bool referenceSkinCoronaMode = (FC_GRMHD_WEIGHT_MODE == 15u);
 	                                bool analyticBodySkinMode = hybridVisibleDiskMode || referenceSkinMode;
 	                                if (analyticBodySkinMode) {
                                     // The hybrid body is a visible photosphere
@@ -2195,9 +2196,9 @@ static inline void volume_integrate_segment(float3 p0,
                                                           P.rs * 1.0001);
                                     float hybridX = max(r / max(hybridRIn, 1.0e-6), 1.0001);
                                     float hybridP = clamp(P.visibleTeffP, 0.55, 0.85);
-                                    if (P.grmhdSmoothWeightMode == 11u) {
+                                    if (FC_GRMHD_WEIGHT_MODE == 11u) {
                                         hybridP = 0.60;
-                                    } else if (P.grmhdSmoothWeightMode == 12u || P.grmhdSmoothWeightMode == 13u) {
+                                    } else if (FC_GRMHD_WEIGHT_MODE == 12u || FC_GRMHD_WEIGHT_MODE == 13u) {
                                         hybridP = 0.72;
                                     } else if (referenceSkinMode) {
                                         hybridP = clamp(P.visibleTeffP, 0.58, 0.82);
@@ -2219,9 +2220,12 @@ static inline void volume_integrate_segment(float3 p0,
                                         float bodyPositiveResidual = smoothstep(0.01, 0.90, max(dataFlowResidualLog, 0.0) * bodyResidualAmp);
                                         float bodyNegativeResidual = smoothstep(0.01, 0.85, max(-dataFlowResidualLog, 0.0) * bodyResidualAmp);
                                         float bodyStressHeat = max(residualStressGate, residualMagGate);
-                                        float bodyTempLogPerturb = 0.075 * bodyPositiveResidual * (0.45 + 0.55 * bodyStressHeat)
-                                                                 - 0.045 * bodyNegativeResidual * (1.0 - 0.35 * bodyStressHeat);
-                                        hybridBodyT *= clamp(exp(bodyTempLogPerturb), 0.94, 1.12);
+                                        // Amplitudes chosen so the clamped exp() range spans [0.88, 1.20]:
+                                        //   exp(+0.182) ≈ 1.20  (hot MRI/stress cells)
+                                        //   exp(-0.128) ≈ 0.88  (cool residual cells)
+                                        float bodyTempLogPerturb = 0.182 * bodyPositiveResidual * (0.45 + 0.55 * bodyStressHeat)
+                                                                 - 0.128 * bodyNegativeResidual * (1.0 - 0.35 * bodyStressHeat);
+                                        hybridBodyT *= clamp(exp(bodyTempLogPerturb), 0.88, 1.20);
                                     }
                                     float hybridBodySource = volume_planck_nu(nuComov, hybridBodyT, P);
                                     float hybridSkinTempBoost = 1.18 + 0.62 * residualHotGate + 0.18 * residualMagGate;
@@ -2315,8 +2319,8 @@ static inline void volume_integrate_segment(float3 p0,
                                             0.0,
                                             1.36
                                         );
-                                    float hybridBExp = (P.grmhdSmoothWeightMode == 12u || P.grmhdSmoothWeightMode == 13u) ? 1.70 : 1.36;
-                                    float hybridThetaExp = (P.grmhdSmoothWeightMode == 12u || P.grmhdSmoothWeightMode == 13u) ? 2.30 : 1.92;
+                                    float hybridBExp = (FC_GRMHD_WEIGHT_MODE == 12u || FC_GRMHD_WEIGHT_MODE == 13u) ? 1.70 : 1.36;
+                                    float hybridThetaExp = (FC_GRMHD_WEIGHT_MODE == 12u || FC_GRMHD_WEIGHT_MODE == 13u) ? 2.30 : 1.92;
                                     if (referenceSkinMode) {
                                         hybridBExp = 1.62;
                                         hybridThetaExp = 2.18;
@@ -2377,7 +2381,7 @@ static inline void volume_integrate_segment(float3 p0,
 	                                }
 	                                float smoothBodyFloorWeight = 0.08 * bodyProxy * denseBodyGate;
                                 float thermalContinuumLocalWeight = 1.0;
-                                switch (P.grmhdSmoothWeightMode) {
+                                switch (FC_GRMHD_WEIGHT_MODE) {
                                     case 1u:
                                         thermalContinuumLocalWeight = smoothStateWeight;
                                         break;
@@ -2429,12 +2433,12 @@ static inline void volume_integrate_segment(float3 p0,
 	                                        thermalContinuumLocalWeight = 1.0;
 	                                        break;
 	                                }
-                                float smoothContinuumScale = (P.grmhdSmoothWeightMode >= 2u)
+                                float smoothContinuumScale = (FC_GRMHD_WEIGHT_MODE >= 2u)
                                     ? 1.0
                                     : max(P.grmhdSmoothEmissionScale, 0.0);
                                 jThermalSmoothEff = jThermalContinuum * thermalContinuumBaseWeight * thermalContinuumLocalWeight;
                                 jThermalSmoothEff *= smoothContinuumScale;
-		                                float skinScale = (P.grmhdSmoothWeightMode == 2u || P.grmhdSmoothWeightMode == 3u || plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode)
+		                                float skinScale = (FC_GRMHD_WEIGHT_MODE == 2u || FC_GRMHD_WEIGHT_MODE == 3u || plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode)
 	                                    ? 1.12
 	                                    : 1.0;
 		                                if (plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode) {
@@ -2476,7 +2480,7 @@ static inline void volume_integrate_segment(float3 p0,
 	                                                0.88,
 	                                                2.25
 	                                            );
-	                                        float hybridSkinCoeff = referenceSkinMode ? 0.072 : ((P.grmhdSmoothWeightMode == 12u || P.grmhdSmoothWeightMode == 13u) ? 0.052 : 0.040);
+	                                        float hybridSkinCoeff = referenceSkinMode ? 0.072 : ((FC_GRMHD_WEIGHT_MODE == 12u || FC_GRMHD_WEIGHT_MODE == 13u) ? 0.052 : 0.040);
 	                                        jThermalCloudEff = max(hybridSkinUnit * hybridSkinCoeff * hybridSkinGate * hybridFilamentBoost, 0.0);
 	                                    } else if (hotSkinMode) {
 	                                        // Independent optically-thin hot-skin
@@ -2507,13 +2511,13 @@ static inline void volume_integrate_segment(float3 p0,
                                         float aExp = 0.58;
                                         float bExp = 1.35;
                                         float cExp = 2.05;
-                                        if (P.grmhdSmoothWeightMode == 7u) {
+                                        if (FC_GRMHD_WEIGHT_MODE == 7u) {
                                             bExp = 1.85;
                                             cExp = 1.75;
-                                        } else if (P.grmhdSmoothWeightMode == 8u) {
+                                        } else if (FC_GRMHD_WEIGHT_MODE == 8u) {
                                             bExp = 1.18;
                                             cExp = 2.85;
-                                        } else if (P.grmhdSmoothWeightMode == 9u) {
+                                        } else if (FC_GRMHD_WEIGHT_MODE == 9u) {
                                             bExp = 1.42;
                                             cExp = 2.10;
                                         }
@@ -2600,10 +2604,10 @@ static inline void volume_integrate_segment(float3 p0,
 	                                float skinSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, skinTiltExp) : 1.0;
 	                                float coronaSpectralTilt = (positivePlasmaMode || hotSkinMode || analyticBodySkinMode) ? pow(branchNuRatio, coronaTiltExp) : 1.0;
 	                                jThermalCloudEff *= skinScale * max(P.grmhdCloudEmissionScale, 0.0) * skinSpectralTilt;
-	                                if (P.grmhdSmoothWeightMode == 2u || P.grmhdSmoothWeightMode == 3u || plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode) {
+	                                if (FC_GRMHD_WEIGHT_MODE == 2u || FC_GRMHD_WEIGHT_MODE == 3u || plasmaBodySkinMode || positivePlasmaMode || hotSkinMode || analyticBodySkinMode) {
                                     float bodyScaleArg = max(P.grmhdSmoothEmissionScale, 0.0);
-                                    float bodyRadianceScale = hotSkinMode ? 0.0124 : (positivePlasmaMode ? 0.0128 : (plasmaBodySkinMode ? 0.0127 : ((P.grmhdSmoothWeightMode == 3u) ? 0.012 : 0.010)));
-                                    float bodyStateSupport = (P.grmhdSmoothWeightMode == 3u)
+                                    float bodyRadianceScale = hotSkinMode ? 0.0124 : (positivePlasmaMode ? 0.0128 : (plasmaBodySkinMode ? 0.0127 : ((FC_GRMHD_WEIGHT_MODE == 3u) ? 0.012 : 0.010)));
+                                    float bodyStateSupport = (FC_GRMHD_WEIGHT_MODE == 3u)
                                         ? (0.68 + 0.20 * smoothStateWeight)
                                         : ((plasmaBodySkinMode || positivePlasmaMode || hotSkinMode) ? (0.70 + 0.20 * smoothStateWeight) : 1.0);
                                     float skinCompetition = clamp(
@@ -2680,8 +2684,8 @@ static inline void volume_integrate_segment(float3 p0,
 	                                    }
 		                                    if (analyticBodySkinMode) {
 		                                        float hybridBodyCoeff = referenceSkinMode ? 0.215
-		                                                              : ((P.grmhdSmoothWeightMode == 11u) ? 0.205
-		                                                              : ((P.grmhdSmoothWeightMode == 12u || P.grmhdSmoothWeightMode == 13u) ? 0.175 : 0.190));
+		                                                              : ((FC_GRMHD_WEIGHT_MODE == 11u) ? 0.205
+		                                                              : ((FC_GRMHD_WEIGHT_MODE == 12u || FC_GRMHD_WEIGHT_MODE == 13u) ? 0.175 : 0.190));
 	                                        jThermalBodyEff = max(
 	                                            hybridBodyUnit
 	                                            * hybridBodyCoeff

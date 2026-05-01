@@ -292,7 +292,7 @@ static inline void disk_grmhd_visible_thin_tail_coeffs(float rho,
     // photosphere to anchor scale. Public KHARMA/IHARM primitive dumps otherwise
     // saturate the display by many orders of magnitude, so keep a separate
     // code-unit calibration from the hybrid visible branch.
-    float jNorm = (P.visibleEmissionModel == 1u) ? 4.5e-33 : 4.5e-13;
+    float jNorm = (FC_VISIBLE_EMISSION_MODE == 1u) ? 4.5e-33 : 4.5e-13;
     float jRaw = jNorm * max(P.visibleSynchScale, 0.0)
                * nonthermalFraction
                * rhoState * bState * thetaState * tailShape;
@@ -359,7 +359,7 @@ static inline float disk_grmhd_visible_temperature(float rEmitM,
     // the whole flow converge to the same blue-white source function. Use it
     // only as a bounded inner-flow color correction tied to magnetic/stress
     // structure.
-    if (P.visibleEmissionModel == 0u) {
+    if (FC_VISIBLE_EMISSION_MODE == 0u) {
         float stressRaw = max(-bVec.x * bVec.y, 0.0) + 0.25 * abs(bVec.x * bVec.y);
         stressRaw *= max(P.diskGrmhdBScale * P.diskGrmhdBScale, 0.0);
         float stressGate = smoothstep(1e-6, 0.65, stressRaw / max(state.rhoEff * max(thetae, 1e-12) + 0.08 * state.b2Eff, 1e-30));
@@ -429,7 +429,7 @@ static inline float disk_grmhd_local_dissipation_mod(float rEmitM,
                                                      float vZ,
                                                      constant Params& P)
 {
-    if (P.visibleTeffModel != 3u || P.visibleEmissionModel != 0u) {
+    if (P.visibleTeffModel != 3u || FC_VISIBLE_EMISSION_MODE != 0u) {
         return 1.0;
     }
 
@@ -472,7 +472,7 @@ static inline float disk_grmhd_local_dissipation_mod(float rEmitM,
 static inline float disk_grmhd_visible_thermal_radial_weight(float rEmitM,
                                                              constant Params& P)
 {
-    if (P.visibleTeffModel != 3u || P.visibleEmissionModel != 0u) {
+    if (P.visibleTeffModel != 3u || FC_VISIBLE_EMISSION_MODE != 0u) {
         return 1.0;
     }
 
@@ -495,7 +495,7 @@ static inline float disk_grmhd_thermal_cloud_opacity_mod(float rho,
                                                          float3 bVec,
                                                          constant Params& P)
 {
-    if (P.visibleTeffModel != 3u || P.visibleEmissionModel != 0u) {
+    if (P.visibleTeffModel != 3u || FC_VISIBLE_EMISSION_MODE != 0u) {
         return 1.0;
     }
 
@@ -539,7 +539,7 @@ static inline float disk_grmhd_thermal_thin_cloud_emissivity(float rEmitM,
                                                              float residualAmp,
                                                              constant Params& P)
 {
-    if (P.visibleTeffModel != 3u || P.visibleEmissionModel != 0u) {
+    if (P.visibleTeffModel != 3u || FC_VISIBLE_EMISSION_MODE != 0u) {
         return 0.0;
     }
 
@@ -635,7 +635,7 @@ static inline float disk_grmhd_visible_photosphere_weight(float rEmitM,
 {
     if (P.visibleTeffModel != 3u ||
         P.thinPhotosphereEnabled == 0u ||
-        (P.visibleEmissionModel != 0u && P.visibleEmissionModel != 2u)) {
+        (FC_VISIBLE_EMISSION_MODE != 0u && FC_VISIBLE_EMISSION_MODE != 2u)) {
         return 1.0;
     }
 
@@ -647,7 +647,23 @@ static inline float disk_grmhd_visible_photosphere_weight(float rEmitM,
     float hOverR = disk_grmhd_thin_h_over_r(rNorm, P);
     float hNorm = max(hOverR * rNorm, 1e-4);
     float zeta = zNorm / hNorm;
-    return clamp(exp(-0.5 * zeta * zeta), 0.0, 1.0);
+
+    // Photospheric shell profile: emission peaks near the Eddington τ = 2/3
+    // surface rather than at the midplane. For a Gaussian density column
+    //   ρ(z) ∝ exp(-ζ²/2),  τ(z) = τ_mid/2 × erfc(|ζ|/√2)
+    // the τ=2/3 level sits at |ζ| ≈ 0.72 for τ_mid ≈ 4 (thin-disk photosphere).
+    // A purely midplane-centred Gaussian accumulates emission from the optically
+    // thick interior and produces a smooth grey slab; the shell here concentrates
+    // the visible radiance at the actual emitting surface.
+    // A weak midplane floor (0.18) is kept for the optically thin outer disk where
+    // the photosphere is near z = 0.
+    float zetaAbs     = abs(zeta);
+    float shellPeak   = 0.72;   // |ζ| at Eddington τ = 2/3 for τ_mid ≈ 4
+    float shellSigma  = 0.42;   // half-width of photospheric layer
+    float shellWeight = exp(-0.5 * ((zetaAbs - shellPeak) / shellSigma)
+                               * ((zetaAbs - shellPeak) / shellSigma));
+    float midFloor    = 0.18 * exp(-0.5 * zeta * zeta);
+    return clamp(shellWeight + midFloor, 0.0, 1.0);
 }
 
 // Inverse Compton corona: conservative spectral factor relative to a seed blackbody.
@@ -705,7 +721,7 @@ static inline float disk_grmhd_visible_corona_weight(float rEmitM,
 {
     if (P.visibleTeffModel != 3u ||
         P.coronaLayerEnabled == 0u ||
-        (P.visibleEmissionModel != 1u && P.visibleEmissionModel != 2u)) {
+        (FC_VISIBLE_EMISSION_MODE != 1u && FC_VISIBLE_EMISSION_MODE != 2u)) {
         return 1.0;
     }
 
@@ -724,7 +740,7 @@ static inline float disk_grmhd_visible_corona_radial_weight(float rEmitM,
 {
     if (P.visibleTeffModel != 3u ||
         P.coronaLayerEnabled == 0u ||
-        (P.visibleEmissionModel != 1u && P.visibleEmissionModel != 2u)) {
+        (FC_VISIBLE_EMISSION_MODE != 1u && FC_VISIBLE_EMISSION_MODE != 2u)) {
         return 1.0;
     }
 
@@ -852,7 +868,7 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
     // hides GRMHD structure. Keep blackbody conservative, but default hybrid to
     // a thinner effective visible opacity; --visible-kappa remains the explicit
     // calibration override.
-    float kappaDefault = (P.visibleEmissionModel == 2u && P.visibleTeffModel == 3u) ? 0.036 : 0.12;
+    float kappaDefault = (FC_VISIBLE_EMISSION_MODE == 2u && P.visibleTeffModel == 3u) ? 0.036 : 0.12;
     float kappaScale = (P.visibleKappa > 0.0) ? P.visibleKappa : kappaDefault;
     // For the GRMHD visible thermal volume, do not model electron scattering as
     // a one-way dark absorber. Use an effective thermal absorption opacity and
@@ -860,7 +876,7 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
     // thick, similarly hot gas approaches B_nu(T) instead of becoming a black
     // slab. Hybrid/nonthermal diagnostics keep the older thermalization opacity
     // to avoid overwhelming the optically thin branch.
-    float opacityClosure = (P.visibleTeffModel == 3u && P.visibleEmissionModel == 0u)
+    float opacityClosure = (P.visibleTeffModel == 3u && FC_VISIBLE_EMISSION_MODE == 0u)
         ? max(c.epsAbs, 0.018)
         : thermalization;
     c.aBase = max(P.diskGrmhdAbsorptionScale, 0.0) * alphaTot * kappaScale * opacityClosure;
@@ -874,7 +890,7 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
     // local Planck source instead of extinguishing the disk behind it.
     float sourceMod = disk_grmhd_thermal_source_mod(rho, thetae, bVec, P);
     float dissipationMod = disk_grmhd_local_dissipation_mod(rEmitM, rho, thetae, bVec, vR, vPhi, vZ, P);
-    float sourceClosure = (P.visibleTeffModel == 3u && P.visibleEmissionModel == 0u)
+    float sourceClosure = (P.visibleTeffModel == 3u && FC_VISIBLE_EMISSION_MODE == 0u)
         ? 1.0
         : thermalization;
     c.sourceThermal = sourceClosure * bNu * sourceMod * dissipationMod;
@@ -889,7 +905,7 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
     //
     // This is gated to zero in the optically thick disk body (c.epsAbs → 1, LTE) and
     // peaks in the hot optically thin corona (c.epsAbs → 0, kT_e >> kT_disk).
-    if (P.visibleEmissionModel == 0u || P.visibleEmissionModel == 2u) {
+    if (FC_VISIBLE_EMISSION_MODE == 0u || FC_VISIBLE_EMISSION_MODE == 2u) {
         float thinGate = clamp(1.0 - c.epsAbs, 0.0, 1.0);   // 1 in corona, 0 at midplane
         if (thinGate > 1e-4) {
             // Seed frequency: blackbody peak of the disk photosphere ≈ 2.82 kT_disk / h
@@ -906,12 +922,12 @@ static inline GrmhdRtComponents disk_visible_rt_components(float rEmitM,
         }
     }
 
-    if (P.visibleEmissionModel == 2u) {
+    if (FC_VISIBLE_EMISSION_MODE == 2u) {
         disk_grmhd_visible_thin_tail_coeffs(rho, thetae, bVec, nuComov, P, c.jThin, c.aThin);
         c.sourceThin = (c.aThin > 1e-30) ? c.jThin / max(c.aThin, 1e-30) : c.jThin;
     }
 
-    if (P.visibleEmissionModel == 0u || P.visibleEmissionModel == 2u) {
+    if (FC_VISIBLE_EMISSION_MODE == 0u || FC_VISIBLE_EMISSION_MODE == 2u) {
         c.jTotal = max(c.jThermal + c.jThin, 0.0);
         c.aTotal = max(c.aBase + c.aCool + c.aThin, 0.0);
         return c;
@@ -970,7 +986,7 @@ static inline void disk_grmhd_synch_coeffs(float rho,
     // prescription, not a replacement for a future electron distribution function.
     float jNonthermal = 0.0;
     float aNonthermal = 0.0;
-    if (visible_mode_enabled_fc() && P.visibleEmissionModel == 1u) {
+    if (visible_mode_enabled_fc() && FC_VISIBLE_EMISSION_MODE == 1u) {
         disk_grmhd_visible_thin_tail_coeffs(rho, thetae, bVec, nuComov, P, jNonthermal, aNonthermal);
         jNu = max(jNonthermal, 0.0);
         aNu = max(aNonthermal, 0.0);
@@ -1187,7 +1203,7 @@ static inline bool volume_finalize_grmhd_visible_sample(bool expressiveVisible,
         A.VVisNu = vPrevNu;
     }
 
-    if (P.visibleEmissionModel == 0u &&
+    if (FC_VISIBLE_EMISSION_MODE == 0u &&
         P.visibleThermalTransferMode == 1u &&
         (A.tauSurfaceMask & 0x7u) == 0x7u) {
         A.tau = max(max(A.tauVis.x, A.tauVis.y), A.tauVis.z);
@@ -1203,7 +1219,7 @@ static inline bool volume_finalize_grmhd_visible_sample(bool expressiveVisible,
         return true;
     }
 
-    if (P.visibleEmissionModel == 0u && A.tauVis.y >= 0.9) {
+    if (FC_VISIBLE_EMISSION_MODE == 0u && A.tauVis.y >= 0.9) {
         A.tau = max(max(A.tauVis.x, A.tauVis.y), A.tauVis.z);
         A.maxI = max(A.maxI, A.I);
         if (dI > 0.0) {

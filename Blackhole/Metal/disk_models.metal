@@ -628,6 +628,27 @@ static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     return (dxy > rMin && dxy < rMax && abs(pos.z) < halfH);
 }
 
+// Signed disk-surface function: negative (< 0) when inside the disk volume,
+// positive (> 0) when outside. Crosses zero at the disk surface boundary |z| = halfH.
+// Mirrors the halfH resolution in inside_disk_volume.
+// Used by downstream callers (e.g. photosphere refinement) and by segment_enter_disk.
+static inline float disk_signed_surface_fn(float3 pos, constant Params& P) {
+    float dxy = length(float2(pos.x, pos.y));
+    float halfH = disk_half_thickness_m(dxy, P);
+    if (P.diskVolumeMode != 0u) {
+        bool useVol = (FC_PHYSICS_MODE == 3u || FC_PHYSICS_MODE == 2u);
+        if (!useVol && FC_PHYSICS_MODE == 1u) {
+            float tauCtrl = max(P.diskCloudOpticalDepth, 0.0) * max(P.diskVolumeTauScale, 0.0);
+            useVol = (tauCtrl > 1e-8);
+        }
+        if (useVol) {
+            float volHalfH = max(P.diskVolumeZNormMax * max(P.rs, 1e-6), 1e-6);
+            halfH = max(halfH, volHalfH);
+        }
+    }
+    return abs(pos.z) - halfH;
+}
+
 static inline bool segment_enter_disk(float3 p0,
                                       float3 p1,
                                       constant Params& P,
@@ -649,8 +670,25 @@ static inline bool segment_enter_disk(float3 p0,
         return true;
     }
 
-    // Outside -> outside skip protection for thin disk crossings.
-    const int coarse = 48;
+    // Outside -> outside: fast thin-disk midplane crossing check.
+    // For thin disks (halfH << segment length), the ray crosses z = 0 (equatorial
+    // plane) without either endpoint landing inside the volume box. Solve
+    //   t_cross = p0.z / (p0.z - p1.z)   (linear zero of z along segment)
+    // analytically and validate against radial disk bounds. This replaces the
+    // 48-step coarse scan for the dominant thin-disk skip-through case.
+    if (p0.z * p1.z < 0.0) {
+        float tZ = clamp(p0.z / (p0.z - p1.z), 0.0, 1.0);
+        float3 crossPos = mix(p0, p1, tZ);
+        if (inside_disk_volume(crossPos, P)) {
+            tEnter = tZ;
+            return true;
+        }
+    }
+
+    // Fallback coarse scan for thick-disk radial entry (segment approaches from
+    // the side without crossing the midplane, e.g. near-equatorial grazing rays).
+    // Reduced to 16 steps; the midplane fast path above handles the thin-disk case.
+    const int coarse = 16;
     bool prevIn = in0;
     float prevT = 0.0;
     for (int i = 1; i <= coarse; ++i) {
