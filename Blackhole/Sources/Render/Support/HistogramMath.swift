@@ -40,6 +40,7 @@ func composeTargetWhite(_ lookID: UInt32) -> Float {
     if lookID == 3 { return 1.25 }
     if lookID == 5 { return 1.40 }
     if lookID == 7 { return 1.10 }
+    if lookID == 8 { return 1.05 }
     return 0.8
 }
 

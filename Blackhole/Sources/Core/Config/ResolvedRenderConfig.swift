@@ -214,11 +214,16 @@ struct ResolvedRenderConfig {
     var cameraSensorParams: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)
     var cameraNoiseParams: SIMD4<Float> = .zero
     var cameraColorParams: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)
+    var cameraGlareParams: SIMD4<Float> = SIMD4<Float>(0, 0.08, 2.0, 0.55)
     var cameraFlags: UInt32 = 0
     var cameraPsfSigmaArg: Float = 0.0
     var cameraReadNoiseArg: Float = 0.0
     var cameraShotNoiseArg: Float = 0.0
     var cameraFlareStrengthArg: Float = 0.0
+    var cameraFNumberArg: Float = 8.0
+    var cameraISOArg: Float = 100.0
+    var cameraShutterSecondsArg: Float = 1.0 / 60.0
+    var photographicExposureScale: Float = 0.0
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0

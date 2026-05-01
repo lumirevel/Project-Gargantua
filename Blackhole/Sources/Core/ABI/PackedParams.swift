@@ -226,6 +226,7 @@ struct ComposeParams {
     var cameraSensorParams: SIMD4<Float>
     var cameraNoiseParams: SIMD4<Float>
     var cameraColorParams: SIMD4<Float>
+    var cameraGlareParams: SIMD4<Float>
 }
 
 struct ComposeSolveParams {

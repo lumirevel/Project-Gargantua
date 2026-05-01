@@ -276,6 +276,10 @@ struct VisualSettings {
     let cameraReadNoiseArg: Float
     let cameraShotNoiseArg: Float
     let cameraFlareStrengthArg: Float
+    let cameraFNumberArg: Float
+    let cameraISOArg: Float
+    let cameraShutterSecondsArg: Float
+    let photographicExposureScale: Float
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -305,6 +309,22 @@ struct VisualSettings {
 }
 
 enum ParamsBuilderVisual {
+    private static func positiveSecondsArg(_ name: String, default defaultValue: Double) -> Double {
+        let raw = stringArg(name, default: "")
+        guard !raw.isEmpty else { return defaultValue }
+        if raw.contains("/") {
+            let parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+            if parts.count == 2, let numerator = Double(String(parts[0])), let denominator = Double(String(parts[1])), denominator > 0 {
+                return max(1e-6, numerator / denominator)
+            }
+            fail("invalid \(name) \(raw). use seconds or a fraction like 1/60")
+        }
+        guard let seconds = Double(raw), seconds > 0 else {
+            fail("invalid \(name) \(raw). use seconds or a fraction like 1/60")
+        }
+        return seconds
+    }
+
     static func resolveVisualSettings(
         diskModelArg: String,
         diskPhysicsModeID: UInt32,
@@ -461,7 +481,8 @@ enum ParamsBuilderVisual {
             default: return 0.0
             }
         }()
-        let cameraReadNoiseArg = Float(max(0.0, doubleArg(
+        let cameraReadNoiseExplicit = cliArguments.contains("--camera-read-noise")
+        var cameraReadNoiseArg = Float(max(0.0, doubleArg(
             "--camera-read-noise",
             default: Double(cameraCalibration.readNoise ?? Float(cameraReadNoiseDefault))
         )))
@@ -473,7 +494,8 @@ enum ParamsBuilderVisual {
             default: return 0.0
             }
         }()
-        let cameraShotNoiseArg = Float(max(0.0, doubleArg(
+        let cameraShotNoiseExplicit = cliArguments.contains("--camera-shot-noise")
+        var cameraShotNoiseArg = Float(max(0.0, doubleArg(
             "--camera-shot-noise",
             default: Double(cameraCalibration.shotNoise ?? Float(cameraShotNoiseDefault))
         )))
@@ -499,6 +521,8 @@ enum ParamsBuilderVisual {
             return 8.0
         }()
         let lensFNumberArg = Float(max(0.7, doubleArg("--camera-f-number", default: lensFNumberDefault)))
+        let cameraISOArg = Float(max(1.0, min(409600.0, doubleArg("--camera-iso", default: 100.0))))
+        let cameraShutterSecondsArg = Float(max(1e-6, min(3600.0, Self.positiveSecondsArg("--camera-shutter", default: 1.0 / 60.0))))
         let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
         let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
         let lensDofDefault: Double = {
@@ -577,10 +601,32 @@ enum ParamsBuilderVisual {
             exposureModeID = 0
         case "fixed":
             exposureModeID = 1
+        case "photographic", "photo", "camera", "manual-camera":
+            exposureModeID = 2
         default:
-            fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed")
+            fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed, photographic")
         }
         let exposureEVArg = doubleArg("--exposure-ev", default: 0.0)
+        let photographicExposureScale = Float(max(
+            0.0,
+            100.0
+                * Double(cameraShutterSecondsArg)
+                * (Double(cameraISOArg) / 100.0)
+                / max(0.49, Double(lensFNumberArg * lensFNumberArg))
+                * pow(2.0, exposureEVArg)
+        ))
+        if exposureModeID == 2 {
+            let referencePhotonTerm = (1.0 / 60.0) / (2.8 * 2.8)
+            let photonTerm = Double(cameraShutterSecondsArg) / max(0.49, Double(lensFNumberArg * lensFNumberArg))
+            let photonRatio = max(1e-4, photonTerm / referencePhotonTerm)
+            let isoGain = max(0.01, Double(cameraISOArg) / 100.0)
+            if !cameraReadNoiseExplicit {
+                cameraReadNoiseArg = Float(min(Double(cameraReadNoiseArg) * sqrt(isoGain), 0.05))
+            }
+            if !cameraShotNoiseExplicit {
+                cameraShotNoiseArg = Float(min(Double(cameraShotNoiseArg) * sqrt(isoGain / photonRatio), 0.08))
+            }
+        }
         let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
         let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
 
@@ -644,6 +690,7 @@ enum ParamsBuilderVisual {
             if composeAnalysisMode != 0 && composeAnalysisMode != 31 && composeAnalysisMode != 32 { return false }
             if exposureArg > 0 { return false }
             if exposureModeID == 1 { return false }
+            if exposureModeID == 2 { return false }
             return true
         }()
         let composeExposureBase: Float = {
@@ -654,10 +701,12 @@ enum ParamsBuilderVisual {
             if composeAnalysisMode == 34 || composeAnalysisMode == 35 || composeAnalysisMode == 36 || composeAnalysisMode == 38 {
                 if exposureArg > 0 { return exposureArg }
                 if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
+                if exposureModeID == 2 { return photographicExposureScale }
             }
             if composeAnalysisMode != 0 { return 1.0 }
             if exposureArg > 0 { return exposureArg }
             if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
+            if exposureModeID == 2 { return photographicExposureScale }
             switch composeLookID {
             case 1: return 7.0e-18
             case 2: return 5.2e-18
@@ -692,6 +741,10 @@ enum ParamsBuilderVisual {
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,
             cameraFlareStrengthArg: cameraFlareStrengthArg,
+            cameraFNumberArg: lensFNumberArg,
+            cameraISOArg: cameraISOArg,
+            cameraShutterSecondsArg: cameraShutterSecondsArg,
+            photographicExposureScale: photographicExposureScale,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

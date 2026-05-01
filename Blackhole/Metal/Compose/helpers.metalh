@@ -3018,17 +3018,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
     if (physicalVolumeDebug && C.analysisMode == 32u) {
         return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     }
-    if (C.look != 4u) {
-        float shoulder = smoothstep(0.55, 1.0, lumTm);
-        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
-        float desat;
-        if (C.preserveHighlightColor != 0u) {
-            desat = (C.look == 5u) ? 0.03 : 0.08;
-        } else {
-            desat = (C.look == 5u) ? 0.08 : 0.24;
-        }
-        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
-    }
+    rgbTm = comp_apply_highlight_desaturation(rgbTm, lumTm, C.look, C.preserveHighlightColor);
     rgbTm = comp_apply_look(rgbTm, C.look);
     rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
@@ -3080,17 +3070,7 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     if (FC_PHYSICS_MODE == 3u && C.analysisMode == 32u) {
         return precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
     }
-    if (C.look != 4u) {
-        float shoulder = smoothstep(0.55, 1.0, lumTm);
-        float gray = dot(rgbTm, float3(0.2126, 0.7152, 0.0722));
-        float desat;
-        if (C.preserveHighlightColor != 0u) {
-            desat = (C.look == 5u) ? 0.03 : 0.08;
-        } else {
-            desat = (C.look == 5u) ? 0.08 : 0.24;
-        }
-        rgbTm = mix(rgbTm, float3(gray), desat * shoulder);
-    }
+    rgbTm = comp_apply_highlight_desaturation(rgbTm, lumTm, C.look, C.preserveHighlightColor);
     rgbTm = comp_apply_look(rgbTm, C.look);
     rgbTm = comp_apply_camera_color_pipeline(rgbTm, C);
     float3 srgb = precise::pow(clamp(rgbTm, 0.0, 1.0), float3(1.0 / 2.2));
@@ -3168,21 +3148,157 @@ static inline float comp_eye_scene_surround_tile(device const float4* inLinear,
     return y / 6.0;
 }
 
-static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
-                                              float surroundY,
+static inline float comp_eye_glare_source_y(float3 sceneRgb,
+                                            constant ComposeParams& C)
+{
+    const float3 lumaW = float3(0.2126, 0.7152, 0.0722);
+    return dot(max(comp_flare_bright_pass_scene(sceneRgb, C), 0.0), lumaW);
+}
+
+static inline float comp_eye_glare_full_at(device const float4* inLinear,
+                                           int ix,
+                                           int iy,
+                                           int maxX,
+                                           int maxY,
+                                           constant ComposeParams& C)
+{
+    return comp_eye_glare_source_y(comp_linear_full_rgb(inLinear,
+                                                        uint(clamp(ix, 0, maxX)),
+                                                        uint(clamp(iy, 0, maxY)),
+                                                        C),
+                                   C);
+}
+
+static inline float comp_eye_glare_tile_at(device const float4* inLinear,
+                                           int ix,
+                                           int iy,
+                                           int maxX,
+                                           int maxY,
+                                           constant ComposeParams& C)
+{
+    return comp_eye_glare_source_y(comp_linear_tile_rgb(inLinear,
+                                                        uint(clamp(ix, 0, maxX)),
+                                                        uint(clamp(iy, 0, maxY)),
+                                                        C),
+                                   C);
+}
+
+static inline float comp_eye_glare_weight(float radiusPx,
+                                          float referenceRadiusPx,
+                                          constant ComposeParams& C)
+{
+    float fallbackPixelDeg = 60.0 / max(float(max(C.fullInputWidth, 1u)), 1.0);
+    float pixelDeg = (C.cameraGlareParams.x > 1e-6) ? C.cameraGlareParams.x : fallbackPixelDeg;
+    float minTheta = max(C.cameraGlareParams.y, 0.03);
+    float falloff = clamp((C.cameraGlareParams.z > 1e-6) ? C.cameraGlareParams.z : 2.0, 1.2, 2.4);
+    float theta = max(radiusPx * pixelDeg, minTheta);
+    float refTheta = max(referenceRadiusPx * pixelDeg, minTheta);
+    return clamp(pow(refTheta / max(theta, 1e-6), falloff), 0.035, 1.0);
+}
+
+static inline float comp_eye_scene_glare_full(device const float4* inLinear,
+                                              uint srcX,
+                                              uint srcY,
                                               constant ComposeParams& C)
 {
-    // Local adaptation belongs before the eye tone curve: a bright local field
-    // reduces retinal gain, preserving contrast that global exposure would
-    // otherwise push into the shoulder. Scientific radiance is left unchanged.
+    int ix = int(srcX);
+    int iy = int(srcY);
+    int maxX = int(max(C.fullInputWidth, 1u)) - 1;
+    int maxY = int(max(C.fullInputHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+    float nearW = 1.0;
+    float nearDiagW = comp_eye_glare_weight(float(rNear) * 1.41421356, float(rNear), C);
+    float farW = comp_eye_glare_weight(float(rFar), float(rNear), C);
+    float farDiagW = comp_eye_glare_weight(float(rFar) * 1.41421356, float(rNear), C);
+    float y = 0.0;
+    float yMax = 0.0;
+
+    float s = comp_eye_glare_full_at(inLinear, ix - rNear, iy, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rNear, iy, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_full_at(inLinear, ix, iy - rNear, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_full_at(inLinear, ix, iy + rNear, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_full_at(inLinear, ix - rNear, iy - rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rNear, iy - rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix - rNear, iy + rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rNear, iy + rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix - rFar, iy, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rFar, iy, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_full_at(inLinear, ix, iy - rFar, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_full_at(inLinear, ix, iy + rFar, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_full_at(inLinear, ix - rFar, iy - rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rFar, iy - rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix - rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_full_at(inLinear, ix + rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    float yAvg = y / max(4.0 * nearW + 4.0 * nearDiagW + 4.0 * farW + 4.0 * farDiagW, 1e-6);
+    float maxMix = clamp((C.cameraGlareParams.w > 1e-6) ? C.cameraGlareParams.w : 0.55, 0.0, 0.85);
+    return max(yAvg, maxMix * yMax);
+}
+
+static inline float comp_eye_scene_glare_tile(device const float4* inLinear,
+                                              uint lx,
+                                              uint ly,
+                                              constant ComposeParams& C)
+{
+    int ix = int(lx);
+    int iy = int(ly);
+    int maxX = int(max(C.tileWidth, 1u)) - 1;
+    int maxY = int(max(C.tileHeight, 1u)) - 1;
+    int rNear = max(2, int(max(C.downsample, 1u)) * 3);
+    int rFar = max(rNear + 2, int(max(C.downsample, 1u)) * 9);
+    float nearW = 1.0;
+    float nearDiagW = comp_eye_glare_weight(float(rNear) * 1.41421356, float(rNear), C);
+    float farW = comp_eye_glare_weight(float(rFar), float(rNear), C);
+    float farDiagW = comp_eye_glare_weight(float(rFar) * 1.41421356, float(rNear), C);
+    float y = 0.0;
+    float yMax = 0.0;
+
+    float s = comp_eye_glare_tile_at(inLinear, ix - rNear, iy, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rNear, iy, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix, iy - rNear, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix, iy + rNear, maxX, maxY, C); y += nearW * s; yMax = max(yMax, nearW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix - rNear, iy - rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rNear, iy - rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix - rNear, iy + rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rNear, iy + rNear, maxX, maxY, C); y += nearDiagW * s; yMax = max(yMax, nearDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix - rFar, iy, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rFar, iy, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix, iy - rFar, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix, iy + rFar, maxX, maxY, C); y += farW * s; yMax = max(yMax, farW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix - rFar, iy - rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rFar, iy - rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix - rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    s = comp_eye_glare_tile_at(inLinear, ix + rFar, iy + rFar, maxX, maxY, C); y += farDiagW * s; yMax = max(yMax, farDiagW * s);
+    float yAvg = y / max(4.0 * nearW + 4.0 * nearDiagW + 4.0 * farW + 4.0 * farDiagW, 1e-6);
+    float maxMix = clamp((C.cameraGlareParams.w > 1e-6) ? C.cameraGlareParams.w : 0.55, 0.0, 0.85);
+    return max(yAvg, maxMix * yMax);
+}
+
+static inline float3 comp_eye_scene_adapt_rgb(float3 rgb,
+                                              float surroundY,
+                                              float glareY,
+                                              constant ComposeParams& C)
+{
+    // Keep pre-tonemap adaptation conservative. Disability glare is modeled
+    // primarily as additive veiling luminance below, not as local darkening
+    // around bright sources. Scientific radiance is left unchanged.
     float expY = max(surroundY, 0.0) * max(C.exposure, 1e-30);
-    float brightGate = smoothstep(0.10, 1.35, expY);
     float dimGate = 1.0 - smoothstep(0.025, 0.20, expY);
-    float brightGain = clamp(pow(0.40 / max(expY, 1e-5), 0.34), 0.22, 1.12);
     float dimGain = clamp(pow(0.11 / max(expY, 1e-5), 0.18), 1.0, 1.35);
-    float gain = mix(1.0, brightGain, brightGate);
-    gain = mix(gain, dimGain, 0.55 * dimGate);
-    return max(rgb * gain, 0.0);
+    float gain = mix(1.0, dimGain, 0.35 * dimGate);
+
+    // Bright-source glare in the eye is not just reduced gain. Intraocular
+    // scatter adds an equivalent veiling luminance to nearby retinal regions,
+    // reducing contrast without forming a dark halo. Drive the veil from
+    // distance-weighted bright-pass samples so dark local average luminance does
+    // not incorrectly remove glare from a nearby lamp.
+    float glareExpY = max(glareY, 0.0) * max(C.exposure, 1e-30);
+    float veilGate = smoothstep(0.018, 0.42, glareExpY);
+    float psf = clamp(C.cameraPsfSigmaPx, 0.0, 1.25);
+    float opticsGate = smoothstep(0.02, 0.24, psf);
+    float veilExp = (0.012 + 0.045 * psf) * opticsGate * veilGate * clamp(glareExpY, 0.0, 1.65);
+    float veilScene = veilExp / max(C.exposure, 1e-30);
+    return max(rgb * gain + float3(veilScene), 0.0);
 }
 
 static inline float3 comp_eye_surround_full(device const float4* inLinear,

@@ -104,6 +104,15 @@ static inline bool sphere_hit(float3 ro, float3 rd, float3 c, float r, thread Hi
     return true;
 }
 
+static inline bool refract_dir(float3 rd, float3 n, float eta, thread float3& outDir) {
+    float cosi = -dot(n, rd);
+    float sint2 = eta * eta * max(0.0f, 1.0f - cosi * cosi);
+    if (sint2 > 1.0f) return false;
+    float cost = sqrt(max(0.0f, 1.0f - sint2));
+    outDir = safe_norm(eta * rd + (eta * cosi - cost) * n);
+    return true;
+}
+
 static inline Hit intersect_scene(float3 ro, float3 rd, constant RoomRTParams& P) {
     Hit h; h.t = 1.0e20f; h.p = 0.0f; h.n = 0.0f; h.mat = -1;
     plane_hit(ro, rd, float3(0,-1,0), float3(0,1,0), float2(-2.2f,2.2f), float2(-3.1f,1.4f), 0, 2, h, 0);
@@ -115,6 +124,12 @@ static inline Hit intersect_scene(float3 ro, float3 rd, constant RoomRTParams& P
     sphere_hit(ro, rd, float3(-0.85f,-0.45f,-1.75f), 0.55f, h, 3);
     sphere_hit(ro, rd, float3(0.35f,-0.50f,-1.45f), 0.50f, h, 4);
     sphere_hit(ro, rd, float3(1.05f,-0.62f,-2.10f), 0.38f, h, 5);
+    // High-contrast rear-wall target behind the glass sphere. It makes
+    // refraction and rear-surface visibility inspectable in room validation.
+    plane_hit(ro, rd, float3(0,0,-2.985f), float3(0,0,1), float2(-0.02f,0.38f), float2(-0.76f,-0.36f), 0, 1, h, 36);
+    plane_hit(ro, rd, float3(0,0,-2.984f), float3(0,0,1), float2(0.38f,0.78f), float2(-0.76f,-0.36f), 0, 1, h, 37);
+    plane_hit(ro, rd, float3(0,0,-2.983f), float3(0,0,1), float2(-0.02f,0.38f), float2(-0.36f,0.04f), 0, 1, h, 37);
+    plane_hit(ro, rd, float3(0,0,-2.982f), float3(0,0,1), float2(0.38f,0.78f), float2(-0.36f,0.04f), 0, 1, h, 36);
     if (P.bokehTargets != 0) {
         sphere_hit(ro, rd, float3(-1.25f,0.45f,-2.72f), 0.045f, h, 20);
         sphere_hit(ro, rd, float3(-0.78f,0.82f,-2.88f), 0.038f, h, 21);
@@ -146,6 +161,8 @@ static inline float3 albedo_for(int mat) {
     if (mat == 33) return float3(0.94f,0.82f,0.18f);
     if (mat == 34) return float3(0.82f,0.20f,0.82f);
     if (mat == 35) return float3(0.18f,0.82f,0.86f);
+    if (mat == 36) return float3(0.05f,0.055f,0.06f);
+    if (mat == 37) return float3(0.96f,0.94f,0.82f);
     return float3(0.78f,0.76f,0.70f);
 }
 
@@ -193,6 +210,41 @@ static inline float3 shade_simple(float3 ro, float3 rd, constant RoomRTParams& P
     return a * (amb + direct_light(h.p, h.n, P));
 }
 
+static inline float3 shade_secondary(float3 ro, float3 rd, constant RoomRTParams& P) {
+    Hit h = intersect_scene(ro, rd, P);
+    if (h.mat < 0) return sky(rd);
+    float3 e = emission_for(h.mat);
+    if (dot(e,e) > 0.0f) return e;
+    float3 a = albedo_for(h.mat);
+    float3 base = a * (0.025f * sky(h.n) + direct_light(h.p, h.n, P));
+    if (h.mat == 4) {
+        float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
+        float fres = 0.04f + 0.96f * pow(1.0f - cosi, 5.0f);
+        float3 refl = shade_simple(h.p + h.n * 0.004f, safe_norm(reflect(rd, h.n)), P);
+        float3 refrIn;
+        if (!refract_dir(rd, h.n, 1.0f / 1.48f, refrIn)) {
+            return refl;
+        }
+        Hit exitHit = intersect_scene(h.p - h.n * 0.004f, refrIn, P);
+        float3 trn;
+        float pathLen = 0.65f;
+        if (exitHit.mat == 4) {
+            float3 refrOut;
+            pathLen = length(exitHit.p - h.p);
+            if (refract_dir(refrIn, -exitHit.n, 1.48f, refrOut)) {
+                trn = shade_simple(exitHit.p + exitHit.n * 0.004f, refrOut, P);
+            } else {
+                trn = shade_simple(exitHit.p - exitHit.n * 0.004f, safe_norm(reflect(refrIn, -exitHit.n)), P);
+            }
+        } else {
+            trn = shade_simple(h.p - h.n * 0.004f, refrIn, P);
+        }
+        float3 tint = exp(-float3(0.026f,0.010f,0.004f) * pathLen);
+        return base * 0.025f + mix(trn * tint, refl, fres);
+    }
+    return base;
+}
+
 static inline float3 trace_room(float3 ro, float3 rd, constant RoomRTParams& P) {
     Hit h = intersect_scene(ro, rd, P);
     if (h.mat < 0) return sky(rd);
@@ -202,24 +254,63 @@ static inline float3 trace_room(float3 ro, float3 rd, constant RoomRTParams& P) 
     float3 base = a * (0.025f * sky(h.n) + direct_light(h.p, h.n, P));
     if (h.mat == 3) {
         float3 rr = reflect(rd, h.n);
-        return base * 0.08f + shade_simple(h.p + h.n * 0.004f, safe_norm(rr), P) * a * 0.92f;
+        // Metal reflections must preserve the material behavior of the object
+        // they reflect.  In particular, a reflected glass sphere should still
+        // show refraction/Fresnel instead of collapsing to diffuse albedo.
+        return base * 0.08f + shade_secondary(h.p + h.n * 0.004f, safe_norm(rr), P) * a * 0.92f;
     }
     if (h.mat == 4) {
-        float eta = 1.0f / 1.48f;
         float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
-        float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
-        float3 refr = (k > 0.0f) ? safe_norm(eta * rd + (eta * cosi - sqrt(k)) * h.n) : reflect(rd, h.n);
         float fres = 0.04f + 0.96f * pow(1.0f - cosi, 5.0f);
         float3 refl = shade_simple(h.p + h.n * 0.004f, safe_norm(reflect(rd, h.n)), P);
-        float3 trn = shade_simple(h.p - h.n * 0.004f, refr, P) * float3(0.94f,0.98f,1.0f);
-        return base * 0.04f + mix(trn, refl, fres);
+        float3 refrIn;
+        if (!refract_dir(rd, h.n, 1.0f / 1.48f, refrIn)) {
+            return refl;
+        }
+        Hit exitHit = intersect_scene(h.p - h.n * 0.004f, refrIn, P);
+        float3 trn;
+        float pathLen = 0.65f;
+        if (exitHit.mat == 4) {
+            float3 refrOut;
+            pathLen = length(exitHit.p - h.p);
+            if (refract_dir(refrIn, -exitHit.n, 1.48f, refrOut)) {
+                trn = shade_simple(exitHit.p + exitHit.n * 0.004f, refrOut, P);
+            } else {
+                trn = shade_simple(exitHit.p - exitHit.n * 0.004f, safe_norm(reflect(refrIn, -exitHit.n)), P);
+            }
+        } else {
+            trn = shade_simple(h.p - h.n * 0.004f, refrIn, P);
+        }
+        float3 tint = exp(-float3(0.026f,0.010f,0.004f) * pathLen);
+        return base * 0.025f + mix(trn * tint, refl, fres);
     }
     return base;
 }
 
 static inline float primary_depth(float3 ro, float3 rd, float focusDepth, constant RoomRTParams& P) {
     Hit h = intersect_scene(ro, rd, P);
-    return h.mat < 0 ? focusDepth : h.t;
+    if (h.mat < 0) return focusDepth;
+    if (h.mat != 4) return h.t;
+
+    float cosi = clamp(-dot(h.n, rd), 0.0f, 1.0f);
+    float fres = 0.04f + 0.96f * pow(1.0f - cosi, 5.0f);
+    float3 refrIn;
+    if (!refract_dir(rd, h.n, 1.0f / 1.48f, refrIn)) {
+        return h.t;
+    }
+    Hit exitHit = intersect_scene(h.p - h.n * 0.004f, refrIn, P);
+    if (exitHit.mat != 4) {
+        return h.t;
+    }
+    float3 refrOut;
+    if (!refract_dir(refrIn, -exitHit.n, 1.48f, refrOut)) {
+        return h.t + exitHit.t;
+    }
+    Hit seen = intersect_scene(exitHit.p + exitHit.n * 0.004f, refrOut, P);
+    float transmitDepth = h.t + exitHit.t + ((seen.mat < 0) ? max(focusDepth - h.t - exitHit.t, 0.0f) : seen.t);
+    // A single depth channel cannot represent reflected and transmitted layers.
+    // Use the same Schlick mix as color so DOF follows the dominant visible layer.
+    return mix(transmitDepth, h.t, clamp(fres, 0.0f, 1.0f));
 }
 
 static inline float2 aperture_sample(uint i, uint n, uint blades) {

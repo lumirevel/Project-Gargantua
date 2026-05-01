@@ -105,6 +105,11 @@ enum RenderComposeFullGPUPhase {
         var globalCloudQ10: Float = 0.0
         var globalCloudQ90: Float = 1.0
         var globalCloudInvSpan: Float = 1.0 / max(globalCloudQ90 - globalCloudQ10, 1e-6)
+        var exposureDebugP50: Float?
+        var exposureDebugPHigh: Float?
+        var exposureDebugPMid: Float?
+        var exposureDebugLumSamples: UInt32?
+        var exposureDebugCloudSamples: UInt32?
         var composeParamsBase = params
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])!
 
@@ -156,7 +161,8 @@ enum RenderComposeFullGPUPhase {
             cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams,
             cameraNoiseParams: config.cameraNoiseParams,
-            cameraColorParams: config.cameraColorParams
+            cameraColorParams: config.cameraColorParams,
+            cameraGlareParams: config.cameraGlareParams
         )
 
         guard let composeParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
@@ -297,6 +303,7 @@ enum RenderComposeFullGPUPhase {
             globalCloudQ10 = cloudResult.cloudQ10
             globalCloudQ90 = cloudResult.cloudQ90
             globalCloudInvSpan = 1.0 / max(globalCloudQ90 - globalCloudQ10, 1e-6)
+            exposureDebugCloudSamples = cloudResult.cloudSamples
             let cloudDone = input.totalPixels + count
             let cloudNow = Date().timeIntervalSince1970
             if cloudDone >= nextProgressMark || (cloudNow - lastProgressPrint) >= 0.5 {
@@ -429,6 +436,10 @@ enum RenderComposeFullGPUPhase {
 
             let lumResult = solveResultBuf.contents().bindMemory(to: ComposeSolveResult.self, capacity: 1).pointee
             composeExposure = lumResult.exposure
+            exposureDebugP50 = lumResult.p50
+            exposureDebugPHigh = lumResult.p995
+            exposureDebugPMid = lumResult.pMid
+            exposureDebugLumSamples = lumResult.lumSamples
             if exposureSettings.midQuantile > 0.0 {
                 print("lum(hist) p50=\(lumResult.p50), p\(Int(exposureSettings.midQuantile * 100))=\(lumResult.pMid), p99.5=\(lumResult.p995), samples=\(lumResult.lumSamples), exposureBoost<=\(exposureSettings.maxExposureBoost)")
             } else {
@@ -582,6 +593,23 @@ enum RenderComposeFullGPUPhase {
 
         try RenderOutputs.writeImage(path: config.imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
         print("Saved image at: \(config.imageOutPath)")
+        try RenderOutputs.writeExposureDiagnostics(
+            config: config,
+            width: outWidth,
+            height: outHeight,
+            solveMode: "gpu-full-compose",
+            resolvedExposure: composeExposure,
+            settings: exposureSettings,
+            p50: exposureDebugP50,
+            pHigh: exposureDebugPHigh,
+            pMid: exposureDebugPMid,
+            luminanceSamples: exposureDebugLumSamples,
+            luminanceLogMin: lumLogMin,
+            luminanceLogMax: lumLogMax,
+            cloudQ10: globalCloudQ10,
+            cloudQ90: globalCloudQ90,
+            cloudSamples: exposureDebugCloudSamples
+        )
 
         return RenderComposeFullGPUPhaseResult(
             composeExposure: composeExposure,

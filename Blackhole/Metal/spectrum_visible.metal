@@ -49,6 +49,7 @@ struct ComposeParams {
     float4 cameraSensorParams; // gain, fullWell, shoulderMix, blackLevel
     float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
     float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
+    float4 cameraGlareParams; // pixelAngleDeg, minGlareAngleDeg, angularFalloff, maxSampleMix
 };
 
 struct ComposeSolveParams {
@@ -139,6 +140,25 @@ static inline float comp_realistic_like(float x) {
     return clamp(precise::pow(y, 0.98), 0.0, 1.0);
 }
 
+static inline float comp_sensor_filmic_like(float x) {
+    float xb = min(max(x, 0.0), 1e12);
+    // Camera-display comparison curve: a Hable-style filmic response with a
+    // modest exposure-domain scale. It preserves midtone contrast and rolls
+    // bright values into white without changing source radiance or bloom.
+    const float A = 0.22;
+    const float B = 0.30;
+    const float C = 0.10;
+    const float D = 0.20;
+    const float E = 0.01;
+    const float F = 0.30;
+    float z = 2.2 * xb;
+    float y = ((z * (A * z + C * B) + D * E) / max(z * (A * z + B) + D * F, 1e-8)) - E / F;
+    const float W = 11.2;
+    const float white = ((W * (A * W + C * B) + D * E) / max(W * (A * W + B) + D * F, 1e-8)) - E / F;
+    y = clamp(y / max(white, 1e-8), 0.0, 1.0);
+    return clamp(precise::pow(y, 0.99), 0.0, 1.0);
+}
+
 static inline float comp_structure_like(float x) {
     float xb = min(max(x, 0.0), 1e12);
     // Presentation-only log luma mapping for GRMHD hot-flow inspection.
@@ -156,6 +176,7 @@ static inline float comp_tonemap_luma(float x, uint look) {
     if (look == 6u) return comp_realistic_like(x); // --look realistic
     if (look == 5u) return comp_hdr_like(x); // --look hdr
     if (look == 3u) return comp_agx_like(x); // --look agx
+    if (look == 8u) return comp_sensor_filmic_like(x); // --look sensor-filmic
     if (look == 4u) return clamp(x, 0.0, 1.0); // --look none
     return comp_aces(x); // default
 }
@@ -210,7 +231,29 @@ static inline float3 comp_apply_look(float3 rgb, uint look) {
         out = precise::pow(clamp(out, 0.0, 1.0), float3(0.92));
         return clamp(out, 0.0, 1.0);
     }
+    if (look == 8u) { // sensor-filmic
+        float y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float sat = 1.03 - 0.15 * smoothstep(0.64, 1.0, y);
+        float3 out = mix(float3(y), rgb, sat);
+        // Slightly compress near-white chroma in a display-like way without a
+        // stylized grade; hue stays tied to the tone-mapped RGB ratio.
+        out = mix(out, out / (1.0 + 0.10 * out), 0.28 * smoothstep(0.78, 1.0, y));
+        return clamp(out, 0.0, 1.0);
+    }
     return clamp(rgb, 0.0, 1.0);
+}
+
+static inline float3 comp_apply_highlight_desaturation(float3 rgb, float lumTm, uint look, uint preserveHighlightColor) {
+    if (look == 4u) return rgb;
+    float shoulder = smoothstep(0.55, 1.0, lumTm);
+    float gray = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    float desat;
+    if (preserveHighlightColor != 0u) {
+        desat = (look == 5u) ? 0.03 : ((look == 8u) ? 0.05 : 0.08);
+    } else {
+        desat = (look == 5u) ? 0.08 : ((look == 8u) ? 0.14 : 0.24);
+    }
+    return mix(rgb, float3(gray), desat * shoulder);
 }
 
 static inline void comp_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar) {

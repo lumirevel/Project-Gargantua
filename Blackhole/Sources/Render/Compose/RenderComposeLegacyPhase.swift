@@ -95,6 +95,11 @@ enum RenderComposeLegacyPhase {
         var cloudQ90: Float = 1.0
         var cloudInvSpan: Float = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
         var sampledHits = 0
+        var exposureDebugP50: Float?
+        var exposureDebugPHigh: Float?
+        var exposureDebugPMid: Float?
+        var exposureDebugLumSamples: UInt32?
+        var exposureDebugCloudSamples: UInt32?
 
         let url = frameResources.outputURL
         if autoExposureEnabled && !composeGPU {
@@ -392,6 +397,10 @@ enum RenderComposeLegacyPhase {
                 let pMid = (exposureSettings.midQuantile > 0.0)
                     ? percentileSorted(lumSamples, exposureSettings.midQuantile)
                     : 0.0
+                exposureDebugP50 = p50
+                exposureDebugPHigh = p995
+                exposureDebugPMid = pMid
+                exposureDebugLumSamples = UInt32(min(sampledHits, Int(UInt32.max)))
                 composeExposure = composeExposureFromLuminanceStats(
                     pHigh: p995,
                     pMid: pMid,
@@ -428,7 +437,7 @@ enum RenderComposeLegacyPhase {
             cameraSceneR: config.cameraSceneR, cameraSceneG: config.cameraSceneG, cameraSceneB: config.cameraSceneB,
             cameraDisplayR: config.cameraDisplayR, cameraDisplayG: config.cameraDisplayG, cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams, cameraNoiseParams: config.cameraNoiseParams,
-            cameraColorParams: config.cameraColorParams
+            cameraColorParams: config.cameraColorParams, cameraGlareParams: config.cameraGlareParams
         )
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])!
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -489,6 +498,9 @@ enum RenderComposeLegacyPhase {
             cloudQ10 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.08, 0.0, 1.0) }
             cloudQ90 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.92, 0.0, 1.0) }
             cloudInvSpan = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
+            var cloudSampleTotal: UInt64 = 0
+            for count in cloudHistGlobal { cloudSampleTotal += UInt64(count) }
+            exposureDebugCloudSamples = UInt32(min(cloudSampleTotal, UInt64(UInt32.max)))
 
             try corrHandle.seek(toOffset: 0)
             pty = 0
@@ -537,6 +549,12 @@ enum RenderComposeLegacyPhase {
             let p50 = Float(pow(10.0, Double(p50Log)))
             let gpuP995 = Float(pow(10.0, Double(p995Log)))
             let gpuPMid = (exposureSettings.midQuantile > 0.0) ? Float(pow(10.0, Double(pMidLog))) : 0.0
+            var lumSampleTotal: UInt64 = 0
+            for count in lumHistGlobal { lumSampleTotal += UInt64(count) }
+            exposureDebugP50 = p50
+            exposureDebugPHigh = gpuP995
+            exposureDebugPMid = gpuPMid
+            exposureDebugLumSamples = UInt32(min(lumSampleTotal, UInt64(UInt32.max)))
             composeExposure = composeExposureFromLuminanceStats(
                 pHigh: gpuP995,
                 pMid: gpuPMid,
@@ -621,6 +639,23 @@ enum RenderComposeLegacyPhase {
 
         try RenderOutputs.writeImage(path: config.imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
         print("Saved image at: \(config.imageOutPath)")
+        try RenderOutputs.writeExposureDiagnostics(
+            config: config,
+            width: outWidth,
+            height: outHeight,
+            solveMode: exposureModeLabel,
+            resolvedExposure: composeExposure,
+            settings: exposureSettings,
+            p50: exposureDebugP50,
+            pHigh: exposureDebugPHigh,
+            pMid: exposureDebugPMid,
+            luminanceSamples: exposureDebugLumSamples,
+            luminanceLogMin: composeLumLogMin,
+            luminanceLogMax: composeLumLogMax,
+            cloudQ10: cloudQ10,
+            cloudQ90: cloudQ90,
+            cloudSamples: exposureDebugCloudSamples
+        )
 
         return RenderComposeLegacyPhaseResult(
             composeExposure: composeExposure,
