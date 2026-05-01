@@ -79,3 +79,35 @@ Do not use this branch to bypass review of risky shared files such as packed Met
 Do not force push.
 Do not run destructive cleanup commands.
 Do not merge feature branches until explicitly requested.
+
+## Physics Merge Result - 2026-05-01
+
+Merged branch:
+
+- `origin/codex/physics-realism-v1` at `4556f88`
+
+Conflict result:
+
+- No merge conflicts occurred during the physics merge.
+
+Validation performed after physics merge:
+
+- `bash -n Blackhole/run_pipeline.sh` passed.
+- `xcodebuild -project Blackhole.xcodeproj -scheme Blackhole -configuration Release -derivedDataPath /private/tmp/ProjectGargantuaIntegrationDerivedData build` passed with existing simulator/runtime warnings.
+- Packed ABI validation passed for:
+  - `--disk-grmhd-debug optical_depth`
+  - `--disk-grmhd-debug transfer-saturation`
+  - `--disk-grmhd-debug emissivity-pre-transfer`
+
+Observed ABI layout after physics merge:
+
+- `PackedParams.layout size=616 stride=624 align=16`
+- `CollisionInfo.layout size=64 stride=64 align=16`
+- `CollisionLite32.layout size=32 stride=32 align=16`
+- `ComposeParams.layout size=304 stride=304 align=16`
+
+Physics debug smoke render note:
+
+- A very small `canonical-visible-disk-v1` optical-depth smoke render was started with output under `/private/tmp`, but the render process did not complete promptly and was manually terminated.
+- This is recorded as an incomplete smoke-render validation, not as a merge conflict.
+- Parser/build/ABI validation still confirms that the physics debug aliases are present and accepted.
