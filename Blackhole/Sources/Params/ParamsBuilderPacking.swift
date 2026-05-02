@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 extension ParamsBuilder {
     static func buildPackedParams(from config: ResolvedRenderConfig) -> PackedParams {
@@ -156,7 +157,25 @@ extension ParamsBuilder {
             grmhdTransportAlphaScale: Float(config.grmhdTransportAlphaScaleArg),
             grmhdSmoothEmissionScale: Float(config.grmhdSmoothEmissionScaleArg),
             grmhdCloudEmissionScale: Float(config.grmhdCloudEmissionScaleArg),
-            grmhdSmoothWeightMode: config.grmhdSmoothWeightModeID
+            grmhdSmoothWeightMode: config.grmhdSmoothWeightModeID,
+            pcdSourceA: SIMD4<Float>(
+                Float(config.pcdDensityExpArg),
+                Float(config.pcdEmissivityScaleArg),
+                Float(config.pcdOpacityScaleArg),
+                Float(config.pcdSeedArg)
+            ),
+            pcdSourceB: SIMD4<Float>(
+                Float(config.pcdStructureScaleArg),
+                Float(config.pcdSpiralAmpArg),
+                Float(config.pcdSpiralPitchArg),
+                Float(config.pcdClumpContrastArg)
+            ),
+            pcdSourceC: SIMD4<Float>(
+                Float(config.pcdHotCrescentArg),
+                Float(config.pcdDebugFieldID),
+                0.0,
+                0.0
+            )
         )
     }
 }

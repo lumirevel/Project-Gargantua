@@ -122,6 +122,16 @@ struct ResolvedRenderConfig {
     var grmhdCloudEmissionScaleArg: Double = 1.0
     var grmhdSmoothWeightName: String = "constant"
     var grmhdSmoothWeightModeID: UInt32 = 0
+    var pcdDensityExpArg: Double = 1.15
+    var pcdEmissivityScaleArg: Double = 1.0
+    var pcdOpacityScaleArg: Double = 1.0
+    var pcdSeedArg: Double = 1729.0
+    var pcdStructureScaleArg: Double = 1.0
+    var pcdSpiralAmpArg: Double = 0.25
+    var pcdSpiralPitchArg: Double = 5.0
+    var pcdClumpContrastArg: Double = 0.35
+    var pcdHotCrescentArg: Double = 0.35
+    var pcdDebugFieldID: UInt32 = 0
     var diskPolarizedRTEnabled: Bool = false
     var diskPolarizationFracArg: Double = 0.0
     var diskFaradayRotScaleArg: Double = 0.0

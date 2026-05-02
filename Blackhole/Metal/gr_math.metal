@@ -163,6 +163,9 @@ struct Params {
     float  grmhdSmoothEmissionScale; // smooth thermal continuum gain
     float  grmhdCloudEmissionScale; // structured thermal cloud gain
     uint   grmhdSmoothWeightMode; // 0=constant, 1=state, 2=body-source, 3=state+body-source, 4=plasma body+skin, 5=positive-emissive plasma, 6..9=hot-skin variants, 10..13=hybrid visible disk, 14..15=visible reference body + GRMHD skin
+    float4 pcdSourceA; // x=densityExp, y=emissivityScale, z=opacityScale, w=seed
+    float4 pcdSourceB; // x=structureScale, y=spiralAmp, z=spiralPitch, w=clumpContrast
+    float4 pcdSourceC; // x=hotCrescent, y=debugField, zw reserved
 };
 
 struct CollisionInfo {

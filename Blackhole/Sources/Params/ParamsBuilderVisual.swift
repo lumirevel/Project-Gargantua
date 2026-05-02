@@ -451,8 +451,10 @@ enum ParamsBuilderVisual {
             realismProfileID = 4
         case "canonical-visible-disk-v1", "canonical-visible-disk", "plausible-disk-v1", "plausible-disk", "source-plausible-disk-v1", "mri-skin":
             realismProfileID = 5
+        case "physics-constrained-cinematic-disk-v1", "physics-constrained-cinematic-disk", "plausible-cinematic-disk-v1", "plausible-cinematic-disk", "pcd-v1":
+            realismProfileID = 6
         default:
-            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic, physical-flow, canonical-visible-disk-v1")
+            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic, physical-flow, canonical-visible-disk-v1, physics-constrained-cinematic-disk-v1")
         }
 
         let cameraPsfSigmaDefault: Double = {
@@ -648,19 +650,19 @@ enum ParamsBuilderVisual {
             realismDebugID = 0
         case "g", "gfactor", "g-factor", "redshift":
             realismDebugID = 31
-        case "emissivity", "radial", "nt":
+        case "emissivity", "emissivity-pre-transfer", "source-emissivity", "radial", "nt":
             realismDebugID = 32
         case "beaming", "asymmetry", "approach":
             realismDebugID = 33
-        case "photosphere", "surface":
+        case "photosphere", "body", "surface":
             realismDebugID = 34
         case "atmosphere", "absorption", "skin", "hot-skin", "grmhd-skin", "perturbation-only":
             realismDebugID = 35
         case "corona", "atlas-activity":
             realismDebugID = 36
-        case "perturbation", "turbulence", "disk-noise", "perturbation-ratio", "skin-ratio":
+        case "perturbation", "turbulence", "disk-noise", "perturbation-ratio", "skin-ratio", "branch-ratio", "branch-ratios":
             realismDebugID = 37
-        case "hdr", "pretonemap", "pre-tone", "pre-tone-map":
+        case "hdr", "raw-radiance", "radiance-post-transfer", "pretonemap", "pre-tone", "pre-tone-map":
             realismDebugID = 38
         case "temperature", "temp", "teff", "observed-temperature":
             realismDebugID = 39
@@ -668,10 +670,22 @@ enum ParamsBuilderVisual {
             realismDebugID = 40
         case "density", "rho":
             realismDebugID = 41
-        case "radial-tau", "radialtau", "opacity-baseline", "tau-baseline", "activity", "heating", "heating-field":
+        case "activity", "heating", "heating-field":
             realismDebugID = 42
+        case "opacity", "alpha", "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            realismDebugID = 42
+        case "transfer-saturation", "saturation":
+            realismDebugID = 42
+        case "spiral", "spiral-wave":
+            realismDebugID = 42
+        case "clump", "clumps", "cloud", "clouds":
+            realismDebugID = 42
+        case "hot-crescent", "crescent":
+            realismDebugID = 42
+        case "final-rgb", "final":
+            realismDebugID = 38
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr, temperature, tau, density, activity")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, beaming, emissivity-pre-transfer, body, skin, corona, branch-ratio, raw-radiance, final-rgb, temperature, density, opacity, optical-depth, transfer-saturation, activity, spiral, clump, hot-crescent")
         }
         if realismDebugID != 0 && composeLookID != 6 && presentationModeID != 1 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))

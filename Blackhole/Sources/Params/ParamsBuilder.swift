@@ -253,6 +253,31 @@ enum ParamsBuilder {
     let grmhdCloudEmissionScaleArg = visibleSettings.grmhdCloudEmissionScaleArg
     let grmhdSmoothWeightName = visibleSettings.grmhdSmoothWeightName
     let grmhdSmoothWeightModeID = visibleSettings.grmhdSmoothWeightModeID
+    let pcdDensityExpArg = min(max(doubleArg("--pcd-density-exp", default: 1.15), 0.3), 3.0)
+    let pcdEmissivityScaleArg = min(max(doubleArg("--pcd-emissivity-scale", default: 1.0), 0.1), 5.0)
+    let pcdOpacityScaleArg = min(max(doubleArg("--pcd-opacity-scale", default: 1.0), 0.0), 6.0)
+    let pcdSeedArg = doubleArg("--pcd-seed", default: 1729.0)
+    let pcdStructureScaleArg = min(max(doubleArg("--pcd-structure-scale", default: 1.0), 0.2), 3.0)
+    let pcdSpiralAmpArg = min(max(doubleArg("--pcd-spiral-amp", default: 0.25), 0.0), 1.0)
+    let pcdSpiralPitchArg = min(max(doubleArg("--pcd-spiral-pitch", default: 5.0), 0.5), 14.0)
+    let pcdClumpContrastArg = min(max(doubleArg("--pcd-clump-contrast", default: 0.35), 0.0), 1.0)
+    let pcdHotCrescentArg = min(max(doubleArg("--pcd-hot-crescent", default: 0.35), 0.0), 1.0)
+    let pcdDebugFieldID: UInt32 = {
+        switch stringArg("--realism-debug", default: "off").lowercased() {
+        case "opacity", "alpha", "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            return 1
+        case "transfer-saturation", "saturation":
+            return 2
+        case "spiral", "spiral-wave":
+            return 3
+        case "clump", "clumps", "cloud", "clouds":
+            return 4
+        case "hot-crescent", "crescent":
+            return 5
+        default:
+            return 0
+        }
+    }()
     let thinPhotosphereEnabled = visibleSettings.thinPhotosphereEnabled
     let thinRadialTaperEnabled = visibleSettings.thinRadialTaperEnabled
     let thinHOverRBaseArg = visibleSettings.thinHOverRBaseArg
@@ -559,6 +584,16 @@ enum ParamsBuilder {
         config.grmhdCloudEmissionScaleArg = grmhdCloudEmissionScaleArg
         config.grmhdSmoothWeightName = grmhdSmoothWeightName
         config.grmhdSmoothWeightModeID = grmhdSmoothWeightModeID
+        config.pcdDensityExpArg = pcdDensityExpArg
+        config.pcdEmissivityScaleArg = pcdEmissivityScaleArg
+        config.pcdOpacityScaleArg = pcdOpacityScaleArg
+        config.pcdSeedArg = pcdSeedArg
+        config.pcdStructureScaleArg = pcdStructureScaleArg
+        config.pcdSpiralAmpArg = pcdSpiralAmpArg
+        config.pcdSpiralPitchArg = pcdSpiralPitchArg
+        config.pcdClumpContrastArg = pcdClumpContrastArg
+        config.pcdHotCrescentArg = pcdHotCrescentArg
+        config.pcdDebugFieldID = pcdDebugFieldID
         config.useLinear32Intermediate = useLinear32Intermediate
         config.rayBundleEnabled = rayBundleEnabled
         config.rayBundleActive = rayBundleActive
@@ -788,6 +823,15 @@ enum ParamsBuilder {
             diskVolumeRMax: diskVolumeRMax,
             diskVolumeZMax: diskVolumeZMax,
             diskVolumeTauScaleArg: diskVolumeTauScaleArg,
+            pcdDensityExpArg: pcdDensityExpArg,
+            pcdEmissivityScaleArg: pcdEmissivityScaleArg,
+            pcdOpacityScaleArg: pcdOpacityScaleArg,
+            pcdSeedArg: pcdSeedArg,
+            pcdStructureScaleArg: pcdStructureScaleArg,
+            pcdSpiralAmpArg: pcdSpiralAmpArg,
+            pcdSpiralPitchArg: pcdSpiralPitchArg,
+            pcdClumpContrastArg: pcdClumpContrastArg,
+            pcdHotCrescentArg: pcdHotCrescentArg,
             rayBundleEnabled: rayBundleEnabled,
             rayBundleActive: rayBundleActive,
             rayBundleJacobianActive: rayBundleJacobianActive,

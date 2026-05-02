@@ -539,7 +539,7 @@ enum ParamsBuilderPolicy {
         case "flow", "procedural", "legacy", "noise":
             diskModelResolved = "flow"
         case "perlin":
-            diskModelResolved = "perlin-ec7"
+            diskModelResolved = "perlin"
         case "perlin-ec7", "perlin-legacy":
             diskModelResolved = "perlin-ec7"
         case "perlin-classic", "perlin-f552":

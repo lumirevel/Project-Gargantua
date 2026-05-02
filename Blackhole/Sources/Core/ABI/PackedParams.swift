@@ -149,6 +149,13 @@ struct PackedParams {
     var grmhdSmoothEmissionScale: Float
     var grmhdCloudEmissionScale: Float
     var grmhdSmoothWeightMode: UInt32
+    // Physics-constrained cinematic disk v1 source controls.
+    // A: density exponent, emissivity scale, opacity scale, deterministic seed.
+    // B: structure scale, spiral amplitude, spiral pitch, clump contrast.
+    // C: hot crescent strength, reserved, reserved, reserved.
+    var pcdSourceA: SIMD4<Float>
+    var pcdSourceB: SIMD4<Float>
+    var pcdSourceC: SIMD4<Float> // x=hotCrescent, y=profile-6 debug field selector
 }
 
 struct CollisionInfo {
@@ -273,8 +280,8 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 616
-    let expectedStride = 624
+    let expectedSize = 672
+    let expectedStride = 672
     let expectedAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
@@ -292,6 +299,9 @@ func validatePackedParamsABIOrThrow() throws {
         "visibleThermalTransferMode": 592,
         "grmhdBranchIsolationMode": 596,
         "grmhdSmoothWeightMode": 612,
+        "pcdSourceA": 624,
+        "pcdSourceB": 640,
+        "pcdSourceC": 656,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -333,5 +343,8 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "visibleThermalTransferMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleThermalTransferMode) ?? -1,
         "grmhdBranchIsolationMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdBranchIsolationMode) ?? -1,
         "grmhdSmoothWeightMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdSmoothWeightMode) ?? -1,
+        "pcdSourceA": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceA) ?? -1,
+        "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
+        "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
     ]
 }
