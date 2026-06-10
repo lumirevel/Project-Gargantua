@@ -4568,6 +4568,7 @@ refresh_metal_aggregate_if_needed() {
     "$ROOT_DIR"/Blackhole/Metal/VolumeTransport/*.metal \
     "$ROOT_DIR"/Blackhole/Metal/Compose/*.metalh \
     "$ROOT_DIR"/Blackhole/Metal/Visible/*.metal \
+    "$ROOT_DIR"/Blackhole/Metal/*.metalh \
     "$ROOT_DIR"/Blackhole/Metal/gr_math.metal \
     "$ROOT_DIR"/Blackhole/Metal/disk_models.metal \
     "$ROOT_DIR"/Blackhole/Metal/spectrum_visible.metal

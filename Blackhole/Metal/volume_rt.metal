@@ -169,22 +169,10 @@ static inline void volume_accum_note_transfer(thread VolumeAccum& A,
 }
 
 static inline void volume_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar) {
-    float t1 = (lam - 442.0) * ((lam < 442.0) ? 0.0624 : 0.0374);
-    float t2 = (lam - 599.8) * ((lam < 599.8) ? 0.0264 : 0.0323);
-    float t3 = (lam - 501.1) * ((lam < 501.1) ? 0.0490 : 0.0382);
-    x_bar = 0.362 * precise::exp(-0.5 * t1 * t1) + 1.056 * precise::exp(-0.5 * t2 * t2) - 0.065 * precise::exp(-0.5 * t3 * t3);
-
-    t1 = (lam - 568.8) * ((lam < 568.8) ? 0.0213 : 0.0247);
-    t2 = (lam - 530.9) * ((lam < 530.9) ? 0.0613 : 0.0322);
-    y_bar = 0.821 * precise::exp(-0.5 * t1 * t1) + 0.286 * precise::exp(-0.5 * t2 * t2);
-
-    t1 = (lam - 437.0) * ((lam < 437.0) ? 0.0845 : 0.0278);
-    t2 = (lam - 459.0) * ((lam < 459.0) ? 0.0385 : 0.0725);
-    z_bar = 1.217 * precise::exp(-0.5 * t1 * t1) + 0.681 * precise::exp(-0.5 * t2 * t2);
-
-    x_bar = max(x_bar, 0.0);
-    y_bar = max(y_bar, 0.0);
-    z_bar = max(z_bar, 0.0);
+    float3 bar = bh_cie1931_xyz_bar(lam);
+    x_bar = bar.x;
+    y_bar = bar.y;
+    z_bar = bar.z;
 }
 
 static inline float volume_visible_band_lambda_nm(uint k) {
