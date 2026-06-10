@@ -280,6 +280,9 @@ struct VisualSettings {
     let cameraISOArg: Float
     let cameraShutterSecondsArg: Float
     let photographicExposureScale: Float
+    let photographicCalibrationName: String
+    let cameraLuminanceScaleArg: Double
+    let photometricSaturationLuminance: Double
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -609,14 +612,48 @@ enum ParamsBuilderVisual {
             fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed, photographic")
         }
         let exposureEVArg = doubleArg("--exposure-ev", default: 0.0)
-        let photographicExposureScale = Float(max(
-            0.0,
-            100.0
+        let photographicCalibrationName = stringArg("--photographic-calibration", default: "photometric").lowercased()
+        switch photographicCalibrationName {
+        case "photometric", "physical", "iso", "legacy":
+            break
+        default:
+            fail("invalid --photographic-calibration \(photographicCalibrationName). use one of: photometric, legacy")
+        }
+        // Unit bridge from renderer radiance to photometric luminance. The
+        // canonical visible spectral path integrates SI spectral radiance, so
+        // its CIE Y is in W*m^-2*sr^-1 and luminance is 683.002*Y cd/m^2 at
+        // scale 1.0. Non-SI source paths can declare their scale here.
+        let cameraLuminanceScaleArg = max(1e-12, doubleArg("--camera-luminance-scale", default: 1.0))
+        // ISO 12232 saturation-based photographic exposure:
+        //   sensor-plane exposure H = q * (pi/4) * L * t / N^2  [lux*s], q = 0.65
+        //   saturation at H_sat = 78 / S  ->  relative output = H * S / 78
+        // so a real camera at the same f-number/shutter/ISO pointed at a scene
+        // of the same absolute luminance clips at the same settings.
+        let isoQLens = 0.65
+        let photometricExposurePerLuminance =
+            isoQLens * Double.pi / 4.0
                 * Double(cameraShutterSecondsArg)
-                * (Double(cameraISOArg) / 100.0)
-                / max(0.49, Double(lensFNumberArg * lensFNumberArg))
-                * pow(2.0, exposureEVArg)
-        ))
+                * Double(cameraISOArg)
+                / (78.0 * max(0.49, Double(lensFNumberArg * lensFNumberArg)))
+        let photometricSaturationLuminance = 1.0 / max(photometricExposurePerLuminance, 1e-30)
+        let photographicExposureScale: Float
+        if photographicCalibrationName == "legacy" {
+            photographicExposureScale = Float(max(
+                0.0,
+                100.0
+                    * Double(cameraShutterSecondsArg)
+                    * (Double(cameraISOArg) / 100.0)
+                    / max(0.49, Double(lensFNumberArg * lensFNumberArg))
+                    * pow(2.0, exposureEVArg)
+            ))
+        } else {
+            photographicExposureScale = Float(max(
+                0.0,
+                683.002 * cameraLuminanceScaleArg
+                    * photometricExposurePerLuminance
+                    * pow(2.0, exposureEVArg)
+            ))
+        }
         if exposureModeID == 2 {
             let referencePhotonTerm = (1.0 / 60.0) / (2.8 * 2.8)
             let photonTerm = Double(cameraShutterSecondsArg) / max(0.49, Double(lensFNumberArg * lensFNumberArg))
@@ -759,6 +796,9 @@ enum ParamsBuilderVisual {
             cameraISOArg: cameraISOArg,
             cameraShutterSecondsArg: cameraShutterSecondsArg,
             photographicExposureScale: photographicExposureScale,
+            photographicCalibrationName: photographicCalibrationName,
+            cameraLuminanceScaleArg: cameraLuminanceScaleArg,
+            photometricSaturationLuminance: photometricSaturationLuminance,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

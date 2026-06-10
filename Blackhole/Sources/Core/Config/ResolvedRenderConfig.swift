@@ -234,6 +234,9 @@ struct ResolvedRenderConfig {
     var cameraISOArg: Float = 100.0
     var cameraShutterSecondsArg: Float = 1.0 / 60.0
     var photographicExposureScale: Float = 0.0
+    var photographicCalibrationName: String = "photometric"
+    var cameraLuminanceScaleArg: Double = 1.0
+    var photometricSaturationLuminance: Double = 0.0
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0
