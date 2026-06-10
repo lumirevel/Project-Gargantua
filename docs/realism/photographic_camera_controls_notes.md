@@ -38,10 +38,15 @@ are not overridden by the photographic defaults.
 
 ## Important Limitation
 
-Shutter speed does not yet create motion blur. The current compose stage
-interprets one static physical HDR input, so there is no time-sampled signal to
-integrate. Motion blur should wait for a future interpreter integration that has
-either temporal subframes, velocity vectors, or a reviewed motion proxy.
+Update (codex/scientific-rigor-v1): shutter speed now creates physical motion
+blur for the canonical visible source via `--motion-blur-samples N`. The
+time-dependent heating skin/spiral/corona branches are averaged over the real
+shutter window inside compose (one `diskFlowTime` unit = `sqrt(2)*rs/c`
+seconds; see `docs/realism/scientific_rigor_v1_report.md`). The geometry
+default black hole has an ISCO period of ~23 s, so ordinary shutter speeds
+correctly freeze the disk. Trace-side time-dependent paths (precision clouds,
+GRMHD volume flows) still ignore the shutter window; full slow-light subframe
+tracing remains future work.
 
 ## Diagnostics
 
@@ -77,7 +82,12 @@ Expected behavior:
 
 ## Risks
 
-- The calibration constant maps arbitrary renderer radiance into a usable display
-  range. It is an interpreter calibration, not a physics-unit claim.
-- Motion blur is intentionally absent until temporal data exists.
+- Update (codex/scientific-rigor-v1): the arbitrary calibration constant has
+  been replaced by ISO 12232 saturation-based absolute exposure
+  (`H = q*(pi/4)*L*t/N^2`, `H_sat = 78/ISO`, `L = 683.002 * CIE-Y cd/m^2`).
+  This is now a physics-unit claim for the SI visible spectral path; non-SI
+  sources must declare `--camera-luminance-scale`. The old behavior remains
+  under `--photographic-calibration legacy`.
+- Motion blur now exists for the canonical visible source (see above); other
+  source paths still render time-frozen.
 - Strong DOF still depends on the quality of the depth/distance proxy.
