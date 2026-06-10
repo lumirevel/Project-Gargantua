@@ -354,6 +354,23 @@ struct KerrSurfaceHitState {
     float phiHit;
 };
 
+// Crossing predicate for the geodesic-level bisection: inside the disk
+// volume, or past the midplane for thin crossings whose endpoints both stay
+// outside the volume box. The midplane branch requires the trial point to be
+// radially within emission bounds, mirroring segment_enter_disk's validation
+// of the chord z-crossing, so the bracket cannot latch onto an equatorial
+// crossing far outside (or inside) the disk annulus.
+static inline bool trace_refine_crossed(float3 wT,
+                                        float zA,
+                                        float diskEmitMin,
+                                        constant Params& P)
+{
+    if (inside_disk_volume(wT, P)) return true;
+    if (!(wT.z * zA < 0.0)) return false;
+    float dxyT = length(float2(wT.x, wT.y));
+    return (dxyT > diskEmitMin && dxyT < P.re);
+}
+
 static inline SurfaceHitSegment trace_find_surface_hit_segment(float3 world0,
                                                                float3 worldMid,
                                                                float3 worldPos,
@@ -433,10 +450,9 @@ static inline SchwarzschildSurfaceHitState trace_refine_schwarzschild_surface_hi
         rk4_step_h(pT, vT, P, sHi);
         float3 lT = conv(pT.y, pT.z, pT.w);
         float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
-        bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
         // Chord estimate can undershoot the geodesic crossing; fall back to
         // the full sub-segment bracket when it has not crossed yet.
-        if (!crossed) sHi = segLen;
+        if (!trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = segLen;
     } else {
         sHi = segLen;
     }
@@ -448,8 +464,7 @@ static inline SchwarzschildSurfaceHitState trace_refine_schwarzschild_surface_hi
         rk4_step_h(pT, vT, P, sMid);
         float3 lT = conv(pT.y, pT.z, pT.w);
         float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
-        bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
-        if (crossed) sHi = sMid;
+        if (trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = sMid;
         else sLo = sMid;
     }
     result.pHit = pA;
@@ -529,8 +544,7 @@ static inline KerrSurfaceHitState trace_refine_kerr_surface_hit_state(float3 wor
             float3 wT = conv(max(stT.r, 0.0) * massLen,
                              clamp(stT.theta, 1e-4, M_PI - 1e-4),
                              stT.phi);
-            bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
-            if (!crossed || !isfinite(stT.r)) sHi = segLen;
+            if (!trace_refine_crossed(wT, zA, diskEmitMin, P) || !isfinite(stT.r)) sHi = segLen;
         } else {
             sHi = segLen;
         }
@@ -543,8 +557,7 @@ static inline KerrSurfaceHitState trace_refine_kerr_surface_hit_state(float3 wor
             float3 wT = conv(max(stT.r, 0.0) * massLen,
                              clamp(stT.theta, 1e-4, M_PI - 1e-4),
                              stT.phi);
-            bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
-            if (crossed) sHi = sMid;
+            if (trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = sMid;
             else sLo = sMid;
         }
         float hitErr = 0.0;
