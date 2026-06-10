@@ -369,6 +369,8 @@ enum ParamsBuilder {
     let photographicCalibrationName = visualSettings.photographicCalibrationName
     let cameraLuminanceScaleArg = visualSettings.cameraLuminanceScaleArg
     let photometricSaturationLuminance = visualSettings.photometricSaturationLuminance
+    let motionBlurSamplesArg = visualSettings.motionBlurSamplesArg
+    let motionBlurTimeLapseArg = visualSettings.motionBlurTimeLapseArg
     let backgroundModeName = visualSettings.backgroundModeName
     let backgroundModeID = visualSettings.backgroundModeID
     let backgroundStarDensityArg = visualSettings.backgroundStarDensityArg
@@ -480,6 +482,17 @@ enum ParamsBuilder {
     let rsD = 2.0 * G * M / (c * c)
     let reD = rsD * rcp
     let heD = rsD * diskHFactor
+    // Physical shutter window in diskFlowTime units. The heating-field shear
+    // uses phase = diskFlowTime * (r/rs)^-1.5, while the physical Keplerian
+    // rate is dphi/dt = (c / (sqrt(2) rs)) * (r/rs)^-1.5, so one flow-time
+    // unit equals sqrt(2)*rs/c seconds of coordinate time.
+    let shutterFlowTimeSpan: Double = {
+        guard motionBlurSamplesArg > 1 else { return 0.0 }
+        let span = Double(visualSettings.cameraShutterSecondsArg)
+            * motionBlurTimeLapseArg
+            * c / (2.0.squareRoot() * rsD)
+        return span.isFinite ? max(span, 0.0) : 0.0
+    }()
     let visibleTeffR0Meters = visibleTeffR0RsArg * rsD
     let visibleRInMeters = visibleRInRsArg * rsD
     let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
@@ -654,6 +667,9 @@ enum ParamsBuilder {
         config.photographicCalibrationName = photographicCalibrationName
         config.cameraLuminanceScaleArg = cameraLuminanceScaleArg
         config.photometricSaturationLuminance = photometricSaturationLuminance
+        config.motionBlurSamplesArg = motionBlurSamplesArg
+        config.motionBlurTimeLapseArg = motionBlurTimeLapseArg
+        config.shutterFlowTimeSpan = shutterFlowTimeSpan
         config.composeCameraPsfSigmaArg = composeCameraPsfSigmaArg
         config.composeCameraReadNoiseArg = composeCameraReadNoiseArg
         config.composeCameraShotNoiseArg = composeCameraShotNoiseArg

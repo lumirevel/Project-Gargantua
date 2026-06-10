@@ -156,6 +156,7 @@ struct PackedParams {
     var pcdSourceA: SIMD4<Float>
     var pcdSourceB: SIMD4<Float>
     var pcdSourceC: SIMD4<Float> // x=hotCrescent, y=profile-6 debug field selector
+    var motionBlurParams: SIMD4<Float> // x=samples (1=off), y=shutter span in flow-time units
 }
 
 struct CollisionInfo {
@@ -280,8 +281,8 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 672
-    let expectedStride = 672
+    let expectedSize = 688
+    let expectedStride = 688
     let expectedAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
@@ -302,6 +303,7 @@ func validatePackedParamsABIOrThrow() throws {
         "pcdSourceA": 624,
         "pcdSourceB": 640,
         "pcdSourceC": 656,
+        "motionBlurParams": 672,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -346,5 +348,6 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "pcdSourceA": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceA) ?? -1,
         "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
         "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
+        "motionBlurParams": MemoryLayout<PackedParams>.offset(of: \PackedParams.motionBlurParams) ?? -1,
     ]
 }

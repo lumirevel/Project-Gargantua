@@ -283,6 +283,8 @@ struct VisualSettings {
     let photographicCalibrationName: String
     let cameraLuminanceScaleArg: Double
     let photometricSaturationLuminance: Double
+    let motionBlurSamplesArg: Int
+    let motionBlurTimeLapseArg: Double
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -528,6 +530,14 @@ enum ParamsBuilderVisual {
         let lensFNumberArg = Float(max(0.7, doubleArg("--camera-f-number", default: lensFNumberDefault)))
         let cameraISOArg = Float(max(1.0, min(409600.0, doubleArg("--camera-iso", default: 100.0))))
         let cameraShutterSecondsArg = Float(max(1e-6, min(3600.0, Self.positiveSecondsArg("--camera-shutter", default: 1.0 / 60.0))))
+        // Shutter-time temporal supersampling of the time-dependent source
+        // emission (the disk-coordinate heating skin). 1 = off. Geodesics and
+        // the stationary flow field are time-independent, so subsamples share
+        // ray paths and g-factors; only the advected emission pattern moves.
+        let motionBlurSamplesArg = max(1, min(64, intArg("--motion-blur-samples", default: 1)))
+        // 1.0 = physical shutter seconds; >1 compresses simulation time into
+        // the exposure like time-lapse photography (label output accordingly).
+        let motionBlurTimeLapseArg = max(0.0, min(1.0e12, doubleArg("--motion-blur-time-lapse", default: 1.0)))
         let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
         let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
         let lensDofDefault: Double = {
@@ -799,6 +809,8 @@ enum ParamsBuilderVisual {
             photographicCalibrationName: photographicCalibrationName,
             cameraLuminanceScaleArg: cameraLuminanceScaleArg,
             photometricSaturationLuminance: photometricSaturationLuminance,
+            motionBlurSamplesArg: motionBlurSamplesArg,
+            motionBlurTimeLapseArg: motionBlurTimeLapseArg,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

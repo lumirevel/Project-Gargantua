@@ -175,6 +175,12 @@ extension ParamsBuilder {
                 Float(config.pcdDebugFieldID),
                 0.0,
                 0.0
+            ),
+            motionBlurParams: SIMD4<Float>(
+                Float(config.motionBlurSamplesArg),
+                Float(config.shutterFlowTimeSpan),
+                0.0,
+                0.0
             )
         )
     }

@@ -122,6 +122,9 @@ struct RenderMeta: Codable {
     var photographicCalibration: String
     var cameraLuminanceScale: Double
     var photometricSaturationLuminance: Double
+    var motionBlurSamples: Int
+    var motionBlurTimeLapse: Double
+    var shutterFlowTimeSpan: Double
     var backgroundMode: String
     var backgroundStarDensity: Double
     var backgroundStarStrength: Double
@@ -349,6 +352,9 @@ enum RenderOutputs {
             photographicCalibration: config.photographicCalibrationName,
             cameraLuminanceScale: config.cameraLuminanceScaleArg,
             photometricSaturationLuminance: config.photometricSaturationLuminance,
+            motionBlurSamples: config.motionBlurSamplesArg,
+            motionBlurTimeLapse: config.motionBlurTimeLapseArg,
+            shutterFlowTimeSpan: config.shutterFlowTimeSpan,
             backgroundMode: config.backgroundModeName,
             backgroundStarDensity: Double(config.backgroundStarDensityArg),
             backgroundStarStrength: Double(config.backgroundStarStrengthArg),

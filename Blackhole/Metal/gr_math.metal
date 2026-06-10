@@ -166,6 +166,10 @@ struct Params {
     float4 pcdSourceA; // x=densityExp, y=emissivityScale, z=opacityScale, w=seed
     float4 pcdSourceB; // x=structureScale, y=spiralAmp, z=spiralPitch, w=clumpContrast
     float4 pcdSourceC; // x=hotCrescent, y=debugField, zw reserved
+    // x=sample count (1=off), y=shutter span in diskFlowTime units, zw reserved.
+    // Span maps physical shutter seconds through t_flow = t_phys * c / (sqrt(2) * rs),
+    // matching the Keplerian phase convention used by the heating-field advection.
+    float4 motionBlurParams;
 };
 
 struct CollisionInfo {
