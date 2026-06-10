@@ -47,8 +47,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--relay-output", type=str, choices=("always", "errors", "none"), default="errors")
     parser.add_argument("--buffer-lines", type=int, default=120)
-    parser.add_argument("--cmd", nargs=argparse.REMAINDER, required=True)
-    return parser.parse_args()
+    # Split the wrapped command off manually instead of argparse.REMAINDER:
+    # REMAINDER still abbreviation-matches option-like tokens (e.g. a wrapped
+    # "--h 0.005" dies as "ambiguous option: --h") on Python 3.12.
+    argv = sys.argv[1:]
+    cmd: list[str] = []
+    if "--cmd" in argv:
+        split = argv.index("--cmd")
+        cmd = argv[split + 1:]
+        argv = argv[:split]
+    args = parser.parse_args(argv)
+    args.cmd = cmd
+    return args
 
 
 def load_history(path: Path) -> list[dict]:

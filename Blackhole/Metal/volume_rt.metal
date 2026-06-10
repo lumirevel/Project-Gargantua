@@ -402,21 +402,59 @@ static inline SchwarzschildSurfaceHitState trace_refine_schwarzschild_surface_hi
     SurfaceHitSegment hitSeg = trace_find_surface_hit_segment(world0, worldMid, worldPos, P);
     if (!hitSeg.entered) return result;
 
+    // Start of the bracketing sub-segment and its geodesic parameter length.
+    float4 pA = pPrev;
+    float4 vA = vPrev;
+    float3 worldA = world0;
+    float segLen = P.h;
     if (hitSeg.segment == 0) {
-        result.pHit = pPrev;
-        result.vHit = vPrev;
-        rk4_step_h(result.pHit, result.vHit, P, 0.5 * P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
+        segLen = 0.5 * P.h;
         result.segEnd = worldMid;
     } else if (hitSeg.segment == 1) {
-        result.pHit = pMid;
-        result.vHit = vMid;
-        rk4_step_h(result.pHit, result.vHit, P, 0.5 * P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
+        pA = pMid;
+        vA = vMid;
+        worldA = worldMid;
+        segLen = 0.5 * P.h;
         result.segStart = worldMid;
-    } else if (hitSeg.segment == 2) {
-        result.pHit = pPrev;
-        result.vHit = vPrev;
-        rk4_step_h(result.pHit, result.vHit, P, P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
     }
+
+    // Bracketed bisection on the geodesic integration parameter. The chord
+    // solve in segment_enter_disk locates the crossing on the straight segment
+    // between integrated endpoints; here the bracket is tightened against true
+    // integrated states so the hit no longer inherits the chord's curvature
+    // error. "Crossed" means inside the disk volume, or past the midplane for
+    // thin crossings whose endpoints both stay outside the volume box.
+    float zA = worldA.z;
+    float sLo = 0.0;
+    float sHi = segLen * clamp(hitSeg.tEnter, 0.0, 1.0);
+    if (sHi > 0.0) {
+        float4 pT = pA;
+        float4 vT = vA;
+        rk4_step_h(pT, vT, P, sHi);
+        float3 lT = conv(pT.y, pT.z, pT.w);
+        float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
+        bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
+        // Chord estimate can undershoot the geodesic crossing; fall back to
+        // the full sub-segment bracket when it has not crossed yet.
+        if (!crossed) sHi = segLen;
+    } else {
+        sHi = segLen;
+    }
+    for (int i = 0; i < 5; ++i) {
+        float sMid = 0.5 * (sLo + sHi);
+        if (!(sMid > 0.0)) break;
+        float4 pT = pA;
+        float4 vT = vA;
+        rk4_step_h(pT, vT, P, sMid);
+        float3 lT = conv(pT.y, pT.z, pT.w);
+        float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
+        bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
+        if (crossed) sHi = sMid;
+        else sLo = sMid;
+    }
+    result.pHit = pA;
+    result.vHit = vA;
+    rk4_step_h(result.pHit, result.vHit, P, sHi);
 
     float3 localHit = conv(result.pHit.y, result.pHit.z, result.pHit.w);
     result.hitPos = localHit.x * newX + localHit.y * newY + localHit.z * newZ;
@@ -463,23 +501,56 @@ static inline KerrSurfaceHitState trace_refine_kerr_surface_hit_state(float3 wor
     SurfaceHitSegment hitSeg = trace_find_surface_hit_segment(world0, midWorld, worldPos, P);
     if (!hitSeg.entered) return result;
 
+    // Start of the bracketing sub-segment and its geodesic parameter length.
+    KerrState stateA = prevState;
+    float3 worldA = world0;
+    float segLen = hUsed;
     if (hitSeg.segment == 0) {
-        float hitErr = 0.0;
-        float hitNull = 0.0;
-        result.hitState = prevState;
-        kerr_dp45_trial(prevState, 0.5 * hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        segLen = 0.5 * hUsed;
         result.segEnd = midWorld;
     } else if (hitSeg.segment == 1) {
-        float hitErr = 0.0;
-        float hitNull = 0.0;
-        result.hitState = midState;
-        kerr_dp45_trial(midState, 0.5 * hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        stateA = midState;
+        worldA = midWorld;
+        segLen = 0.5 * hUsed;
         result.segStart = midWorld;
-    } else if (hitSeg.segment == 2) {
+    }
+
+    // Bracketed bisection on the geodesic integration parameter against true
+    // integrated states (see the Schwarzschild variant for the rationale).
+    float zA = worldA.z;
+    float sLo = 0.0;
+    float sHi = segLen * clamp(hitSeg.tEnter, 0.0, 1.0);
+    {
+        float trialErr = 0.0;
+        float trialNull = 0.0;
+        if (sHi > 0.0) {
+            KerrState stT = stateA;
+            kerr_dp45_trial(stateA, sHi, a, Lz, stT, trialErr, trialNull);
+            float3 wT = conv(max(stT.r, 0.0) * massLen,
+                             clamp(stT.theta, 1e-4, M_PI - 1e-4),
+                             stT.phi);
+            bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
+            if (!crossed || !isfinite(stT.r)) sHi = segLen;
+        } else {
+            sHi = segLen;
+        }
+        for (int i = 0; i < 5; ++i) {
+            float sMid = 0.5 * (sLo + sHi);
+            if (!(sMid > 0.0)) break;
+            KerrState stT = stateA;
+            kerr_dp45_trial(stateA, sMid, a, Lz, stT, trialErr, trialNull);
+            if (!isfinite(stT.r) || !isfinite(stT.theta) || !isfinite(stT.phi)) break;
+            float3 wT = conv(max(stT.r, 0.0) * massLen,
+                             clamp(stT.theta, 1e-4, M_PI - 1e-4),
+                             stT.phi);
+            bool crossed = inside_disk_volume(wT, P) || (wT.z * zA < 0.0);
+            if (crossed) sHi = sMid;
+            else sLo = sMid;
+        }
         float hitErr = 0.0;
         float hitNull = 0.0;
-        result.hitState = prevState;
-        kerr_dp45_trial(prevState, hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        result.hitState = stateA;
+        kerr_dp45_trial(stateA, sHi, a, Lz, result.hitState, hitErr, hitNull);
     }
 
     result.hitState.theta = clamp(result.hitState.theta, 1e-4, M_PI - 1e-4);
