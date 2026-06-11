@@ -496,25 +496,41 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     // the stochastic skin emissivity modes; the analytic photosphere is kept
     // untouched. The floor tracks a fraction of H/R so sub-photospheric structure
     // is not allowed to masquerade as resolvable radiance.
-    float sigmaPhiSrc = clamp(max(2.60 * hOverR, 1.20 * projected), 0.012, 0.120);
-    float sigmaLogSrc = clamp(max(1.65 * hOverR, 0.78 * projected), 0.010, 0.095);
+    // Photospheric smoothing scale: radiative diffusion through the tau ~ 1
+    // layer thermalizes horizontal structure below roughly one scale height,
+    // so the source filter floor is ~(0.6-1.0) H/r, not several H/r.
+    // Radiation-MHD disk photospheres retain clear surface-brightness
+    // structure down to a few H (Hirose+ 2006, Jiang+ 2013); the previous
+    // 1.65-2.60 H/r sigmas erased everything finer than ~10 H. The projected
+    // pixel-footprint terms are unchanged: structure the camera cannot
+    // resolve still averages away honestly.
+    float sigmaPhiSrc = clamp(max(1.05 * hOverR, 1.20 * projected), 0.0050, 0.120);
+    float sigmaLogSrc = clamp(max(0.62 * hOverR, 0.78 * projected), 0.0040, 0.095);
     float raw = 0.0;
     float low = 0.0;
     float cloud = 0.0;
     float cloudNormW = 0.0;
-    float filament = 0.0;
-    float filamentNormW = 0.0;
     float shearArc = 0.0;
     float shearArcNormW = 0.0;
     float normRaw2 = 0.0;
     float normLow2 = 0.0;
-    constexpr uint modeCount = 64u;
+    constexpr uint modeCount = 96u;
     constexpr float twoPi = 6.283185307179586;
 
     // Disk-coordinate spectral heating field. This is a deterministic,
     // band-limited approximation to MRI-like shearing emissivity structure:
     // modes live in (log r, phi), are advected by local Keplerian shear, and feed
     // emissivity/temperature only. It is not screen-space or material texture.
+    //
+    // Spectral content: radial wavenumbers are log-uniform from disk-scale
+    // waves (kr ~ 0.85) down to the MRI driving scale of a thin disk
+    // (kr ~ 170 per ln r, i.e. radial wavelength ~ 2 H for H/r ~ 0.02);
+    // the photospheric/footprint Gaussian below truncates whatever a given
+    // H/r or camera resolution cannot physically support. Shear stretches
+    // turbulence azimuthally, so each mode's azimuthal harmonic follows
+    // m ~ kr / elongation with elongation ~ 3-11 (lambda_phi/lambda_r),
+    // matching the trailing, azimuthally elongated filaments seen in
+    // shearing-box and global radiation-MHD simulations.
     for (uint i = 0u; i < modeCount; ++i) {
         float id = float(i) + 1.0;
         float h0 = fract(id * 0.754877666 + 0.113);
@@ -524,12 +540,15 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         float h4 = fract(id * 0.221033321 + 0.619);
         float h5 = fract(id * 0.141421356 + 0.347);
 
-        float m = floor(mix(2.0, 24.999, h0));
-        float kr = mix(0.85, 18.0, h1);
+        float kr = 0.85 * pow(200.0, h1); // log-uniform 0.85 .. 170 per ln r
+        float elongation = mix(3.0, 11.0, h0);
+        float m = max(2.0, floor(kr / elongation + 0.5));
         kr *= (h2 < 0.5) ? -1.0 : 1.0;
         float kMag = sqrt(kr * kr + m * m);
-        // Kolmogorov-like power spectrum: power ~ k^-5/3, amplitude ~ k^-5/6.
-        float amp = pow(max(kMag, 1.0), -0.8333333) * mix(0.72, 1.28, h3);
+        // Kolmogorov energy spectrum E(k) ~ k^-5/3 with log-uniform mode
+        // density (dk ~ k): per-mode energy ~ E(k)*k ~ k^-2/3, so the
+        // per-mode amplitude falls as k^-1/3.
+        float amp = pow(max(kMag, 1.0), -0.3333333) * mix(0.72, 1.28, h3);
         float footprintFilter = exp(-0.5 * (
             kr * kr * sigmaLogSrc * sigmaLogSrc +
             m * m * sigmaPhiSrc * sigmaPhiSrc
@@ -548,16 +567,6 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         float lowGate = smoothstep(0.0, 1.0, 1.0 - clamp((abs(kr) + 0.60 * m - 3.5) / 7.0, 0.0, 1.0));
         low += amp * lowGate * v;
         normLow2 += amp * amp * lowGate * lowGate;
-
-        // Positive high-frequency ridges from the same sheared spectral basis.
-        // These are emissivity/heating filaments in disk coordinates, not a
-        // texture channel. The high-mode gate suppresses broad zonal waves so the
-        // body remains clean and only the hot skin receives narrow activity.
-        float highGate = smoothstep(5.5, 14.0, abs(kr) + 0.85 * m);
-        float ridge = pow(max(0.0, 0.5 + 0.5 * cos(phase)), 7.0);
-        float ridgeAmp = amp * highGate;
-        filament += ridgeAmp * ridge;
-        filamentNormW += ridgeAmp;
     }
 
     // Positive "cloud packet" heating field in disk coordinates. These are not
@@ -643,10 +652,20 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float cloudActivity = smoothstep(0.18 - 0.035 * turbulenceTune,
                                      0.82 - 0.060 * turbulenceTune,
                                      cloudNorm);
-    float filamentNorm = filament / max(0.205 * filamentNormW, 1e-6);
-    float filamentActivity = smoothstep(0.16 - 0.030 * turbulenceTune,
-                                        0.92 - 0.060 * turbulenceTune,
-                                        filamentNorm);
+    // Turbulent dissipation intermittency. Summing many independent positive
+    // ridge modes statistically flattens (~1/sqrt(N)), which is why the old
+    // mean-combined filament channel saturated its activity gate into a
+    // structureless constant. Cascade dissipation is a multiplicative process:
+    // model it as a mean-one log-normal of the unit-variance sheared spectral
+    // field (random-phase variance of sum(a_i cos) is sum(a_i^2)/2), and let
+    // the filament channel select its strong tail. This is the standard
+    // log-normal intermittency closure for turbulent dissipation, and the
+    // surviving structure inherits the sheared, azimuthally elongated, fine
+    // -scale anisotropy of the spectral basis above.
+    float rawGauss = raw / max(sqrt(0.5 * normRaw2), 1e-6);
+    float sigmaQ = 0.70 + 0.25 * turbulenceTune;
+    float dissip = exp(clamp(sigmaQ * rawGauss - 0.5 * sigmaQ * sigmaQ, -4.0, 3.0));
+    float filamentActivity = smoothstep(0.92, 1.95, dissip);
     float shearArcNorm = shearArc / max(0.062 * shearArcNormW, 1e-6);
     float shearArcActivity = smoothstep(0.13 - 0.035 * turbulenceTune,
                                         0.66 - 0.065 * turbulenceTune,
@@ -657,8 +676,11 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     f.high = clamp(max(highNorm, 0.0) * (1.0 + 0.10 * turbulenceTune), 0.0, 2.0);
     f.cloud = clamp(cloudActivity, 0.0, 1.0);
     f.filament = clamp(max(filamentActivity, 0.72 * shearArcActivity + 0.28 * filamentActivity), 0.0, 1.0);
-    float highActivity = smoothstep(0.38 - 0.035 * turbulenceTune,
-                                    1.12 - 0.055 * turbulenceTune,
+    // Window calibrated to the residual high-pass field's actual deviation
+    // (sigma ~ 0.22-0.31 across radii); the old (0.38, 1.12) window sat above
+    // nearly the whole distribution and pinned this channel at ~0.
+    float highActivity = smoothstep(0.08 - 0.010 * turbulenceTune,
+                                    0.50 - 0.040 * turbulenceTune,
                                     f.high);
     // The canonical skin should be positive emissive dissipation, not a broad
     // surface texture. Bias activity toward high/filament components while
