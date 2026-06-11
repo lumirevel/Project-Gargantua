@@ -514,6 +514,9 @@ canonical_source_model() {
     canonical|canonical-visible|canonical-visible-disk|canonical-visible-disk-v1|visible-disk-v1)
       printf 'canonical-visible-disk-v1'
       ;;
+    slim|slim-disk|slim-disk-visible|slim-disk-visible-v1|super-eddington-disk|super-eddington-disk-v1)
+      printf 'slim-disk-visible-v1'
+      ;;
     cinematic-physical|cinematic-physical-disk|cinematic-physical-disk-v1|physical-cinema-disk|production-visible-disk)
       printf 'cinematic-physical-disk-v1'
       ;;
@@ -551,6 +554,9 @@ source_model_to_science_regime() {
   case "$1" in
     canonical-visible-disk-v1)
       printf 'canonical-visible-disk-v1'
+      ;;
+    slim-disk-visible-v1)
+      printf 'slim-disk-visible-v1'
       ;;
     cinematic-physical-disk-v1)
       printf 'cinematic-physical-disk-v1'
@@ -590,10 +596,10 @@ apply_source_model_defaults() {
   _PRE_CANONICAL_SOURCE_MODEL="$SOURCE_MODEL_VALUE"
   SOURCE_MODEL_VALUE="$(canonical_source_model "$SOURCE_MODEL_VALUE")"
   case "$SOURCE_MODEL_VALUE" in
-    canonical-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
+    canonical-visible-disk-v1|slim-disk-visible-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
       ;;
     *)
-      echo "error: --source-model must be one of canonical-visible-disk-v1, cinematic-physical-disk-v1, physics-constrained-cinematic-disk-v1, grmhd-surrogate-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, grmhd-visible-disk-skin-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
+      echo "error: --source-model must be one of canonical-visible-disk-v1, slim-disk-visible-v1, cinematic-physical-disk-v1, physics-constrained-cinematic-disk-v1, grmhd-surrogate-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, grmhd-visible-disk-skin-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
       echo "       use --science-regime ... --experimental for legacy/debug source families" >&2
       exit 2
       ;;
@@ -629,7 +635,7 @@ apply_source_model_defaults() {
 require_experimental_for_hidden_source() {
   [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
   case "$SCIENCE_REGIME_VALUE" in
-    canonical-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
+    canonical-visible-disk-v1|slim-disk-visible-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
       return 0
       ;;
     *)
@@ -665,6 +671,37 @@ apply_science_regime_defaults() {
       append_swift_default --teff-r0 "4.8"
       append_swift_default --teff-p "0.72"
       append_swift_default --fcol "1.25"
+      append_swift_default --background "off"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    slim-disk-visible-v1|slim-disk-visible|slim-disk|super-eddington-disk-v1)
+      # Super-Eddington slim disk (Abramowicz+ 1988): advection flattens the
+      # effective temperature to T ~ r^-1/2 with a photon-trapping plateau,
+      # the flow is geometrically thicker, scattering hardens the spectrum
+      # (f_col ~ 2), and the turbulent skin is more violent. Calibration:
+      # T_eff ~ 2.4e6 K at r0 = 4 rs for the geometry-default ~50 Msun hole
+      # at mdot ~ 10 (Watarai+ 2000 scaling), placing the visible band deep
+      # on the Rayleigh-Jeans tail: a blue-white, radially extended disk.
+      set_default_disk_mode "thin"
+      set_default_presentation_mode "scientific"
+      if [[ "$SOURCE_QUALITY_VALUE" == "hq" || "$SOURCE_QUALITY_VALUE" == "high" || "$SOURCE_QUALITY_VALUE" == "final" ]]; then
+        if [[ "$SSAA_EXPLICIT" -eq 0 ]]; then
+          SSAA=2
+        fi
+      fi
+      append_swift_default --realism-profile "canonical-visible-disk-v1"
+      append_swift_default --disk-model "flow"
+      append_swift_default --disk-turbulence "2.2"
+      append_swift_default --disk-precision-texture "0.0"
+      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-optical-depth "0.0"
+      append_swift_default --teff-model "slim"
+      append_swift_default --teff-T0 "2400000"
+      append_swift_default --teff-r0 "4.0"
+      append_swift_default --fcol "2.0"
+      append_swift_default --diskH "0.30"
       append_swift_default --background "off"
       if [[ "$LOOK_SET" -eq 0 ]]; then
         set_look_arg "linear"

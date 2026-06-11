@@ -597,7 +597,7 @@ static inline void trace_store_schwarzschild_surface_hit(thread CollisionInfo& i
     info.T   = T;
     info.v_disk = float4(g_factor, hitState.dxy, vrRatio, 0.0);
     info.direct_world = float4(obsDir, 0.0);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && P.diskAtlasMode != 0u) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && P.diskAtlasMode != 0u) {
         // Thin visible reference is a ray/disk-intersection source model. Store
         // the actual geodesic hit coordinates, not the legacy probe offset used
         // for procedural cloud texture. If an atlas is present, it is only a
@@ -652,7 +652,7 @@ static inline void trace_store_kerr_surface_hit(thread CollisionInfo& info,
     info.T   = T;
     info.v_disk = float4(g_factor, hitState.dxy, vrRatio, 0.0);
     info.direct_world = float4(obsDir, 0.0);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && P.diskAtlasMode != 0u) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && P.diskAtlasMode != 0u) {
         // Thin visible reference is a ray/disk-intersection source model. Store
         // the actual geodesic hit coordinates, not the legacy probe offset used
         // for procedural cloud texture. If an atlas is present, it is only a
@@ -750,7 +750,7 @@ static inline SchwarzschildSurfacePrepared trace_prepare_schwarzschild_surface(t
     float vrRatio = 0.0;
     float vphiScale = 1.0;
     float tempScale = 1.0;
-    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u);
+    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
         vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
         vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
@@ -773,7 +773,7 @@ static inline KerrSurfacePrepared trace_prepare_kerr_surface(thread const KerrSu
     float vrRatio = 0.0;
     float vphiScale = 1.0;
     float tempScale = 1.0;
-    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u);
+    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
         vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
         vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
@@ -908,7 +908,7 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
                                                        betaPhiCoord,
                                                        P);
 
-    float T = (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)
+    float T = (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))
         ? disk_visible_teff(hitState.dxy, P)
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
@@ -1050,7 +1050,7 @@ static inline bool trace_commit_kerr_surface_hit_impl(constant Params& P,
         }
     }
 
-    float T = (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)
+    float T = (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))
         ? disk_visible_teff(hitState.dxy, P)
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
@@ -3542,7 +3542,7 @@ static inline void renderBH_core_bundle(constant Params& P,
 
     bool haveHit = false;
     bool thinReferenceBundle = (FC_PHYSICS_MODE == 0u &&
-                                P.visibleTeffModel == 3u &&
+                                (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) &&
                                 FC_TRACE_DEBUG_OFF != 0u);
     bool bundleLinearAnchors = thinReferenceBundle ||
                                (FC_PHYSICS_MODE == 3u &&
@@ -3745,7 +3745,7 @@ static inline void renderBH_core_bundle(constant Params& P,
 static inline bool renderBH_use_bundle(constant Params& P) {
     return (P.rayBundleSSAA != 0u &&
             ((FC_PHYSICS_MODE == 3u && FC_VISIBLE_MODE != 0u) ||
-             (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)) &&
+             (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))) &&
             FC_TRACE_DEBUG_OFF != 0u);
 }
 

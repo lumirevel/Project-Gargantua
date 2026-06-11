@@ -72,7 +72,7 @@ kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
 
             bool thinReferenceBundle = (P.rayBundleSSAA != 0u &&
                                         FC_PHYSICS_MODE == 0u &&
-                                        P.visibleTeffModel == 3u &&
+                                        (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) &&
                                         FC_TRACE_DEBUG_OFF != 0u);
             if (thinReferenceBundle) {
                 const float2 ssaaJitter[4] = {

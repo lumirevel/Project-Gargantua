@@ -1010,7 +1010,7 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
         float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
         float fluxTaper = comp_thin_outer_flux_taper(rNorm, P);
         float teff = thin_teff(rNorm, P);
-        if (P.visibleTeffModel == 3u) {
+        if ((P.visibleTeffModel == 3u || P.visibleTeffModel == 4u)) {
             thinVisibleReference = true;
             // Thin visible reference mode: use the NT-like flux shape normalized
             // by user-facing T0/r0 instead of mdot/geometry units. Ray-disk
@@ -1370,7 +1370,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
     float fluxTaper = comp_thin_outer_flux_taper(s.rNorm, P);
-    float baseTeff = ((P.visibleTeffModel == 3u) ? disk_visible_teff(s.rNorm * max(P.rs, 1e-6), P) : thin_teff(s.rNorm, P))
+    float baseTeff = (((P.visibleTeffModel == 3u || P.visibleTeffModel == 4u)) ? disk_visible_teff(s.rNorm * max(P.rs, 1e-6), P) : thin_teff(s.rNorm, P))
                    * pow(max(fluxTaper, 0.0), 0.25);
     float atlasTemp = comp_atlas_temperature_ratio(rec.T, baseTeff, P);
     s.observedTemp = max(baseTeff * atlasTemp * fCol * s.g * tempShift, 1.0);
@@ -2104,7 +2104,7 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
     }
 
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && comp_thin_physical_active(C)) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && comp_thin_physical_active(C)) {
         // Thin visible reference is a source-formation path: the photospheric
         // body and optional atlas hot-skin perturbation are already encoded in
         // comp_thin_spectral_emission. Do not run the legacy cloud/noise

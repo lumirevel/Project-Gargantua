@@ -388,6 +388,26 @@ static inline float disk_visible_teff(float rEmitM, constant Params& P) {
         return max(t0 * pow(ratio, -p), 1.0);
     }
 
+    if (P.visibleTeffModel == 4u) {
+        // Slim disk (super-Eddington, advection-dominated; Abramowicz et al.
+        // 1988, Watarai et al. 2000): radiation is advected with the flow, so
+        // the effective temperature follows T_eff ~ r^-1/2 - much flatter
+        // than the NT r^-3/4 - and flattens to a plateau inside the photon
+        // trapping radius instead of dropping to zero at a zero-torque inner
+        // edge. T0 is the user-facing calibration at r0, the trapping
+        // plateau is anchored to ~1.5x the inner emission radius.
+        float t0 = max(P.visibleTeffT0, 100.0);
+        float r0 = max(P.visibleTeffR0, rsGeom * 1.0001);
+        float rTrap = max(1.5 * rIn, rsGeom * 1.05);
+        float x = max(r / r0, 1e-6);
+        float xTrap = max(rTrap / r0, 1e-6);
+        // Smooth r^-1/2 envelope with a flat core: (x^2 + xTrap^2)^(-1/4),
+        // normalized so T(r0) = t0 when r0 >> rTrap.
+        float norm = pow(1.0 + xTrap * xTrap, 0.25);
+        float tSlim = t0 * norm * pow(x * x + xTrap * xTrap, -0.25);
+        return max(tSlim, 1.0);
+    }
+
     if (P.visibleTeffModel == 3u) {
         // GRMHD-hybrid visible temperature backbone: use the NT flux shape,
         // normalized to the user-facing T0 at r0. This keeps a physically
