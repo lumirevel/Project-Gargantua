@@ -50,6 +50,17 @@ struct ComposeParams {
     float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
     float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
     float4 cameraGlareParams; // pixelAngleDeg, minGlareAngleDeg, angularFalloff, maxSampleMix
+    // Physically anchored human-eye observer. x = adaptation luminance L_a in
+    // cd/m^2 (0 disables the physiological path), y = absolute luminance per
+    // CIE-Y unit after exposure (683.002 * cameraLuminanceScale; the neutral
+    // density safe-viewing filter is folded into C.exposure), z = display
+    // white anchor as a multiple of L_a, w = reserved.
+    float4 eyeParams;
+    // Photon-statistics sensor noise. x = photoelectrons at saturation for the
+    // active ISO, y = effective read noise in electrons (read + dark + DSNU in
+    // quadrature), z = PRNU fraction, w > 0.5 enables the physical noise model
+    // (heuristic display-domain noise is disabled by the host when set).
+    float4 cameraPhotonParams;
 };
 
 struct ComposeSolveParams {

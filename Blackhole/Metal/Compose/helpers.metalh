@@ -919,11 +919,17 @@ static inline float3 comp_visible_blackbody_rgb_from_observed_temp(float tObserv
     float cZ = 0.0;
     bool kahan = (C.precisionMode != 0u);
     float step = max(C.spectralStep, 0.25);
+    // dLambda in meters: with it, Y is SI spectral radiance integrated over
+    // wavelength (W m^-2 sr^-1) and 683.002 * Y is luminance in cd/m^2,
+    // matching comp_visible_xyz_from_spectrum. Without it this path was a
+    // factor 1/dLambda (~2e8 at the 5 nm default) above SI, which broke the
+    // absolute photometric camera/eye calibration for the canonical source.
+    float dLamM = step * 1e-9;
     for (float lam = 380.0; lam <= 750.001; lam += step) {
         float lamM = lam * 1e-9;
         float xBar, yBar, zBar;
         comp_cie_xyz_bar(lam, xBar, yBar, zBar);
-        float b = comp_planck_lambda(lamM, tObserved) * colorDilution;
+        float b = comp_planck_lambda(lamM, tObserved) * colorDilution * dLamM;
         if (kahan) {
             float yx = b * xBar - cX;
             float tx = X + yx;
@@ -2028,11 +2034,15 @@ static inline float3 comp_linear_rgb_precloud_legacy_fast(float T_emit,
     float cZ = 0.0;
     bool kahan = (C.precisionMode != 0u);
     float step = max(C.spectralStep, 0.25);
+    // dLambda in meters keeps Y in SI integrated spectral radiance,
+    // consistent with the other spectral paths and the absolute photometric
+    // calibration.
+    float dLamM_legacy = step * 1e-9;
     for (float lam = 380.0; lam <= 750.001; lam += step) {
         float lam_m = lam * 1e-9;
         float x_bar, y_bar, z_bar;
         comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
-        float b = comp_planck_lambda(lam_m, T_obs);
+        float b = comp_planck_lambda(lam_m, T_obs) * dLamM_legacy;
         if (kahan) {
             float yx = b * x_bar - cX;
             float tx = X + yx;
@@ -3158,6 +3168,82 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
     return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
 }
 
+// Inverse of comp_xyz_to_rgb (linear sRGB / D65).
+static inline float3 comp_rgb_to_xyz(float3 rgb) {
+    float3 c = max(rgb, 0.0);
+    return float3(
+        0.4124 * c.x + 0.3576 * c.y + 0.1805 * c.z,
+        0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z,
+        0.0193 * c.x + 0.1192 * c.y + 0.9505 * c.z
+    );
+}
+
+static inline bool comp_eye_physiological_enabled(constant ComposeParams& C) {
+    return (C.eyeParams.x > 0.0) && (C.cameraModel == 3u) && (C.analysisMode == 0u);
+}
+
+// Physically anchored human-eye display operator.
+//
+// The input is linear scene radiance after the neutral-density safe-viewing
+// filter (the ND attenuation is exactly a linear scale and is carried in
+// C.exposure). Absolute luminance L = eyeParams.y * CIE-Y, with eyeParams.y =
+// 683.002 * cameraLuminanceScale. The mapping is the established
+// physiologically based chain (Ferwerda et al. 1996 visual adaptation;
+// Durand & Dorsey 2000 night tone mapping; Larson et al. 1997 scotopic
+// luminance from XYZ):
+//
+//   cones: Naka-Rushton R = L^n / (L^n + sigma^n), n = 0.74, with
+//          semi-saturation at the adaptation luminance L_a and display white
+//          anchored at eyeParams.z * L_a;
+//   rods:  same response on the Larson scotopic luminance estimate
+//          V' = Y * (1.33 * (1 + (Y + Z) / X) - 1.68), with rods ~25x more
+//          sensitive and saturating above a few cd/m^2;
+//   mesopic blend: rod weight 1 below 0.005 cd/m^2, 0 above ~3 cd/m^2
+//          (rod-saturation), with the achromatic rod signal carrying the
+//          Purkinje blue-gray appearance.
+//
+// This is the eye as a measurement device; expressive grading stays in the
+// cinema path.
+static inline float3 comp_eye_physiological_display(float3 rgbExp,
+                                                    constant ComposeParams& C)
+{
+    float3 xyz = comp_rgb_to_xyz(rgbExp);
+    float absPerY = max(C.eyeParams.y, 1e-12);
+    float La = max(C.eyeParams.x, 1e-6);
+    float whiteMul = max(C.eyeParams.z, 1.5);
+
+    float L = absPerY * max(xyz.y, 0.0);
+    float scotRatio = 1.33 * (1.0 + (xyz.y + xyz.z) / max(xyz.x, 1e-30)) - 1.68;
+    float Vp = absPerY * max(xyz.y * scotRatio, 0.0);
+
+    const float n = 0.74;
+    float sigmaC = pow(La, n);
+    float Ln = pow(max(L, 0.0), n);
+    float Rc = Ln / max(Ln + sigmaC, 1e-20);
+    float Lw = whiteMul * La;
+    float Rw = pow(Lw, n) / max(pow(Lw, n) + sigmaC, 1e-20);
+    float dispC = Rc / max(Rw, 1e-9);
+
+    // Rods adapt with the same pool but are ~25x more sensitive.
+    float sigmaR = pow(max(0.04 * La, 1e-6), n);
+    float Vn = pow(max(Vp, 0.0), n);
+    float Rr = Vn / max(Vn + sigmaR, 1e-20);
+    float dispR = Rr / max(Rw, 1e-9);
+
+    // Mesopic regime from absolute photopic luminance: fully scotopic below
+    // 0.005 cd/m^2, rods saturated out above ~3 cd/m^2.
+    float lgL = log10(max(L, 1e-7));
+    float wRod = 1.0 - smoothstep(-2.301, 0.477, lgL);
+
+    float lum = dot(max(rgbExp, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+    float3 chroma = (lum > 1e-30) ? (rgbExp / lum) : float3(1.0);
+    // Purkinje blue-gray appearance of the achromatic rod signal,
+    // normalized to unit Rec.709 luminance.
+    const float3 rodTint = float3(0.7922, 0.9916, 1.6946);
+    float3 outLin = mix(chroma * dispC, rodTint * dispR, wRod);
+    return precise::pow(clamp(outLin, 0.0, 1.0), float3(1.0 / 2.2));
+}
+
 static inline float3 comp_shade(const CollisionInfo rec,
                                 constant Params& P,
                                 constant ComposeParams& C)
@@ -3202,6 +3288,9 @@ static inline float3 comp_shade(const CollisionInfo rec,
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
     }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
+    if (comp_eye_physiological_enabled(C)) {
+        return comp_eye_physiological_display(rgbExp, C);
+    }
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
@@ -3263,6 +3352,9 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
     }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
+    if (comp_eye_physiological_enabled(C)) {
+        return comp_eye_physiological_display(rgbExp, C);
+    }
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);

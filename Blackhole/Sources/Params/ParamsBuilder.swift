@@ -371,6 +371,11 @@ enum ParamsBuilder {
     let photometricSaturationLuminance = visualSettings.photometricSaturationLuminance
     let motionBlurSamplesArg = visualSettings.motionBlurSamplesArg
     let motionBlurTimeLapseArg = visualSettings.motionBlurTimeLapseArg
+    let eyePhotometricEnabled = visualSettings.eyePhotometricEnabled
+    let eyeNDArg = visualSettings.eyeNDArg
+    let eyeAdaptationArg = visualSettings.eyeAdaptationArg
+    let eyeTargetLuminanceArg = visualSettings.eyeTargetLuminanceArg
+    let eyeWhiteMultipleArg = visualSettings.eyeWhiteMultipleArg
     let backgroundModeName = visualSettings.backgroundModeName
     let backgroundModeID = visualSettings.backgroundModeID
     let backgroundStarDensityArg = visualSettings.backgroundStarDensityArg
@@ -670,6 +675,11 @@ enum ParamsBuilder {
         config.motionBlurSamplesArg = motionBlurSamplesArg
         config.motionBlurTimeLapseArg = motionBlurTimeLapseArg
         config.shutterFlowTimeSpan = shutterFlowTimeSpan
+        config.eyePhotometricEnabled = eyePhotometricEnabled
+        config.eyeNDArg = eyeNDArg
+        config.eyeAdaptationArg = eyeAdaptationArg
+        config.eyeTargetLuminanceArg = eyeTargetLuminanceArg
+        config.eyeWhiteMultipleArg = eyeWhiteMultipleArg
         config.composeCameraPsfSigmaArg = composeCameraPsfSigmaArg
         config.composeCameraReadNoiseArg = composeCameraReadNoiseArg
         config.composeCameraShotNoiseArg = composeCameraShotNoiseArg

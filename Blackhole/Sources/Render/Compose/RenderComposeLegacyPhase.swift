@@ -342,11 +342,15 @@ enum RenderComposeLegacyPhase {
                                 Z += b * zb * dLamM
                             }
                         } else {
+                            // dLambda in meters keeps Y in SI integrated
+                            // spectral radiance, consistent with the GPU paths
+                            // and the absolute photometric calibration.
+                            let dLamM = stepNm * 1e-9
                             var lam = 380.0
                             while lam <= 750.001 {
                                 let (xb, yb, zb) = cieXYZBar(lam)
                                 let lamM = lam * 1e-9
-                                let b = planckLambda(lamM, tObs) * colorDilution
+                                let b = planckLambda(lamM, tObs) * colorDilution * dLamM
                                 X += b * xb; Y += b * yb; Z += b * zb
                                 lam += stepNm
                             }

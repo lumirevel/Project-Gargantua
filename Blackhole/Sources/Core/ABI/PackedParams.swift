@@ -235,6 +235,13 @@ struct ComposeParams {
     var cameraNoiseParams: SIMD4<Float>
     var cameraColorParams: SIMD4<Float>
     var cameraGlareParams: SIMD4<Float>
+    // x = adaptation luminance cd/m^2 (0 = physiological eye disabled),
+    // y = absolute luminance per CIE-Y unit after exposure, z = white anchor
+    // multiple of adaptation, w = reserved.
+    var eyeParams: SIMD4<Float> = .zero
+    // x = photoelectrons at saturation, y = read noise electrons, z = PRNU
+    // fraction, w > 0.5 = physical photon noise enabled.
+    var cameraPhotonParams: SIMD4<Float> = .zero
 }
 
 struct ComposeSolveParams {

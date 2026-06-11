@@ -285,6 +285,11 @@ struct VisualSettings {
     let photometricSaturationLuminance: Double
     let motionBlurSamplesArg: Int
     let motionBlurTimeLapseArg: Double
+    let eyePhotometricEnabled: Bool
+    let eyeNDArg: Double
+    let eyeAdaptationArg: Double
+    let eyeTargetLuminanceArg: Double
+    let eyeWhiteMultipleArg: Double
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -538,6 +543,28 @@ enum ParamsBuilderVisual {
         // 1.0 = physical shutter seconds; >1 compresses simulation time into
         // the exposure like time-lapse photography (label output accordingly).
         let motionBlurTimeLapseArg = max(0.0, min(1.0e12, doubleArg("--motion-blur-time-lapse", default: 1.0)))
+
+        // Physically anchored human-eye observer. The disk photosphere is at
+        // solar-surface-order luminance, so direct viewing is impossible; the
+        // honest "what the eye sees" chain is a neutral-density safe-viewing
+        // filter, then retinal adaptation to the filtered scene. ND density is
+        // log10 attenuation (solar-filter territory is ~4-5 here); negative
+        // means auto-solve so the p99.5 scene luminance lands at
+        // --eye-target-luminance (default 8000 cd/m^2, bright-sky photopic).
+        let eyePhotometricName = stringArg("--eye-photometric", default: "auto").lowercased()
+        let eyePhotometricEnabled: Bool
+        switch eyePhotometricName {
+        case "auto", "on", "true", "1", "yes":
+            eyePhotometricEnabled = (cameraModelID == 3)
+        case "off", "false", "0", "no":
+            eyePhotometricEnabled = false
+        default:
+            fail("invalid --eye-photometric \(eyePhotometricName). use one of: auto, on, off")
+        }
+        let eyeNDArg = doubleArg("--eye-nd", default: -1.0)
+        let eyeAdaptationArg = doubleArg("--eye-adaptation", default: -1.0)
+        let eyeTargetLuminanceArg = max(1.0, doubleArg("--eye-target-luminance", default: 8000.0))
+        let eyeWhiteMultipleArg = max(1.5, min(64.0, doubleArg("--eye-white-multiple", default: 8.0)))
         let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
         let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
         let lensDofDefault: Double = {
@@ -811,6 +838,11 @@ enum ParamsBuilderVisual {
             photometricSaturationLuminance: photometricSaturationLuminance,
             motionBlurSamplesArg: motionBlurSamplesArg,
             motionBlurTimeLapseArg: motionBlurTimeLapseArg,
+            eyePhotometricEnabled: eyePhotometricEnabled,
+            eyeNDArg: eyeNDArg,
+            eyeAdaptationArg: eyeAdaptationArg,
+            eyeTargetLuminanceArg: eyeTargetLuminanceArg,
+            eyeWhiteMultipleArg: eyeWhiteMultipleArg,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

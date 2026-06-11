@@ -240,6 +240,11 @@ struct ResolvedRenderConfig {
     var motionBlurSamplesArg: Int = 1
     var motionBlurTimeLapseArg: Double = 1.0
     var shutterFlowTimeSpan: Double = 0.0
+    var eyePhotometricEnabled: Bool = false
+    var eyeNDArg: Double = -1.0
+    var eyeAdaptationArg: Double = -1.0
+    var eyeTargetLuminanceArg: Double = 8000.0
+    var eyeWhiteMultipleArg: Double = 8.0
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0
