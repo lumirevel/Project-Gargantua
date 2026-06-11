@@ -624,13 +624,10 @@ enum ParamsBuilderVisual {
             if let s = cameraCalibration.lensDofStrength { return Double(s) }
             return (cameraModelID == 2 || cameraProfileID >= 2) ? 1.0 : 0.0
         }()
-        let lensDofStrengthArg = Float(max(0.0, min(4.0, doubleArg("--camera-dof-strength", default: lensDofDefault))))
+        var lensDofStrengthArg = Float(max(0.0, min(4.0, doubleArg("--camera-dof-strength", default: lensDofDefault))))
+        let lensDofExplicit = cliArguments.contains("--camera-dof-strength")
         let apertureBladesArg = UInt32(max(0, min(16, intArg("--camera-aperture-blades", default: Int(cameraCalibration.apertureBlades ?? 7)))))
         let apertureRotationTurns = Float(doubleArg("--camera-aperture-rotation", default: Double(cameraCalibration.apertureRotation ?? 0.0)))
-        let dofByte = UInt32(max(0, min(255, Int(round(Double(lensDofStrengthArg) / 4.0 * 255.0)))))
-        let rotationTurns = apertureRotationTurns - floor(apertureRotationTurns)
-        let rotationByte = UInt32(max(0, min(255, Int(round(Double(rotationTurns) * 255.0)))))
-        let cameraFlags = (apertureBladesArg & 0xff) | ((rotationByte & 0xff) << 8) | ((dofByte & 0xff) << 16)
         var cameraColorParams = cameraCalibration.colorParams
         cameraColorParams.z = lensFNumberArg
         cameraColorParams.w = lensFocusDepthArg
@@ -843,6 +840,21 @@ enum ParamsBuilderVisual {
             cameraReadNoiseArg = 0.0
             cameraShotNoiseArg = 0.0
         }
+        // Depth of field is physically absent here: every scene distance
+        // (~1e9 m and beyond) is astronomically past the hyperfocal distance
+        // of any constructible lens, so a real photograph of this scene is
+        // sharp at all depths. In absolute photographic mode DoF therefore
+        // defaults off and stays available only as an explicit, labelled
+        // cinematic choice.
+        if exposureModeID == 2 && photographicCalibrationName != "legacy"
+            && !lensDofExplicit && lensDofStrengthArg > 1e-6 {
+            lensDofStrengthArg = 0.0
+            FileHandle.standardError.write(Data("note: photographic mode renders all depths sharp (scene is far beyond any hyperfocal distance); pass --camera-dof-strength to add depth of field as a cinematic choice\n".utf8))
+        }
+        let dofByte = UInt32(max(0, min(255, Int(round(Double(lensDofStrengthArg) / 4.0 * 255.0)))))
+        let rotationTurns = apertureRotationTurns - floor(apertureRotationTurns)
+        let rotationByte = UInt32(max(0, min(255, Int(round(Double(rotationTurns) * 255.0)))))
+        let cameraFlags = (apertureBladesArg & 0xff) | ((rotationByte & 0xff) << 8) | ((dofByte & 0xff) << 16)
         let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
         let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
 

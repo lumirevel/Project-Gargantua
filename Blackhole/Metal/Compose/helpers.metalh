@@ -1119,10 +1119,24 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             float clumpProxyAcc = 0.0;
             float hotCrescentProxyAcc = 0.0;
 
+            // Slow light: the photons arriving now left the disk one
+            // light-travel time ago, and that time differs across the image
+            // (rs/c is ~0.5 s for the geometry-default hole, path-length
+            // spreads are tens of rs, the ISCO period is ~23 s - the same
+            // order). Offsetting the emission time by the per-hit path time
+            // |ct|/c (one flow-time unit = sqrt(2) rs / c) replaces the
+            // fast-light approximation for the time-dependent source: the
+            // higher-order lensed images now show the turbulent pattern as it
+            // was when their longer paths left the disk - the photon-ring
+            // time echo. The constant camera-distance part is a harmless
+            // common-mode phase.
+            float lightTravelOffset = -abs(rec.ct) / (1.4142135624 * max(P.rs, 1e-6));
+
             for (uint mb = 0u; mb < mbSamples; ++mb) {
-                float flowOffset = (mbSamples > 1u)
-                    ? mbSpan * ((float(mb) + 0.5) * invSamples - 0.5)
-                    : 0.0;
+                float flowOffset = lightTravelOffset
+                    + ((mbSamples > 1u)
+                        ? mbSpan * ((float(mb) + 0.5) * invSamples - 0.5)
+                        : 0.0);
                 ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(rNorm, rInNorm, phi, flowOffset, P);
                 float pcdSpiral = clamp(pcdSpiralAmp
                                       * comp_periodic01(cos(phi - pcdOmega * (P.diskFlowTime + flowOffset) - pcdSpiralPitch * pcdLogR + pcdPhase))
