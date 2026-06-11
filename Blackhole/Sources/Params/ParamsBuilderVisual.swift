@@ -342,6 +342,7 @@ struct VisualSettings {
     let eyeWhiteMultipleArg: Double
     let cameraPhotonNoiseEnabled: Bool
     let cameraPhotonParamsResolved: SIMD4<Float>
+    let cameraDiffractionParamsResolved: SIMD4<Float>
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -791,6 +792,36 @@ enum ParamsBuilderVisual {
         default:
             fail("invalid --camera-photon-noise \(photonNoiseName). use one of: auto, on, off")
         }
+        // Fraunhofer diffraction of the polygonal iris. Each straight blade
+        // edge diffracts perpendicular to itself: N odd -> 2N spikes, N even
+        // -> N doubled spikes (opposite edges parallel), 0 blades -> circular
+        // aperture, no spikes. The core/lobe scale grows with the f-number
+        // (lobe spacing ~ lambda * N / pitch).
+        let diffractionDefault: Double = {
+            guard exposureModeID == 2 || cameraModelID == 2 else { return 0.0 }
+            switch cameraProfileID {
+            case 2: return 0.020
+            case 3: return 0.028
+            case 4: return 0.024
+            case 1: return 0.010
+            default: return (cameraModelID == 2) ? 0.020 : 0.0
+            }
+        }()
+        let cameraDiffractionStrengthArg = Float(max(0.0, min(0.25, doubleArg("--camera-diffraction", default: diffractionDefault))))
+        var cameraDiffractionParamsResolved = SIMD4<Float>(0, 0, 0, 0)
+        if cameraDiffractionStrengthArg > 1e-6 && apertureBladesArg >= 3 {
+            let blades = Int(apertureBladesArg)
+            let spikeCount = (blades % 2 == 1) ? (2 * blades) : blades
+            let rotation = Double(apertureRotationTurns) * 2.0 * Double.pi + Double.pi / Double(max(blades, 1))
+            let pitch = cameraCalibration.pixelPitchMicrons ?? 5.5
+            let d0 = max(0.75, min(24.0, 3.0 * Double(lensFNumberArg) / 4.0 * (5.5 / pitch)))
+            cameraDiffractionParamsResolved = SIMD4<Float>(
+                cameraDiffractionStrengthArg,
+                Float(spikeCount),
+                Float(rotation),
+                Float(d0)
+            )
+        }
         var cameraPhotonParamsResolved = SIMD4<Float>(0, 0, 0, 0)
         if cameraPhotonNoiseEnabled {
             let qe = cameraCalibration.peakQuantumEfficiency ?? 0.6
@@ -954,6 +985,7 @@ enum ParamsBuilderVisual {
             eyeWhiteMultipleArg: eyeWhiteMultipleArg,
             cameraPhotonNoiseEnabled: cameraPhotonNoiseEnabled,
             cameraPhotonParamsResolved: cameraPhotonParamsResolved,
+            cameraDiffractionParamsResolved: cameraDiffractionParamsResolved,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

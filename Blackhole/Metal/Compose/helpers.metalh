@@ -2654,6 +2654,69 @@ static inline float3 comp_sample_linear_dof_full(device const float4* inLinear,
     return max(sum / max(wSum, 1e-6), float3(0.0));
 }
 
+static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C);
+
+// Fraunhofer diffraction spikes of the polygonal iris, gathered in the
+// linear domain from bright-passed sources along each spike direction.
+//
+// Physical basis: each straight blade edge diffracts perpendicular to
+// itself, so an N-blade iris produces 2N spikes (N odd) or N doubled spikes
+// (N even, opposite edges parallel). The radial envelope of a straight-edge
+// diffraction pattern falls as 1/d^2 beyond a core scale d0 that grows with
+// the f-number (lobe spacing ~ lambda * N / pitch), and the sinc-lobe
+// interference is wavelength-scaled, which produces the characteristic
+// chromatic beading along real spikes. The total spike energy is a small
+// fraction of the source energy (cameraDiffractionParams.x), conserved by
+// normalizing the gather kernel; the approximation versus an exact
+// |FT(aperture)|^2 is the parameterized envelope, not the phenomenology.
+static inline float3 comp_add_aperture_diffraction(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 srcPos,
+                                                   bool fullFrame,
+                                                   constant ComposeParams& C)
+{
+    float strength = clamp(C.cameraDiffractionParams.x, 0.0, 0.25);
+    if (!(strength > 1e-6)) return base;
+    uint spikeCount = uint(clamp(C.cameraDiffractionParams.y, 2.0, 32.0));
+    float rot = C.cameraDiffractionParams.z;
+    float d0 = clamp(C.cameraDiffractionParams.w, 0.75, 24.0);
+
+    float frameW = fullFrame ? float(max(C.fullInputWidth, 2u) - 1u) : float(max(C.tileWidth, 2u) - 1u);
+    float frameH = fullFrame ? float(max(C.fullInputHeight, 2u) - 1u) : float(max(C.tileHeight, 2u) - 1u);
+    float dMin = max(1.75, 0.6 * d0);
+    float dMax = max(0.46 * min(frameW, frameH), dMin * 4.0);
+    // Lobe spacing scales with lambda * f-number; tie the beading period to
+    // d0 so stopping down stretches both the core and the rainbow beads.
+    float beadFreq = 0.55 / d0;
+    const float3 lamRatio = float3(1.0 / 1.114, 1.0, 1.0 / 0.847); // 612/549/465 nm vs green
+
+    constexpr uint K = 9u;
+    float3 acc = float3(0.0);
+    float wSum = 0.0;
+    float logSpan = log(dMax / dMin);
+    for (uint sIdx = 0u; sIdx < spikeCount; ++sIdx) {
+        float ang = rot + 6.283185307179586 * (float(sIdx) / float(spikeCount));
+        float2 dir = float2(cos(ang), sin(ang));
+        for (uint k = 0u; k < K; ++k) {
+            float t = (float(k) + 0.5) / float(K);
+            float d = dMin * exp(logSpan * t);
+            // 1/d^2 envelope integrated over log-spaced bins -> weight ~ 1/d,
+            // with the d0 core keeping the near field finite.
+            float w = d / (d * d + d0 * d0);
+            float2 p = srcPos + dir * d;
+            float3 s = fullFrame
+                ? comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, p, C), C)
+                : comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, p, C), C);
+            float3 bead = max(1.0 + 0.55 * cos(d * beadFreq * lamRatio), float3(0.0));
+            acc += s * (w * bead);
+            wSum += w;
+        }
+    }
+    return base + acc * (strength / max(wSum, 1e-6));
+}
+
 static inline float3 comp_add_cinematic_flare_full(float3 base,
                                                    device const float4* inLinear,
                                                    float2 srcPos,
@@ -2802,6 +2865,7 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
         float3 halo = 0.68 * haloA + 0.32 * haloB;
         out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
+    out = comp_add_aperture_diffraction(out, inLinear, float2(float(srcX), float(srcY)), true, C);
     return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
 }
 
@@ -3036,6 +3100,7 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
         float3 halo = 0.68 * haloA + 0.32 * haloB;
         out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
+    out = comp_add_aperture_diffraction(out, inLinear, float2(float(lx), float(ly)), false, C);
     return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
 }
 

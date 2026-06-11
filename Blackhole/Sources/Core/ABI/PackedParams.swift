@@ -242,6 +242,9 @@ struct ComposeParams {
     // x = photoelectrons at saturation, y = read noise electrons, z = PRNU
     // fraction, w > 0.5 = physical photon noise enabled.
     var cameraPhotonParams: SIMD4<Float> = .zero
+    // x = spike energy fraction, y = spike count, z = rotation radians,
+    // w = core falloff scale in pixels.
+    var cameraDiffractionParams: SIMD4<Float> = .zero
 }
 
 struct ComposeSolveParams {

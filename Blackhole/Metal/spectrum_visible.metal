@@ -61,6 +61,11 @@ struct ComposeParams {
     // quadrature), z = PRNU fraction, w > 0.5 enables the physical noise model
     // (heuristic display-domain noise is disabled by the host when set).
     float4 cameraPhotonParams;
+    // Fraunhofer diffraction of the polygonal iris. x = spike energy fraction
+    // (0 disables), y = spike count (2N for odd blade counts, N for even),
+    // z = spike rotation in radians, w = core falloff scale d0 in pixels
+    // (grows with f-number: lobe spacing is proportional to lambda * N).
+    float4 cameraDiffractionParams;
 };
 
 struct ComposeSolveParams {

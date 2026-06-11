@@ -163,7 +163,8 @@ enum RenderComposeFullGPUPhase {
             cameraNoiseParams: config.cameraNoiseParams,
             cameraColorParams: config.cameraColorParams,
             cameraGlareParams: config.cameraGlareParams,
-            cameraPhotonParams: config.cameraPhotonParams
+            cameraPhotonParams: config.cameraPhotonParams,
+            cameraDiffractionParams: config.cameraDiffractionParams
         )
 
         guard let composeParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {

@@ -247,6 +247,7 @@ struct ResolvedRenderConfig {
     var eyeWhiteMultipleArg: Double = 8.0
     var cameraPhotonNoiseEnabled: Bool = false
     var cameraPhotonParams: SIMD4<Float> = .zero
+    var cameraDiffractionParams: SIMD4<Float> = .zero
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0
