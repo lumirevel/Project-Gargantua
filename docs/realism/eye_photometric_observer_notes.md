@@ -57,6 +57,12 @@ color perception") is modeled explicitly, anchored in absolute luminance.
   eye is in steady state.
 - Veiling glare / caustic-spike handling from the previous eye path still
   applies before the physiological mapping.
-- `cameraPhotonParams` is reserved in the ABI for the photon-statistics
-  sensor noise model (electrons from absolute exposure, Poisson shot noise,
-  read noise, full-well) - the remaining camera-side item.
+- The photon-statistics sensor noise model is implemented (commit e750659):
+  electrons per photosite follow the absolute exposure exactly
+  (N_sat = min(QE * 11000 * pitch^2 * 78/ISO, fullWell)), with Poisson shot
+  noise, read/dark/DSNU floor, PRNU, and hard ADC clip at saturation, applied
+  in the linear domain at full input resolution. Validated quantitatively:
+  predicted correlated-noise diff 0.99 DN vs measured 1.08 DN between
+  equivalent exposures at ISO 100 and ISO 6400 under --look none. The
+  heuristic display-domain noise scalars are replaced when the model is
+  active (photographic + photometric; --camera-photon-noise off to disable).
