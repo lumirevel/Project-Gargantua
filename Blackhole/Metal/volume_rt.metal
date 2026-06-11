@@ -871,9 +871,18 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
     float tempScale = prepared.tempScale;
     float massLen = 0.5 * P.rs;
     float rM = hitState.dxy / max(massLen, 1e-12);
+    // Radial velocities keep the legacy sqrt(M/r) reference scale: vrRatio is
+    // an atlas/flow-supplied fraction of that scale, so its meaning must not
+    // change. The azimuthal speed is physical, not a convention: the local
+    // static-observer speed of a circular Schwarzschild orbit is
+    // v = sqrt(M / (r - 2M)) (0.5c at the ISCO), not the coordinate value
+    // sqrt(M/r). The g-factor contraction below consumes local orthonormal
+    // velocities, so using the coordinate value under-beams the disk by ~5%
+    // in g at the ISCO and more at smaller emission radii.
     float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+    float betaRefPhi = min(sqrt(max(1.0 / max(rM - 2.0, 1e-2), 1e-8)), 0.999);
     float betaRCoord = vrRatio * betaRef;
-    float betaPhiCoord = -vphiScale * betaRef;
+    float betaPhiCoord = -vphiScale * betaRefPhi;
     float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
     if (allowPlunge && hitState.dxy < diskInner * (1.0 - 1e-4)) {
         float rMsM = diskInner / max(massLen, 1e-12);
