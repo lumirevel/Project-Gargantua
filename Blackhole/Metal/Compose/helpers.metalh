@@ -2297,6 +2297,55 @@ static inline float3 comp_background_linear(float3 dir, constant ComposeParams& 
     return displayLike * invExposure;
 }
 
+// Photon-statistics sensor noise, applied to the linear scene value at the
+// full input resolution (each photosite gets independent statistics; the
+// downsample average then behaves like binning, reducing noise by sqrt(N)).
+//
+// With the ISO 12232 absolute calibration the exposed linear value is
+// H / H_sat, so the electron count at this exposure is exact:
+//   N = rel * N_sat,  N_sat = cameraPhotonParams.x (host-computed:
+//   min(QE * kappa * pitch^2 * 78/ISO, fullWell)).
+// Shot noise is Poisson on N (Gaussian approximation), read noise / dark /
+// DSNU add in quadrature (cameraPhotonParams.y, electrons), PRNU scales
+// with N (cameraPhotonParams.z). The ADC clips at saturation, so the
+// exposed value is hard-limited to 1.0 before the display curve - exactly
+// what a digital sensor does to highlights.
+static inline float3 comp_apply_photon_noise_scene(float3 rgbLin,
+                                                   uint px,
+                                                   uint py,
+                                                   constant ComposeParams& C)
+{
+    if (!(C.cameraPhotonParams.w > 0.5)) return rgbLin;
+    float nSat = max(C.cameraPhotonParams.x, 1.0);
+    float readE = max(C.cameraPhotonParams.y, 0.0);
+    float prnu = max(C.cameraPhotonParams.z, 0.0);
+    float exposure = max(C.exposure, 1e-30);
+
+    float3 rel = clamp(rgbLin * exposure, float3(0.0), float3(4.0));
+    float3 nE = rel * nSat;
+    float3 prnuE = prnu * nE;
+    float3 sigmaE = sqrt(nE + float3(readE * readE) + prnuE * prnuE);
+
+    // Two uniform [-1,1] hashes per channel give a triangular profile;
+    // variance of each uniform is 1/3, so scale by sqrt(3/2) for unit
+    // variance.
+    float3 g1 = float3(
+        comp_hash_signed_u32(px, py, 211u),
+        comp_hash_signed_u32(px, py, 223u),
+        comp_hash_signed_u32(px, py, 227u)
+    );
+    float3 g2 = float3(
+        comp_hash_signed_u32(px, py, 229u),
+        comp_hash_signed_u32(px, py, 233u),
+        comp_hash_signed_u32(px, py, 239u)
+    );
+    float3 gauss = (g1 + g2) * 1.2247449;
+
+    float3 noisyRel = (nE + sigmaE * gauss) / nSat;
+    noisyRel = clamp(noisyRel, float3(0.0), float3(1.0));
+    return noisyRel / exposure;
+}
+
 static inline float3 comp_apply_camera_sensor(float3 color,
                                               uint globalOutX,
                                               uint globalOutY,

@@ -551,6 +551,7 @@ kernel void composeBH(constant Params& P [[buffer(0)]],
             uint lx = srcX - C.srcOffsetX;
             uint ly = srcY - C.srcOffsetY;
             float3 rgbLin = comp_sample_collision_psf_tile(inInfo, lx, ly, P, C);
+            rgbLin = comp_apply_photon_noise_scene(rgbLin, srcX, srcY, C);
             acc += comp_shade_linear(rgbLin, C);
             cnt += 1u;
         }
@@ -598,6 +599,7 @@ kernel void composeBHLinear(constant ComposeParams& C [[buffer(0)]],
                                                comp_eye_scene_glare_full(inLinear, srcX, srcY, C),
                                                C);
             }
+            rgb = comp_apply_photon_noise_scene(rgb, srcX, srcY, C);
             float3 shaded = comp_shade_linear(rgb, C);
             if (comp_eye_local_adaptation_enabled(C)) {
                 shaded = comp_eye_local_adaptation_apply(shaded, comp_eye_surround_full(inLinear, srcX, srcY, C));
@@ -651,6 +653,7 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
                                                comp_eye_scene_glare_tile(inLinear, lx, ly, C),
                                                C);
             }
+            rgb = comp_apply_photon_noise_scene(rgb, srcX, srcY, C);
             float3 shaded = comp_shade_linear(rgb, C);
             if (comp_eye_local_adaptation_enabled(C)) {
                 shaded = comp_eye_local_adaptation_apply(shaded, comp_eye_surround_tile(inLinear, lx, ly, C));

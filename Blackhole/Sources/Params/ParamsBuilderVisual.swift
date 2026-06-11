@@ -23,6 +23,15 @@ struct CameraCalibration {
     var readNoise: Float?
     var shotNoise: Float?
     var flareStrength: Float?
+    // Physical sensor data for the photon-statistics noise model. Electrons
+    // and microns; nil disables the physical model for this profile.
+    var fullWellElectrons: Double?
+    var readNoiseElectrons: Double?
+    var peakQuantumEfficiency: Double?
+    var pixelPitchMicrons: Double?
+    var dsnuElectrons: Double?
+    var darkCurrentElectronsPerSecond: Double?
+    var prnuPercent: Double?
 }
 
 private struct CameraCalibrationJSON: Decodable {
@@ -80,7 +89,14 @@ private enum CameraCalibrationFactory {
             psfSigmaPixels: nil,
             readNoise: nil,
             shotNoise: nil,
-            flareStrength: nil
+            flareStrength: nil,
+            fullWellElectrons: nil,
+            readNoiseElectrons: nil,
+            peakQuantumEfficiency: nil,
+            pixelPitchMicrons: nil,
+            dsnuElectrons: nil,
+            darkCurrentElectronsPerSecond: nil,
+            prnuPercent: nil
         )
     }
 
@@ -96,6 +112,14 @@ private enum CameraCalibrationFactory {
             c.displayB = SIMD4<Float>(0.004, 0.016, 0.980, 0)
             c.noiseParams = SIMD4<Float>(0.045, 0.12, 0.08, 0.0)
             c.colorParams = SIMD4<Float>(0.98, 0.0, 0, 0)
+            // Representative back-illuminated scientific CMOS (IMX455-class).
+            c.fullWellElectrons = 51000
+            c.readNoiseElectrons = 3.6
+            c.peakQuantumEfficiency = 0.90
+            c.pixelPitchMicrons = 3.76
+            c.dsnuElectrons = 1.2
+            c.darkCurrentElectronsPerSecond = 0.003
+            c.prnuPercent = 0.35
             return c
         case 2:
             var c = identity(profileName: profileName, profileID: profileID)
@@ -113,6 +137,14 @@ private enum CameraCalibrationFactory {
             c.lensDofStrength = 1.0
             c.apertureBlades = 7
             c.apertureRotation = 0.10
+            // Representative Super-35 cinema sensor.
+            c.fullWellElectrons = 33000
+            c.readNoiseElectrons = 4.0
+            c.peakQuantumEfficiency = 0.60
+            c.pixelPitchMicrons = 8.25
+            c.dsnuElectrons = 2.0
+            c.darkCurrentElectronsPerSecond = 0.02
+            c.prnuPercent = 0.5
             return c
         case 3:
             var c = identity(profileName: profileName, profileID: profileID)
@@ -130,6 +162,14 @@ private enum CameraCalibrationFactory {
             c.lensDofStrength = 0.75
             c.apertureBlades = 9
             c.apertureRotation = 0.0
+            // Representative full-frame mirrorless sensor.
+            c.fullWellElectrons = 64000
+            c.readNoiseElectrons = 3.0
+            c.peakQuantumEfficiency = 0.60
+            c.pixelPitchMicrons = 5.94
+            c.dsnuElectrons = 1.5
+            c.darkCurrentElectronsPerSecond = 0.02
+            c.prnuPercent = 0.5
             return c
         default:
             return identity(profileName: profileName, profileID: profileID)
@@ -244,6 +284,16 @@ private enum CameraCalibrationFactory {
         if let flare = raw.flareStrength {
             c.flareStrength = Float(clamp(flare, 0.0, 1.0))
         }
+
+        // Keep the electron-unit sensor data for the photon-statistics noise
+        // model (it is otherwise only folded into heuristic display scalars).
+        if let v = raw.fullWellElectrons { c.fullWellElectrons = max(v, 1.0) }
+        if let v = raw.readNoiseElectrons { c.readNoiseElectrons = max(v, 0.0) }
+        if let v = raw.peakQuantumEfficiency { c.peakQuantumEfficiency = clamp(v, 0.05, 1.0) }
+        if let v = raw.pixelPitchMicrons { c.pixelPitchMicrons = max(v, 0.1) }
+        if let v = raw.dsnuElectrons { c.dsnuElectrons = max(v, 0.0) }
+        if let v = raw.darkCurrentElectronsPerSecond { c.darkCurrentElectronsPerSecond = max(v, 0.0) }
+        if let v = raw.prnuPercent { c.prnuPercent = max(v, 0.0) }
     }
 
     private static func clamp(_ value: Double, _ lo: Double, _ hi: Double) -> Double {
@@ -290,6 +340,8 @@ struct VisualSettings {
     let eyeAdaptationArg: Double
     let eyeTargetLuminanceArg: Double
     let eyeWhiteMultipleArg: Double
+    let cameraPhotonNoiseEnabled: Bool
+    let cameraPhotonParamsResolved: SIMD4<Float>
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -703,6 +755,63 @@ enum ParamsBuilderVisual {
                 cameraShotNoiseArg = Float(min(Double(cameraShotNoiseArg) * sqrt(isoGain / photonRatio), 0.08))
             }
         }
+
+        // Photon-statistics sensor noise. With the ISO 12232 absolute
+        // calibration the linear value is H / H_sat, so the photoelectron
+        // count per photosite is known exactly:
+        //   N_sat = min(QE * kappa * pitch^2 * (78 / ISO), fullWell)
+        // with kappa ~ 11000 photons / (um^2 lux s): the broadband visible
+        // photon flux per lux-second weighted by a silicon QE curve (the
+        // 555 nm monochromatic value is 4090; a thermal source spread across
+        // the band carries ~2.7x more photons per lumen).
+        // Shot noise is Poisson on N, read/dark/DSNU add in quadrature, and
+        // PRNU scales with N. Grain then follows the actual settings: high
+        // ISO clips at few electrons and gets grainy, base ISO is clean.
+        let photonScaleArg = max(0.01, min(100.0, doubleArg("--camera-photon-scale", default: 1.0)))
+        let photonNoiseName = stringArg("--camera-photon-noise", default: "auto").lowercased()
+        let sensorDataAvailable = (cameraCalibration.fullWellElectrons != nil)
+            && (cameraCalibration.pixelPitchMicrons != nil)
+            && (cameraCalibration.peakQuantumEfficiency != nil)
+        let cameraPhotonNoiseEnabled: Bool
+        switch photonNoiseName {
+        case "auto":
+            cameraPhotonNoiseEnabled = (exposureModeID == 2)
+                && (photographicCalibrationName != "legacy")
+                && sensorDataAvailable
+        case "on", "true", "1", "yes":
+            if !sensorDataAvailable {
+                fail("--camera-photon-noise on requires a camera profile with fullWellElectrons, pixelPitchMicrons, and peakQuantumEfficiency")
+            }
+            if exposureModeID != 2 {
+                fail("--camera-photon-noise on requires --exposure-mode photographic (the model needs absolute exposure units)")
+            }
+            cameraPhotonNoiseEnabled = true
+        case "off", "false", "0", "no":
+            cameraPhotonNoiseEnabled = false
+        default:
+            fail("invalid --camera-photon-noise \(photonNoiseName). use one of: auto, on, off")
+        }
+        var cameraPhotonParamsResolved = SIMD4<Float>(0, 0, 0, 0)
+        if cameraPhotonNoiseEnabled {
+            let qe = cameraCalibration.peakQuantumEfficiency ?? 0.6
+            let pitch = cameraCalibration.pixelPitchMicrons ?? 5.0
+            let fullWell = cameraCalibration.fullWellElectrons ?? 50000.0
+            let kappa = 11000.0 * photonScaleArg
+            let hSat = 78.0 / Double(cameraISOArg)
+            let nSat = min(qe * kappa * pitch * pitch * hSat, fullWell)
+            let darkVar = (cameraCalibration.darkCurrentElectronsPerSecond ?? 0.0)
+                * Double(cameraShutterSecondsArg)
+            let dsnu = cameraCalibration.dsnuElectrons ?? 0.0
+            let readE = cameraCalibration.readNoiseElectrons ?? 2.0
+            let readEff = sqrt(readE * readE + darkVar + dsnu * dsnu)
+            let prnuFrac = (cameraCalibration.prnuPercent ?? 0.0) / 100.0
+            cameraPhotonParamsResolved = SIMD4<Float>(
+                Float(max(nSat, 1.0)), Float(readEff), Float(prnuFrac), 1.0
+            )
+            // The physical model replaces the heuristic display-domain noise.
+            cameraReadNoiseArg = 0.0
+            cameraShotNoiseArg = 0.0
+        }
         let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
         let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
 
@@ -843,6 +952,8 @@ enum ParamsBuilderVisual {
             eyeAdaptationArg: eyeAdaptationArg,
             eyeTargetLuminanceArg: eyeTargetLuminanceArg,
             eyeWhiteMultipleArg: eyeWhiteMultipleArg,
+            cameraPhotonNoiseEnabled: cameraPhotonNoiseEnabled,
+            cameraPhotonParamsResolved: cameraPhotonParamsResolved,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,
