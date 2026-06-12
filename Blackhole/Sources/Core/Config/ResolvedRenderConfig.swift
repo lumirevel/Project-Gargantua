@@ -90,6 +90,9 @@ struct ResolvedRenderConfig {
     var uploadedDiskAssetBytes: Int = 0
 
     var diskVolumeEnabled: Bool = false
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed.
+    var diskSpectralVolumeEnabled: Bool = false
     var diskVolumeLegacyEnabled: Bool = false
     var diskVolumeGRMHDEnabled: Bool = false
     var diskVolumeThickEnabled: Bool = false

@@ -87,7 +87,7 @@ extension ParamsBuilder {
             diskRTSteps: UInt32(config.diskRTStepsArg),
             diskScatteringAlbedo: Float(config.diskScatteringAlbedoArg),
             diskRTPad: 0,
-            diskVolumeMode: config.diskVolumeEnabled ? 1 : 0,
+            diskVolumeMode: config.diskSpectralVolumeEnabled ? 2 : (config.diskVolumeEnabled ? 1 : 0),
             diskVolumeR: UInt32(config.diskVolumeR),
             diskVolumePhi: UInt32(config.diskVolumePhi),
             diskVolumeZ: UInt32(config.diskVolumeZ),

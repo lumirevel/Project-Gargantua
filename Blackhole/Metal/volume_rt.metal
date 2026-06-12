@@ -306,7 +306,9 @@ static inline void volume_integrate_segment(float3 p0,
                                             float4 rayV1,
                                             float LzConst,
                                             float pr0,
-                                            float pr1);
+                                            float pr1,
+                                            float ctSeg0,
+                                            float ctSeg1);
 static inline bool disk_volume_mode_enabled_fc(constant Params& P);
 static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
                                            bool volumeMode,
@@ -921,7 +923,8 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
         T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
         // MRI turbulent heating: use diskPrecisionTexture (precision-mode texture parameter)
         float mriAmp_s = max(P.diskPrecisionTexture, P.diskTurbulence);
-        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_s, P);
+        float lightTravel_s = -abs(P.c * hitState.pHit.x) / (1.4142135624 * max(P.rs, 1e-6));
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_s, lightTravel_s, P);
     }
 
     trace_store_schwarzschild_surface_hit(info, hitState, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -1059,7 +1062,9 @@ static inline bool trace_commit_kerr_surface_hit_impl(constant Params& P,
         float tauMid_hit = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
         T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
         float mriAmp_k = max(P.diskPrecisionTexture, P.diskTurbulence);
-        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_k, P);
+        float massLen_k = 0.5 * max(P.rs, 1e-6);
+        float lightTravel_k = -abs(hitState.hitState.t * massLen_k) / (1.4142135624 * max(P.rs, 1e-6));
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_k, lightTravel_k, P);
     }
 
     trace_store_kerr_surface_hit(info, hitState, massLen, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -1302,7 +1307,8 @@ static inline bool trace_schwarzschild_volume_ray(constant Params& P,
         if (hasPrev) {
             trace_update_volume_obs_dir(world0, worldPos, volumeObsDir, info);
             volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0Tex, diskVol1Tex, volumeA,
-                                     vPrev, v, 0.0, 0.0, 0.0);
+                                     vPrev, v, 0.0, 0.0, 0.0,
+                                     P.c * pPrev.x, P.c * p.x);
         }
 
         hasPrev = true;
@@ -1679,7 +1685,8 @@ static inline bool trace_kerr_volume_ray(constant Params& P,
             if (hasPrev) {
                 trace_update_volume_obs_dir(world0, worldPos, volumeObsDir, info);
                 volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0Tex, diskVol1Tex, volumeA,
-                                         float4(0.0), float4(0.0), Lz, prevState.pr, state.pr);
+                                         float4(0.0), float4(0.0), Lz, prevState.pr, state.pr,
+                                         prevState.t * massLen, state.t * massLen);
             }
 
             hasPrev = true;
@@ -1735,7 +1742,9 @@ static inline void volume_integrate_segment(float3 p0,
                                             float4 rayV1,
                                             float LzConst,
                                             float pr0,
-                                            float pr1)
+                                            float pr1,
+                                            float ctSeg0,
+                                            float ctSeg1)
 {
     if (!disk_volume_mode_enabled_fc(P)) return;
     // Optional photosphere shortcut for visible mode.
@@ -3077,6 +3086,23 @@ static inline void volume_integrate_segment(float3 p0,
         float density = pow(clamp(vol.y, 0.0, 1.0), 0.65);
         float vrRatio = clamp(vol.z, -1.0, 1.0);
         float vphiScale = clamp(vol.w, 0.0, 4.0);
+        // Analytic spectral volume (diskVolumeMode == 2): the medium IS the
+        // physical model - smooth Gaussian-vertical, power-law-radial gas on
+        // circular geodesic orbits with a small alpha-disk inward drift - not
+        // a sampled texture. Brightness structure enters through the MRI
+        // heating field in the local temperature, as radiation-pressure
+        // dominated disks carry photospheric contrast in T rather than in
+        // surface density.
+        bool analyticSpectralVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeMode == 2u);
+        if (analyticSpectralVolume) {
+            float rInNormLoc = max(diskInner / max(P.rs, 1e-6), 1.0001);
+            density = pow(max(rNorm / rInNormLoc, 1.0), -1.1);
+            vrRatio = -0.012; // alpha-disk drift scale; the exact
+                              // conserved-quantity plunge takes over inside
+                              // the ISCO in the g-factor block below.
+            vphiScale = 1.0;
+            tempScale = 1.0;
+        }
         if (!(density > 1e-5)) continue;
 
         float transportGate = verticalEdgeGate * radialEdgeGate;
@@ -3085,11 +3111,11 @@ static inline void volume_integrate_segment(float3 p0,
         // In physical-flow volume mode, the imported/procedural volume is the
         // transport state. Avoid adding a second layer of random cloud/perlin
         // modulation that would turn disk-space fluid structure into a texture.
-        bool dataDrivenVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeFormat == 0u && P.diskVolumeMode != 0u);
+        bool dataDrivenVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeFormat == 0u && P.diskVolumeMode != 0u && !analyticSpectralVolume);
         float cloudSharp = clamp(density, 0.0, 1.0);
         float clumpGate = cloudSharp;
         float densityEff = density * transportGate;
-        if (!dataDrivenVolume) {
+        if (!dataDrivenVolume && !analyticSpectralVolume) {
             float cloudFlow = disk_cloud_noise(r, phi, pos.z, P.c * P.diskFlowTime + 0.12 * r, P);
             float cloudPerlin = 0.5 + 0.5 * disk_perlin_texture_noise(r, phi + 0.19 * P.diskFlowTime, pos.z, P);
             float cloudLocal = clamp(0.58 * cloudFlow + 0.42 * cloudPerlin, 0.0, 1.0);
@@ -3108,7 +3134,7 @@ static inline void volume_integrate_segment(float3 p0,
         float innerX = clamp((r - diskInner) / max(0.45 * diskInner, 1e-6), 0.0, 1.0);
         float innerGate = smoothstep(0.0, 1.0, innerX);
         densityEff *= (0.25 + 0.75 * innerGate);
-        if (!dataDrivenVolume) {
+        if (!dataDrivenVolume && !analyticSpectralVolume) {
             float voidNoise = fbm(float3(rNorm * 4.6, phi * 10.8, zNorm * 6.2 + 0.45 * P.diskFlowTime));
             float coherentVoid = smoothstep(0.46, 0.83, voidNoise);
             densityEff *= mix(1.0, coherentVoid, 0.30 * porosity);
@@ -3123,9 +3149,14 @@ static inline void volume_integrate_segment(float3 p0,
         if (FC_METRIC == 0) {
             float massLen = 0.5 * P.rs;
             float rM = r / max(massLen, 1e-12);
+            // Radial velocities keep the sqrt(M/r) reference scale (vrRatio is
+            // a fraction of it); the azimuthal speed is physical: the local
+            // static-observer speed of a circular orbit is sqrt(M/(r-2M)),
+            // matching the surface-path kinematics fix.
             float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+            float betaRefPhi = min(sqrt(max(1.0 / max(rM - 2.0, 1e-2), 1e-8)), 0.999);
             float betaRCoord = vrRatio * betaRef;
-            float betaPhiCoord = -vphiScale * betaRef;
+            float betaPhiCoord = -vphiScale * betaRefPhi;
             if (FC_PHYSICS_MODE != 0u && r < diskInner * (1.0 - 1e-4)) {
                 float rMsM = diskInner / max(massLen, 1e-12);
                 float betaR = 0.0;
@@ -3184,7 +3215,47 @@ static inline void volume_integrate_segment(float3 p0,
             float tauMid_vol = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
             T = disk_eddington_atmosphere_temp(hNorm_vol, tauMid_vol, T);
             float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
-            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, P);
+            // Slow light per sample: each fluid parcel is seen as it was when
+            // its light left (segment-interpolated coordinate time).
+            float lightTravel_v = -abs(mix(ctSeg0, ctSeg1, t)) / (1.4142135624 * max(P.rs, 1e-6));
+            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, lightTravel_v, P);
+        }
+
+        if (analyticSpectralVolume) {
+            // LTE gray radiative transfer through the analytic medium:
+            // the source function is B(T_local) with absorption from the same
+            // gray opacity, integrated front-to-back so the photosphere
+            // emerges where tau crosses ~1 instead of being imposed as a
+            // surface. Every sample carries its own exact-metric g-factor,
+            // its own Eddington/MRI temperature, and its own slow-light
+            // emission time, so the fluid kinematics (orbital shear, plunge,
+            // turbulent advection) act per parcel along the ray.
+            A.visibleSpectrumMode = 1u;
+            A.pathRs += ds / max(P.rs, 1e-6);
+            float H_sigma = max(P.he, 1e-6);
+            float zOverH = pos.z / H_sigma;
+            float gaussVertical = exp(-0.5 * zOverH * zOverH);
+            float dTau = min(tauScaleLegacy * densityEff * gaussVertical * ds, 4.0);
+            float transBefore = exp(-A.tau);
+            float emitW = transBefore * (1.0 - exp(-dTau));
+            if (emitW > 1e-9) {
+                float3 srcXYZ = volume_blackbody_observed_xyz(T, g, P);
+                A.IVisNu = max(A.IVisNu + srcXYZ * emitW, float3(0.0));
+                float dY = max(srcXYZ.y, 0.0) * emitW;
+                if (dY > 0.0) {
+                    volume_accum_add_sample(A, dY, T, g, r, vrRatio, cloudSharp, pos, obs);
+                }
+                A.maxSource = max(A.maxSource, max(srcXYZ.y, 0.0));
+                A.maxSourceThermal = max(A.maxSourceThermal, max(srcXYZ.y, 0.0));
+            }
+            A.tau += dTau;
+            A.tauVis = float3(A.tau);
+            A.maxRho = max(A.maxRho, densityEff);
+            A.maxThetae = max(A.maxThetae, T);
+            A.maxI = max(A.maxI, max(A.IVisNu.y, 0.0));
+            A.I = max(A.IVisNu.y, 0.0);
+            if (!(A.tau < 24.0)) break;
+            continue;
         }
 
         if (dataDrivenVolume) {

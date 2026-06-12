@@ -517,6 +517,9 @@ canonical_source_model() {
     slim|slim-disk|slim-disk-visible|slim-disk-visible-v1|super-eddington-disk|super-eddington-disk-v1)
       printf 'slim-disk-visible-v1'
       ;;
+    volumetric|volumetric-disk|volumetric-visible-disk|volumetric-visible-disk-v1)
+      printf 'volumetric-visible-disk-v1'
+      ;;
     cinematic-physical|cinematic-physical-disk|cinematic-physical-disk-v1|physical-cinema-disk|production-visible-disk)
       printf 'cinematic-physical-disk-v1'
       ;;
@@ -558,6 +561,9 @@ source_model_to_science_regime() {
     slim-disk-visible-v1)
       printf 'slim-disk-visible-v1'
       ;;
+    volumetric-visible-disk-v1)
+      printf 'volumetric-visible-disk-v1'
+      ;;
     cinematic-physical-disk-v1)
       printf 'cinematic-physical-disk-v1'
       ;;
@@ -596,10 +602,10 @@ apply_source_model_defaults() {
   _PRE_CANONICAL_SOURCE_MODEL="$SOURCE_MODEL_VALUE"
   SOURCE_MODEL_VALUE="$(canonical_source_model "$SOURCE_MODEL_VALUE")"
   case "$SOURCE_MODEL_VALUE" in
-    canonical-visible-disk-v1|slim-disk-visible-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
+    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-plasma-fluctuation-candidate|grmhd-visible-disk-skin-candidate|thin-luminous-layer-candidate|grmhd-temperature-flow-diagnostic)
       ;;
     *)
-      echo "error: --source-model must be one of canonical-visible-disk-v1, slim-disk-visible-v1, cinematic-physical-disk-v1, physics-constrained-cinematic-disk-v1, grmhd-surrogate-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, grmhd-visible-disk-skin-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
+      echo "error: --source-model must be one of canonical-visible-disk-v1, slim-disk-visible-v1, volumetric-visible-disk-v1, cinematic-physical-disk-v1, physics-constrained-cinematic-disk-v1, grmhd-surrogate-disk-v1, thin-disk-visible-reference, grmhd-hot-flow-diagnostic, grmhd-plasma-fluctuation-candidate, grmhd-visible-disk-skin-candidate, thin-luminous-layer-candidate, grmhd-temperature-flow-diagnostic" >&2
       echo "       use --science-regime ... --experimental for legacy/debug source families" >&2
       exit 2
       ;;
@@ -635,7 +641,7 @@ apply_source_model_defaults() {
 require_experimental_for_hidden_source() {
   [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
   case "$SCIENCE_REGIME_VALUE" in
-    canonical-visible-disk-v1|slim-disk-visible-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
+    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
       return 0
       ;;
     *)
@@ -671,6 +677,41 @@ apply_science_regime_defaults() {
       append_swift_default --teff-r0 "4.8"
       append_swift_default --teff-p "0.72"
       append_swift_default --fcol "1.25"
+      append_swift_default --background "off"
+      if [[ "$LOOK_SET" -eq 0 ]]; then
+        set_look_arg "linear"
+      fi
+      ;;
+    volumetric-visible-disk-v1|volumetric-visible-disk|volumetric-disk)
+      # True volumetric visible disk: LTE gray radiative transfer through the
+      # analytic disk medium (Gaussian vertical atmosphere, Eddington T(tau),
+      # shear-advected MRI heating with log-normal intermittency). The
+      # photosphere emerges where tau crosses ~1 instead of being imposed as
+      # a surface; every sample carries its own exact-metric g-factor and
+      # slow-light emission time. tau_mid ~ O(100) keeps the midplane
+      # optically thick with a thin bright corona above it.
+      set_default_disk_mode "precision"
+      set_default_presentation_mode "scientific"
+      if [[ "$SOURCE_QUALITY_VALUE" == "hq" || "$SOURCE_QUALITY_VALUE" == "high" || "$SOURCE_QUALITY_VALUE" == "final" ]]; then
+        if [[ "$SSAA_EXPLICIT" -eq 0 ]]; then
+          SSAA=2
+        fi
+      fi
+      append_swift_default --disk-spectral-volume "on"
+      append_swift_default --disk-turbulence "0.9"
+      append_swift_default --disk-precision-texture "0.0"
+      append_swift_default --disk-precision-clouds "0"
+      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-porosity "0.0"
+      append_swift_default --disk-cloud-shadow-strength "0.0"
+      append_swift_default --disk-returning-rad "0.0"
+      append_swift_default --disk-scattering-albedo "0.0"
+      append_swift_default --cloud-tau "4.0"
+      append_swift_default --disk-volume-tau-scale "30.0"
+      append_swift_default --diskH "0.22"
+      append_swift_default --mdot-edd "0.3"
+      append_swift_default --eta "0.1"
+      append_swift_default --fcol "1.7"
       append_swift_default --background "off"
       if [[ "$LOOK_SET" -eq 0 ]]; then
         set_look_arg "linear"
@@ -1596,7 +1637,7 @@ Routing rules:
 - Public source interface: --source-model {canonical-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|grmhd-hot-flow-diagnostic|grmhd-temperature-flow-diagnostic} --presentation {scientific|eye|cinema} --quality {preview|hq}
 - Presentation-only validation: --compose-hdr-in <float4-linear32-file> --width <w> --height <h> --presentation {scientific|eye|cinema}
 - Legacy/debug source families are hidden from the recommended surface. Use --science-regime <old-name> --experimental only when reproducing an old experiment.
-- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --grmhd-branch-isolation --grmhd-transport-alpha-scale --grmhd-smooth-emission-scale --grmhd-cloud-emission-scale --pcd-density-exp --pcd-emissivity-scale --pcd-opacity-scale --pcd-seed --pcd-structure-scale --pcd-spiral-amp --pcd-spiral-pitch --pcd-clump-contrast --pcd-hot-crescent --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-iso --camera-shutter --photographic-calibration --camera-luminance-scale --motion-blur-samples --motion-blur-time-lapse --eye-photometric --eye-nd --eye-adaptation --eye-target-luminance --eye-white-multiple --camera-photon-noise --camera-photon-scale --camera-diffraction --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
+- Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-spectral-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --grmhd-branch-isolation --grmhd-transport-alpha-scale --grmhd-smooth-emission-scale --grmhd-cloud-emission-scale --pcd-density-exp --pcd-emissivity-scale --pcd-opacity-scale --pcd-seed --pcd-structure-scale --pcd-spiral-amp --pcd-spiral-pitch --pcd-clump-contrast --pcd-hot-crescent --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-iso --camera-shutter --photographic-calibration --camera-luminance-scale --motion-blur-samples --motion-blur-time-lapse --eye-photometric --eye-nd --eye-adaptation --eye-target-luminance --eye-white-multiple --camera-photon-noise --camera-photon-scale --camera-diffraction --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
 - Disk model values: --disk-model {flow|perlin|perlin-classic|perlin-ec7|atlas|auto} (alias: procedural)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
@@ -2933,7 +2974,7 @@ while [[ "$#" -gt 0 ]]; do
       PRESENTATION_MODE_EXPLICIT=1
       shift
       ;;
-    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-grmhd-density-scale|--disk-grmhd-b-scale|--disk-grmhd-emission-scale|--disk-grmhd-absorption-scale|--disk-grmhd-vel-scale|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-synch-scale|--visible-kappa|--grmhd-branch-isolation|--grmhd-transport-alpha-scale|--grmhd-smooth-weight|--grmhd-smooth-emission-scale|--grmhd-cloud-emission-scale|--pcd-density-exp|--pcd-emissivity-scale|--pcd-opacity-scale|--pcd-seed|--pcd-structure-scale|--pcd-spiral-amp|--pcd-spiral-pitch|--pcd-clump-contrast|--pcd-hot-crescent|--thin-photosphere|--thin-h-over-r-base|--thin-h-over-r-inner|--thin-h-over-r-outer|--thin-radial-taper|--thin-weight-power-emission|--thin-weight-power-absorption|--corona-layer|--corona-h-over-r|--corona-weight-power|--thermal-transfer-mode|--teff-model|--teff-T0|--teff-r0|--teff-p|--bh-mass|--mdot|--r-in|--photosphere-rho-threshold|--disk-cool-absorption|--disk-cool-dust-to-gas|--disk-cool-dust-kappa-v|--disk-cool-dust-beta|--disk-cool-dust-tsub|--disk-cool-dust-twidth|--disk-cool-gas-kappa0|--disk-cool-gas-nu-slope|--disk-cool-clump-strength|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--exposure-mode|--exposure-ev|--camera-model|--camera-profile|--camera-profile-json|--realism-profile|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare|--camera-f-number|--camera-iso|--camera-shutter|--photographic-calibration|--camera-luminance-scale|--motion-blur-samples|--motion-blur-time-lapse|--eye-photometric|--eye-nd|--eye-adaptation|--eye-target-luminance|--eye-white-multiple|--camera-photon-noise|--camera-photon-scale|--camera-diffraction|--camera-focus-depth|--camera-dof-strength|--camera-aperture-blades|--camera-aperture-rotation|--background|--bg-stars|--bg-star-density|--bg-star-strength|--bg-nebula-strength|--mdot-edd|--eta|--fcol|--thick-scale|--cloud-tau|--nu-obs-hz|--rt-steps|--visible-policy|--realism-debug|--compose-hdr-in|--compose-linear32-in)
+    --camX|--camY|--camZ|--fov|--roll|--diskH|--h|--spin|--kerr-tol|--kerr-escape-mult|--kerr-radial-scale|--kerr-azimuth-scale|--kerr-impact-scale|--disk-time|--disk-orbital-boost|--disk-radial-drift|--disk-turbulence|--disk-orbital-boost-inner|--disk-orbital-boost-outer|--disk-radial-drift-inner|--disk-radial-drift-outer|--disk-turbulence-inner|--disk-turbulence-outer|--disk-flow-step|--disk-flow-steps|--disk-mdot-edd|--disk-radiative-efficiency|--disk-mode|--disk-physics-mode|--disk-plunge-floor|--disk-thick-scale|--disk-color-factor|--disk-returning-rad|--disk-return-bounces|--disk-rt-steps|--disk-scattering-albedo|--disk-precision-texture|--disk-precision-clouds|--disk-cloud-coverage|--disk-cloud-optical-depth|--disk-cloud-porosity|--disk-cloud-shadow-strength|--disk-model|--disk-atlas|--disk-atlas-width|--disk-atlas-height|--disk-atlas-temp-scale|--disk-atlas-density-blend|--disk-atlas-vr-scale|--disk-atlas-vphi-scale|--disk-atlas-r-min|--disk-atlas-r-max|--disk-atlas-r-warp|--disk-grmhd-density-scale|--disk-grmhd-b-scale|--disk-grmhd-emission-scale|--disk-grmhd-absorption-scale|--disk-grmhd-vel-scale|--disk-polarized-rt|--disk-pol-frac|--disk-faraday-rot|--disk-faraday-conv|--visible-emission-model|--visible-synch-alpha|--visible-synch-scale|--visible-kappa|--grmhd-branch-isolation|--grmhd-transport-alpha-scale|--grmhd-smooth-weight|--grmhd-smooth-emission-scale|--grmhd-cloud-emission-scale|--pcd-density-exp|--pcd-emissivity-scale|--pcd-opacity-scale|--pcd-seed|--pcd-structure-scale|--pcd-spiral-amp|--pcd-spiral-pitch|--pcd-clump-contrast|--pcd-hot-crescent|--disk-spectral-volume|--thin-photosphere|--thin-h-over-r-base|--thin-h-over-r-inner|--thin-h-over-r-outer|--thin-radial-taper|--thin-weight-power-emission|--thin-weight-power-absorption|--corona-layer|--corona-h-over-r|--corona-weight-power|--thermal-transfer-mode|--teff-model|--teff-T0|--teff-r0|--teff-p|--bh-mass|--mdot|--r-in|--photosphere-rho-threshold|--disk-cool-absorption|--disk-cool-dust-to-gas|--disk-cool-dust-kappa-v|--disk-cool-dust-beta|--disk-cool-dust-tsub|--disk-cool-dust-twidth|--disk-cool-gas-kappa0|--disk-cool-gas-nu-slope|--disk-cool-clump-strength|--ray-bundle|--ray-bundle-jacobian|--ray-bundle-jacobian-strength|--ray-bundle-footprint-clamp|--exposure-mode|--exposure-ev|--camera-model|--camera-profile|--camera-profile-json|--realism-profile|--camera-psf-sigma|--camera-read-noise|--camera-shot-noise|--camera-flare|--camera-f-number|--camera-iso|--camera-shutter|--photographic-calibration|--camera-luminance-scale|--motion-blur-samples|--motion-blur-time-lapse|--eye-photometric|--eye-nd|--eye-adaptation|--eye-target-luminance|--eye-white-multiple|--camera-photon-noise|--camera-photon-scale|--camera-diffraction|--camera-focus-depth|--camera-dof-strength|--camera-aperture-blades|--camera-aperture-rotation|--background|--bg-stars|--bg-star-density|--bg-star-strength|--bg-nebula-strength|--mdot-edd|--eta|--fcol|--thick-scale|--cloud-tau|--nu-obs-hz|--rt-steps|--visible-policy|--realism-debug|--compose-hdr-in|--compose-linear32-in)
       need_value "$arg" "$@"
       val="$1"
       shift

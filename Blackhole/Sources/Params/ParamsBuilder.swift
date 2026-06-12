@@ -339,11 +339,30 @@ enum ParamsBuilder {
     )
     let composeLook = composeLookSettings.composeLook
     let composeLookID = composeLookSettings.composeLookID
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed. Parsed
+    // before the visual settings so the compose policy treats it as a
+    // precision volume (analysisMode 0, full observer pipeline).
+    let diskSpectralVolumeName = stringArg("--disk-spectral-volume", default: "off").lowercased()
+    let diskSpectralVolumeEnabled: Bool
+    switch diskSpectralVolumeName {
+    case "on", "true", "1", "yes", "spectral":
+        if diskPhysicsModeID != 2 {
+            FileHandle.standardError.write(Data("error: --disk-spectral-volume requires --disk-physics precision\n".utf8))
+            exit(2)
+        }
+        diskSpectralVolumeEnabled = true
+    case "off", "false", "0", "no":
+        diskSpectralVolumeEnabled = false
+    default:
+        FileHandle.standardError.write(Data("error: invalid --disk-spectral-volume \(diskSpectralVolumeName). use on|off\n".utf8))
+        exit(2)
+    }
     let visualSettings = ParamsBuilderVisual.resolveVisualSettings(
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
         diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
-        precisionVolumeEnabled: !diskVolumePathArg.isEmpty,
+        precisionVolumeEnabled: !diskVolumePathArg.isEmpty || diskSpectralVolumeEnabled,
         diskGrmhdDebugID: diskGrmhdDebugID,
         composeLookID: composeLookID,
         composeGPU: composeGPU,
@@ -468,8 +487,12 @@ enum ParamsBuilder {
     let diskVol1PathResolved = diskVolumeAssembly.diskVol1PathResolved
     let diskVolumeRMin = diskVolumeAssembly.diskVolumeRMin
     let diskVolumeRMax = diskVolumeAssembly.diskVolumeRMax
-    let diskVolumeZMax = diskVolumeAssembly.diskVolumeZMax
     let diskVolumeRWarp = diskVolumeAssembly.diskVolumeRWarp
+    // The spectral volume needs vertical room for the Gaussian atmosphere:
+    // cover ~4 scale heights so the photosphere and thin corona both fit.
+    let diskVolumeZMax = diskSpectralVolumeEnabled
+        ? max(diskVolumeAssembly.diskVolumeZMax, 4.0 * diskHFactor)
+        : diskVolumeAssembly.diskVolumeZMax
     // GRMHD volumes may use the existing packed radial-warp slot to avoid an
     // ABI expansion. Explicit --disk-atlas-r-warp still overrides metadata.
     let effectiveDiskAtlasRWarp = (diskVolumeGRMHDEnabled && diskAtlasRWarpArg < 0.0) ? diskVolumeRWarp : diskAtlasRWarp
@@ -573,6 +596,7 @@ enum ParamsBuilder {
         config.diskAtlasRWarp = effectiveDiskAtlasRWarp
         config.diskAtlasData = diskAtlasData
         config.diskVolumeEnabled = diskVolumeEnabled
+        config.diskSpectralVolumeEnabled = diskSpectralVolumeEnabled
         config.diskVolumeLegacyEnabled = diskVolumeLegacyEnabled
         config.diskVolumeGRMHDEnabled = diskVolumeGRMHDEnabled
         config.diskVolumeThickEnabled = diskVolumeThickEnabled
