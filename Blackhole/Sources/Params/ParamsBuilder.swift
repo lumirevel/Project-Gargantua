@@ -180,7 +180,30 @@ enum ParamsBuilder {
     let diskReturningRadArg = diskPolicy.returningRad
     var diskPrecisionTextureArg = diskPolicy.precisionTexture
     let thickCloudExplicit = diskPolicy.thickCloudExplicit
-    let diskCloudCoverageArg = diskPolicy.cloudCoverage
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed. Parsed
+    // here so the compose policy treats it as a precision volume
+    // (analysisMode 0) and so the clumpy-atmosphere coverage knob bypasses
+    // the legacy precision-clouds gate, which zeroes cloud parameters when
+    // the Perlin cloud system is off.
+    let diskSpectralVolumeName = stringArg("--disk-spectral-volume", default: "off").lowercased()
+    let diskSpectralVolumeEnabled: Bool
+    switch diskSpectralVolumeName {
+    case "on", "true", "1", "yes", "spectral":
+        if diskPhysicsModeID != 2 {
+            FileHandle.standardError.write(Data("error: --disk-spectral-volume requires --disk-physics precision\n".utf8))
+            exit(2)
+        }
+        diskSpectralVolumeEnabled = true
+    case "off", "false", "0", "no":
+        diskSpectralVolumeEnabled = false
+    default:
+        FileHandle.standardError.write(Data("error: invalid --disk-spectral-volume \(diskSpectralVolumeName). use on|off\n".utf8))
+        exit(2)
+    }
+    let diskCloudCoverageArg = diskSpectralVolumeEnabled
+        ? max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: 0.45)))
+        : diskPolicy.cloudCoverage
     let diskCloudOpticalDepthArg = diskPolicy.cloudOpticalDepth
     let diskCloudPorosityArg = diskPolicy.cloudPorosity
     let diskCloudShadowStrengthArg = diskPolicy.cloudShadowStrength
@@ -339,25 +362,6 @@ enum ParamsBuilder {
     )
     let composeLook = composeLookSettings.composeLook
     let composeLookID = composeLookSettings.composeLookID
-    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
-    // through the physical disk medium, no volume data files needed. Parsed
-    // before the visual settings so the compose policy treats it as a
-    // precision volume (analysisMode 0, full observer pipeline).
-    let diskSpectralVolumeName = stringArg("--disk-spectral-volume", default: "off").lowercased()
-    let diskSpectralVolumeEnabled: Bool
-    switch diskSpectralVolumeName {
-    case "on", "true", "1", "yes", "spectral":
-        if diskPhysicsModeID != 2 {
-            FileHandle.standardError.write(Data("error: --disk-spectral-volume requires --disk-physics precision\n".utf8))
-            exit(2)
-        }
-        diskSpectralVolumeEnabled = true
-    case "off", "false", "0", "no":
-        diskSpectralVolumeEnabled = false
-    default:
-        FileHandle.standardError.write(Data("error: invalid --disk-spectral-volume \(diskSpectralVolumeName). use on|off\n".utf8))
-        exit(2)
-    }
     let visualSettings = ParamsBuilderVisual.resolveVisualSettings(
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
@@ -985,6 +989,13 @@ enum ParamsBuilder {
 
         var params = ParamsBuilder.buildPackedParams(from: config)
         accretionModel.buildPackedFields(into: &params, from: diskPolicy)
+        if diskSpectralVolumeEnabled {
+            // The accretion-model hook re-applies the precision-cloud-gated
+            // values after the generic pack. The spectral volume's
+            // clumpy-atmosphere coverage is independent of the legacy Perlin
+            // cloud system, so restore the resolved knob.
+            params.diskCloudCoverage = Float(diskCloudCoverageArg)
+        }
         if diskPhysicsModeID == 3 && visibleModeEnabled {
             // The accretion-model hook writes precision-mode defaults after the
             // generic pack step. GRMHD visible uses this field as its state/flow

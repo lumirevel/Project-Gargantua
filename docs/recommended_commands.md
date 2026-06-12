@@ -10,6 +10,12 @@ Source models:
 - `slim-disk-visible-v1` - super-Eddington slim disk. Blue-white
   Rayleigh-Jeans disk, radially extended brightness, thick-disk side walls,
   ~77x the canonical luminance.
+- `volumetric-visible-disk-v1` - true volumetric disk: LTE gray radiative
+  transfer through the analytic medium, photosphere emerging at tau ~ 1,
+  per-sample exact-metric g-factors and slow-light emission times, sheared
+  MRI turbulence in 3D, and a clumpy magnetically supported atmosphere
+  (`--disk-cloud-coverage 0..1`, default 0.45; 0 = smooth photosphere only).
+  Best viewed tilted: `--camX 19 --camZ 11`.
 
 ## Eye (인간 눈 - 차광 필터 뒤에서 적응된 맨눈)
 
@@ -30,6 +36,12 @@ Source models:
 # The super-Eddington disk to the adapted eye (auto ND ~7.9).
 ./Blackhole/run_pipeline.sh --source-model slim-disk-visible-v1 \
   --presentation eye --quality hq --width 1920 --height 1080
+
+# The volumetric disk, tilted: turbulent face, soft atmosphere edges,
+# patchy clumps above the photosphere (raise coverage for heavier clouds).
+./Blackhole/run_pipeline.sh --source-model volumetric-visible-disk-v1 \
+  --presentation eye --quality hq --width 1920 --height 1080 \
+  --camX 19 --camZ 11 --disk-cloud-coverage 0.65
 ```
 
 Eye knobs: `--eye-nd <density>` (log10 attenuation; auto if unset),

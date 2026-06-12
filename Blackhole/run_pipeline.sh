@@ -701,7 +701,7 @@ apply_science_regime_defaults() {
       append_swift_default --disk-turbulence "0.9"
       append_swift_default --disk-precision-texture "0.0"
       append_swift_default --disk-precision-clouds "0"
-      append_swift_default --disk-cloud-coverage "0.0"
+      append_swift_default --disk-cloud-coverage "0.45"
       append_swift_default --disk-cloud-porosity "0.0"
       append_swift_default --disk-cloud-shadow-strength "0.0"
       append_swift_default --disk-returning-rad "0.0"

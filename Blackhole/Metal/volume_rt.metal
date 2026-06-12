@@ -3206,6 +3206,8 @@ static inline void volume_integrate_segment(float3 p0,
         float TBackbone = dataDrivenVolume ? disk_visible_teff(r, P)
                                            : disk_effective_temperature(r, diskInner, P);
         float T = TBackbone * tempScale;
+        float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
+        float lightTravel_v = -abs(mix(ctSeg0, ctSeg1, t)) / (1.4142135624 * max(P.rs, 1e-6));
         if (FC_PHYSICS_MODE == 2u && !dataDrivenVolume) {
             // Eddington vertical atmosphere + MRI turbulent heating fluctuation.
             // Together these replace the Perlin noise texture: the Eddington profile
@@ -3213,11 +3215,16 @@ static inline void volume_integrate_segment(float3 p0,
             // α-disk-scaled spatial fluctuations with correlation length ~ H.
             float hNorm_vol  = abs(pos.z) / max(P.he, 1e-6);
             float tauMid_vol = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
+            if (analyticSpectralVolume) {
+                // The spectral volume calibrates its own gray opacity from the
+                // tau scale; keep the interior T(tau) profile consistent with
+                // an optically thick midplane even when the legacy cloud-tau
+                // control is zeroed by the precision-cloud gate.
+                tauMid_vol = max(tauMid_vol, 0.35 * max(P.diskVolumeTauScale, 1.0));
+            }
             T = disk_eddington_atmosphere_temp(hNorm_vol, tauMid_vol, T);
-            float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
             // Slow light per sample: each fluid parcel is seen as it was when
             // its light left (segment-interpolated coordinate time).
-            float lightTravel_v = -abs(mix(ctSeg0, ctSeg1, t)) / (1.4142135624 * max(P.rs, 1e-6));
             T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, lightTravel_v, P);
         }
 
@@ -3236,6 +3243,47 @@ static inline void volume_integrate_segment(float3 p0,
             float zOverH = pos.z / H_sigma;
             float gaussVertical = exp(-0.5 * zOverH * zOverH);
             float dTau = min(tauScaleLegacy * densityEff * gaussVertical * ds, 4.0);
+
+            // Clumpy magnetically supported atmosphere (--disk-cloud-coverage).
+            // Radiation-MHD inner disks are strongly density-inhomogeneous,
+            // but below the photosphere (tau >> 1) that clumpiness is hidden -
+            // the visible face of an optically thick disk carries sheared
+            // filaments, not cloud blobs. What genuinely looks cloud-like is
+            // the optically thin atmosphere above ~1.5 H, where magnetic
+            // buoyancy lifts the strong-dissipation filaments into patchy
+            // clumps (magnetically supported atmospheres, Blaes+ 2007;
+            // photon-bubble / compressible-MRI inhomogeneity, Turner+ 2003,
+            // Jiang+ 2013). The clumps share the disk's shear advection and
+            // slow-light time, occult the photosphere from in front, and glow
+            // at the limb - real transfer behavior, not texture. Coverage 0
+            // keeps the smooth photosphere-only disk.
+            float clumpiness = clamp(P.diskCloudCoverage, 0.0, 1.0);
+            if (clumpiness > 1e-3) {
+                float zH = abs(zOverH);
+                float atmGate = smoothstep(1.10, 1.70, zH) * (1.0 - smoothstep(2.4, 3.8, zH));
+                if (atmGate > 1e-3) {
+                    // Seed the clumps from the midplane dissipation filaments
+                    // below this column (the heating field's own vertical
+                    // envelope has already decayed at these heights).
+                    float clumpSeed = disk_mri_heating_factor_amp(r, phi, 0.0, max(mriAmp_v, 0.55), lightTravel_v, P);
+                    float onset = mix(1.42, 1.06, clumpiness);
+                    float clumpField = smoothstep(onset, onset + 0.55, clumpSeed);
+                    if (clumpField > 1e-4) {
+                        // Buoyant magnetic loops have finite vertical extent:
+                        // modulate each column's clump top with a second,
+                        // decorrelated sample of the dissipation field so the
+                        // atmosphere breaks into discrete cloud bodies rather
+                        // than uniform vertical pillars.
+                        float heightSeed = disk_mri_heating_factor_amp(r, phi + 2.399, 0.0, max(mriAmp_v, 0.55), lightTravel_v, P);
+                        float zTop = mix(1.7, 3.4, clamp((heightSeed - 0.42) * 0.505, 0.0, 1.0));
+                        float heightGate = 1.0 - smoothstep(zTop - 0.45, zTop + 0.25, zH);
+                        float dTauAtm = tauScaleLegacy
+                                      * (3.0 * clumpiness * atmGate * clumpField * heightGate * density)
+                                      * ds;
+                        dTau = min(dTau + dTauAtm, 4.0);
+                    }
+                }
+            }
             float transBefore = exp(-A.tau);
             float emitW = transBefore * (1.0 - exp(-dTau));
             if (emitW > 1e-9) {
