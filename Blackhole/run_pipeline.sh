@@ -412,7 +412,7 @@ canonical_disk_model() {
     perlin-ec7|perlin-legacy|legacy-ec7|ec7)
       printf 'perlin-ec7'
       ;;
-    atlas)
+    atlas|grmhd-atlas|legacy-grmhd-atlas|legacy-hdf5-atlas|hdf5-atlas)
       printf 'atlas'
       ;;
     auto|"")
@@ -1501,6 +1501,9 @@ Legacy / compatibility options:
   --disk-model perlin-ec7       EC7 crisp legacy Perlin disk.
   --disk-model perlin-legacy    Alias of perlin-ec7.
   --disk-model legacy-ec7       Alias of perlin-ec7.
+  --disk-model legacy-grmhd-atlas
+                                Legacy HDF5/GRMHD atlas disk; auto-builds a sample atlas when no
+                                --disk-hdf5 or --disk-atlas is supplied.
   --disk-model atlas            2D atlas-backed legacy disk, requires --disk-atlas.
   --disk-model auto             Context-dependent default.
 
@@ -1642,7 +1645,7 @@ Routing rules:
 - Legacy/debug source families are hidden from the recommended surface. Use --science-regime <old-name> --experimental only when reproducing an old experiment.
 - Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-spectral-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --grmhd-branch-isolation --grmhd-transport-alpha-scale --grmhd-smooth-emission-scale --grmhd-cloud-emission-scale --pcd-density-exp --pcd-emissivity-scale --pcd-opacity-scale --pcd-seed --pcd-structure-scale --pcd-spiral-amp --pcd-spiral-pitch --pcd-clump-contrast --pcd-hot-crescent --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-iso --camera-shutter --photographic-calibration --camera-luminance-scale --motion-blur-samples --motion-blur-time-lapse --eye-photometric --eye-nd --eye-adaptation --eye-target-luminance --eye-white-multiple --camera-photon-noise --camera-photon-scale --camera-diffraction --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
-- Disk model values: --disk-model {flow|perlin|legacy-f552|perlin-ec7|atlas|auto} (aliases: procedural, perlin-classic, perlin-f552)
+- Disk model values: --disk-model {flow|perlin|legacy-f552|perlin-ec7|legacy-grmhd-atlas|atlas|auto} (aliases: procedural, perlin-classic, perlin-f552)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
   - profile override: --disk-physics {legacy|thin|thick|eht}
   - auto: precision alias with diskH-adaptive thin/thick defaults
@@ -3279,6 +3282,21 @@ if [[ "$DISK_SOURCE_SET" -eq 1 ]]; then
       ;;
   esac
 fi
+
+case "$DISK_MODEL_VALUE" in
+  grmhd-atlas|legacy-grmhd-atlas|legacy-hdf5-atlas|hdf5-atlas)
+    if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
+      echo "error: --disk-model $DISK_MODEL_VALUE is a 2d atlas path and cannot be combined with 3d representation." >&2
+      echo "hint: use --disk-repr 2d or switch to --disk-mode grmhd for volume GRMHD." >&2
+      exit 2
+    fi
+    if [[ -z "$DISK_HDF5_PATH" && "$DISK_PLUTO_MODE" -eq 0 && "$DISK_HDF5_SAMPLE" -eq 0 && "$DISK_ATLAS_SET" -eq 0 ]]; then
+      DISK_HDF5_SAMPLE=1
+      echo "info: --disk-model $DISK_MODEL_VALUE requested without atlas/HDF5 input, enabling --disk-hdf5-sample." >&2
+    fi
+    DISK_MODEL_VALUE="atlas"
+    ;;
+esac
 
 # If PLUTO/HDF5 is selected by direct flags in 3d mode, route to flow profile bridge.
 if [[ "$EFFECTIVE_DISK_REPR" == "3d" && ( "$DISK_PLUTO_MODE" -eq 1 || -n "$DISK_HDF5_PATH" || "$DISK_HDF5_SAMPLE" -eq 1 ) ]]; then

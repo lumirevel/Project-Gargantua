@@ -3470,6 +3470,15 @@ static inline float3 disk_sample_probe_pos(float3 hitPos,
                                            float3 worldPos,
                                            constant Params& P)
 {
+    if (P.diskNoiseModel == 3u) {
+        // f552e72 legacy cloud texture was sampled from the segment entry point
+        // into the finite disk volume, not from the later refined thin surface
+        // hit. Preserve that coordinate contract for recovered legacy renders.
+        float tEnter = 0.0;
+        if (segment_enter_disk(world0, worldPos, P, tEnter)) {
+            hitPos = mix(world0, worldPos, tEnter);
+        }
+    }
     if (P.diskNoiseModel == 1u || P.diskNoiseModel == 2u) {
         // Perlin modes sample exactly at hit position for stable streak texture.
         return hitPos;

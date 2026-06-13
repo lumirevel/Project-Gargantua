@@ -2203,6 +2203,22 @@ static inline float3 comp_apply_linear_cloud_from_raw(float3 rgb,
         rgb.z *= (1.0 - 0.035 * clump);
         return rgb;
     }
+    if (FC_PHYSICS_MODE == 0u && C.diskNoiseModel == 3u) {
+        // Recovered f552-era cloud presentation: lower the density floor and
+        // steepen clump response so the old procedural ring/stripe texture
+        // remains visible after the modern GPU exposure solve.
+        float c = clamp((cloud - 0.18) / 0.82, 0.0, 1.0);
+        float core = precise::pow(c, 1.28);
+        float clump = precise::pow(c, 2.65);
+        float vvoid = precise::pow(1.0 - c, 1.35);
+        float density = 0.34 + 1.62 * core;
+        rgb *= density;
+        rgb *= (1.0 + 0.42 * clump);
+        rgb *= (1.0 - 0.24 * vvoid);
+        rgb.x *= (1.0 + 0.10 * clump);
+        rgb.z *= (1.0 - 0.06 * clump);
+        return rgb;
+    }
     return comp_apply_cloud_to_rgb(rgb, cloud);
 }
 

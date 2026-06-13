@@ -546,14 +546,14 @@ enum ParamsBuilderPolicy {
             diskModelResolved = "perlin-ec7"
         case "perlin-classic", "perlin-f552", "legacy-f552", "flow-f552", "cloud-f552", "procedural-f552", "f552":
             diskModelResolved = "legacy-f552"
-        case "atlas":
+        case "atlas", "grmhd-atlas", "legacy-grmhd-atlas", "legacy-hdf5-atlas", "hdf5-atlas":
             diskModelResolved = "atlas"
         case "auto":
             // In thin-disk-visible-reference, an atlas is a source perturbation
             // on the analytic ray/disk photosphere, not the disk model itself.
             diskModelResolved = (diskAtlasPathArg.isEmpty || thinVisibleAtlasSource) ? "flow" : "atlas"
         default:
-            fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-ec7, legacy-f552, atlas, auto (aliases include procedural, perlin-classic, perlin-f552)")
+            fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-ec7, legacy-f552, legacy-grmhd-atlas, atlas, auto (aliases include procedural, perlin-classic, perlin-f552)")
         }
 
         if (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && diskModelResolved != "flow" {
