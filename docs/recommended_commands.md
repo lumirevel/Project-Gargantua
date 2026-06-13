@@ -15,6 +15,9 @@ Source models:
   per-sample exact-metric g-factors and slow-light emission times, sheared
   MRI turbulence in 3D, and a clumpy magnetically supported atmosphere
   (`--disk-cloud-coverage 0..1`, default 0.45; 0 = smooth photosphere only).
+  Thickness follows the matter supply `--mdot-edd` (default 0.18): the
+  hydrostatic scale height H = (3/2)(L/L_Edd) r_g sets both temperature and
+  geometric thickness, so ~0.05 is a thin blade and ~0.6 a puffed band.
   Best viewed tilted: `--camX 19 --camZ 11`.
 
 ## Eye (인간 눈 - 차광 필터 뒤에서 적응된 맨눈)
