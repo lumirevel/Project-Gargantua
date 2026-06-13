@@ -494,8 +494,15 @@ enum ParamsBuilder {
     let diskVolumeRWarp = diskVolumeAssembly.diskVolumeRWarp
     // The spectral volume needs vertical room for the Gaussian atmosphere:
     // cover ~4 scale heights so the photosphere and thin corona both fit.
+    // Spectral-volume vertical extent follows the hydrostatic scale height,
+    // which the shader derives from mdot (H = 0.75 mdot rs asymptotically).
+    // Cover ~4 H so the photosphere and thin corona fit, but no more - a
+    // fixed-thick density box would let the optical-depth tail dominate and
+    // make thickness insensitive to the matter supply. Floor keeps a thin
+    // disk from collapsing below sampling resolution.
+    let spectralVolumeHMaxNorm = 0.75 * diskMdotEddArg
     let diskVolumeZMax = diskSpectralVolumeEnabled
-        ? max(diskVolumeAssembly.diskVolumeZMax, 4.0 * diskHFactor)
+        ? max(0.12, 4.0 * spectralVolumeHMaxNorm)
         : diskVolumeAssembly.diskVolumeZMax
     // GRMHD volumes may use the existing packed radial-warp slot to avoid an
     // ABI expansion. Explicit --disk-atlas-r-warp still overrides metadata.

@@ -709,7 +709,7 @@ apply_science_regime_defaults() {
       append_swift_default --cloud-tau "4.0"
       append_swift_default --disk-volume-tau-scale "30.0"
       append_swift_default --diskH "0.22"
-      append_swift_default --mdot-edd "0.3"
+      append_swift_default --mdot-edd "0.18"
       append_swift_default --eta "0.1"
       append_swift_default --fcol "1.7"
       append_swift_default --background "off"

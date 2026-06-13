@@ -146,7 +146,6 @@ static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
     float logR = log(max(rRs, 1.0001));
     float omegaK = 1.0 / max(pow(rRs, 1.5), 1e-6);
     float timeRs = P.diskFlowTime + flowTimeOffset;
-    float shearPhi = phi - timeRs * omegaK;
     float sigmaLog = 0.6 * HoverR;
     constexpr float twoPi = 6.283185307179586;
 
@@ -168,7 +167,10 @@ static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
         float kMag = sqrt(kr * kr + m * m);
         float ampMode = pow(max(kMag, 1.0), -0.3333333) * mix(0.78, 1.22, h3);
         ampMode *= exp(-0.5 * kr * kr * sigmaLog * sigmaLog);
-        float phase = kr * logR + m * (shearPhi * mix(0.82, 1.18, h4)) + twoPi * h3;
+        // The advection-rate jitter must multiply only the time term: the
+        // azimuthal coefficient has to stay the integer harmonic m, or the
+        // field is not 2pi-periodic and a seam appears at phi = 0.
+        float phase = kr * logR + m * (phi - timeRs * omegaK * mix(0.82, 1.18, h4)) + twoPi * h3;
         fluct += ampMode * cos(phase);
         norm2 += ampMode * ampMode;
     }

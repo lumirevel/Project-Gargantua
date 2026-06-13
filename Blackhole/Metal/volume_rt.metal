@@ -3208,12 +3208,26 @@ static inline void volume_integrate_segment(float3 p0,
         float T = TBackbone * tempScale;
         float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
         float lightTravel_v = -abs(mix(ctSeg0, ctSeg1, t)) / (1.4142135624 * max(P.rs, 1e-6));
+        // Hydrostatic radiation-zone scale height: the geometric thickness of
+        // a luminous disk is not a free knob, it is set by the amount of
+        // matter flowing through - H = (3/2) (L/L_Edd) r_g (1 - sqrt(r_in/r))
+        // (Shakura-Sunyaev zone a), so --mdot-edd controls temperature and
+        // thickness coherently. The disk rises from zero height at the inner
+        // edge to its asymptotic H. P.he stays the turbulence correlation
+        // scale; the non-spectral precision volume keeps its legacy constant
+        // slab height.
+        float hLocal = max(P.he, 1e-6);
+        if (analyticSpectralVolume) {
+            float hMax = 0.75 * max(P.diskMdotEdd, 0.02) * max(P.rs, 1e-6);
+            float fBound = max(1.0 - sqrt(max(diskInner, 1.0001 * P.rs) / max(r, 1.0002 * P.rs)), 0.06);
+            hLocal = clamp(hMax * fBound, 0.015 * max(P.rs, 1e-6), 0.6 * max(P.rs, 1e-6));
+        }
         if (FC_PHYSICS_MODE == 2u && !dataDrivenVolume) {
             // Eddington vertical atmosphere + MRI turbulent heating fluctuation.
             // Together these replace the Perlin noise texture: the Eddington profile
             // sets T(τ) from the disk photosphere inward, while MRI heating adds
             // α-disk-scaled spatial fluctuations with correlation length ~ H.
-            float hNorm_vol  = abs(pos.z) / max(P.he, 1e-6);
+            float hNorm_vol  = abs(pos.z) / max(hLocal, 1e-6);
             float tauMid_vol = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
             if (analyticSpectralVolume) {
                 // The spectral volume calibrates its own gray opacity from the
@@ -3239,7 +3253,7 @@ static inline void volume_integrate_segment(float3 p0,
             // turbulent advection) act per parcel along the ray.
             A.visibleSpectrumMode = 1u;
             A.pathRs += ds / max(P.rs, 1e-6);
-            float H_sigma = max(P.he, 1e-6);
+            float H_sigma = max(hLocal, 1e-6);
             float zOverH = pos.z / H_sigma;
             float gaussVertical = exp(-0.5 * zOverH * zOverH);
             float dTau = min(tauScaleLegacy * densityEff * gaussVertical * ds, 4.0);
