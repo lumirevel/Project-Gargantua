@@ -3213,9 +3213,9 @@ static inline void volume_integrate_segment(float3 p0,
         // matter flowing through - H = (3/2) (L/L_Edd) r_g (1 - sqrt(r_in/r))
         // (Shakura-Sunyaev zone a), so --mdot-edd controls temperature and
         // thickness coherently. The disk rises from zero height at the inner
-        // edge to its asymptotic H. P.he stays the turbulence correlation
-        // scale; the non-spectral precision volume keeps its legacy constant
-        // slab height.
+        // edge to its asymptotic H. Spectral-volume opacity, Eddington
+        // atmosphere, and MRI heating all share this hLocal; non-spectral
+        // precision volume keeps its legacy constant slab height.
         float hLocal = max(P.he, 1e-6);
         if (analyticSpectralVolume) {
             float hMax = 0.75 * max(P.diskMdotEdd, 0.02) * max(P.rs, 1e-6);
@@ -3239,7 +3239,7 @@ static inline void volume_integrate_segment(float3 p0,
             T = disk_eddington_atmosphere_temp(hNorm_vol, tauMid_vol, T);
             // Slow light per sample: each fluid parcel is seen as it was when
             // its light left (segment-interpolated coordinate time).
-            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, lightTravel_v, P);
+            T *= disk_mri_heating_factor_amp_h(r, phi, pos.z, mriAmp_v, lightTravel_v, hLocal, P);
         }
 
         if (analyticSpectralVolume) {

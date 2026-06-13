@@ -441,7 +441,9 @@ enum RenderComposeLegacyPhase {
             cameraSceneR: config.cameraSceneR, cameraSceneG: config.cameraSceneG, cameraSceneB: config.cameraSceneB,
             cameraDisplayR: config.cameraDisplayR, cameraDisplayG: config.cameraDisplayG, cameraDisplayB: config.cameraDisplayB,
             cameraSensorParams: config.cameraSensorParams, cameraNoiseParams: config.cameraNoiseParams,
-            cameraColorParams: config.cameraColorParams, cameraGlareParams: config.cameraGlareParams
+            cameraColorParams: config.cameraColorParams, cameraGlareParams: config.cameraGlareParams,
+            cameraPhotonParams: config.cameraPhotonParams,
+            cameraDiffractionParams: config.cameraDiffractionParams
         )
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])!
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -569,6 +571,17 @@ enum RenderComposeLegacyPhase {
             } else {
                 print("lum(hist) p50=\(p50), p99.5=\(gpuP995), mode=gpu-tiled")
             }
+        }
+
+        if let eye = RenderEyePhotometric.resolve(
+            config: config,
+            cameraModelID: composeCameraModelID,
+            p50: exposureDebugP50.map(Double.init),
+            p995: exposureDebugPHigh.map(Double.init)
+        ) {
+            composeExposure = Float(eye.ndLinear)
+            composeParamsTemplate.eyeParams = eye.eyeParams
+            print(eye.summary)
         }
 
         composeParamsTemplate.exposure = composeExposure

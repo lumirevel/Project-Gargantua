@@ -294,6 +294,9 @@ func validatePackedParamsABIOrThrow() throws {
     let expectedSize = 688
     let expectedStride = 688
     let expectedAlignment = 16
+    let expectedComposeSize = 368
+    let expectedComposeStride = 368
+    let expectedComposeAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
         "rs": 100,
@@ -336,6 +339,29 @@ func validatePackedParamsABIOrThrow() throws {
     guard MemoryLayout<CollisionLite32>.stride == 32 else {
         throw NSError(domain: "Blackhole", code: 106, userInfo: [NSLocalizedDescriptionKey: "CollisionLite32 stride changed: \(MemoryLayout<CollisionLite32>.stride)"])
     }
+    guard MemoryLayout<ComposeParams>.size == expectedComposeSize else {
+        throw NSError(domain: "Blackhole", code: 107, userInfo: [NSLocalizedDescriptionKey: "ComposeParams size changed: \(MemoryLayout<ComposeParams>.size) != \(expectedComposeSize)"])
+    }
+    guard MemoryLayout<ComposeParams>.stride == expectedComposeStride else {
+        throw NSError(domain: "Blackhole", code: 108, userInfo: [NSLocalizedDescriptionKey: "ComposeParams stride changed: \(MemoryLayout<ComposeParams>.stride) != \(expectedComposeStride)"])
+    }
+    guard MemoryLayout<ComposeParams>.alignment == expectedComposeAlignment else {
+        throw NSError(domain: "Blackhole", code: 109, userInfo: [NSLocalizedDescriptionKey: "ComposeParams alignment changed: \(MemoryLayout<ComposeParams>.alignment) != \(expectedComposeAlignment)"])
+    }
+    let composeOffsets = composeParamsCriticalOffsets()
+    let expectedComposeOffsets: [String: Int] = [
+        "cameraFlags": 152,
+        "cameraSceneR": 160,
+        "cameraGlareParams": 304,
+        "eyeParams": 320,
+        "cameraPhotonParams": 336,
+        "cameraDiffractionParams": 352,
+    ]
+    for (name, expected) in expectedComposeOffsets {
+        guard composeOffsets[name] == expected else {
+            throw NSError(domain: "Blackhole", code: 110, userInfo: [NSLocalizedDescriptionKey: "ComposeParams offset \(name) changed: \(String(describing: composeOffsets[name])) != \(expected)"])
+        }
+    }
 }
 
 private func packedParamsCriticalOffsets() -> [String: Int] {
@@ -359,5 +385,16 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
         "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
         "motionBlurParams": MemoryLayout<PackedParams>.offset(of: \PackedParams.motionBlurParams) ?? -1,
+    ]
+}
+
+private func composeParamsCriticalOffsets() -> [String: Int] {
+    [
+        "cameraFlags": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraFlags) ?? -1,
+        "cameraSceneR": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraSceneR) ?? -1,
+        "cameraGlareParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraGlareParams) ?? -1,
+        "eyeParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.eyeParams) ?? -1,
+        "cameraPhotonParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraPhotonParams) ?? -1,
+        "cameraDiffractionParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraDiffractionParams) ?? -1,
     ]
 }

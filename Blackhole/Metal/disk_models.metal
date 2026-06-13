@@ -131,14 +131,17 @@ static inline float disk_eddington_atmosphere_temp(float hNorm, float tauMid,
 //
 // flowTimeOffset shifts the advection time (slow light: pass the per-sample
 // -|ct| / (sqrt(2) rs) so each fluid parcel is seen as it was when its light
-// left). diskTurbulence is the α proxy; P.he is the scale height H.
-static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
+// left). diskTurbulence is the alpha proxy. hScale is the local scale height H,
+// so volume models with radius-dependent hydrostatic thickness can use the same
+// H for vertical support, atmosphere depth, and MRI correlation/vertical gates.
+static inline float disk_mri_heating_factor_amp_h(float dxy, float phi, float z,
                                                   float amp, float flowTimeOffset,
+                                                  float hScale,
                                                   constant Params& P) {
     amp = clamp(amp, 0.0, 1.0);
     if (!(amp > 1e-6)) return 1.0;
 
-    float H   = max(P.he, 1e-6);
+    float H   = max(hScale, 1e-6);
     float rs  = max(P.rs, 1e-6);
     float rRs = max(dxy / rs, 1.0001);
 
@@ -184,6 +187,12 @@ static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
     float sigmaT = clamp(0.9 * amp * pow(HoverR, 0.25), 0.0, 0.55)
                  * radialGate * verticalGate;
     return clamp(exp(sigmaT * gauss - 0.5 * sigmaT * sigmaT), 0.42, 2.4);
+}
+
+static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
+                                                  float amp, float flowTimeOffset,
+                                                  constant Params& P) {
+    return disk_mri_heating_factor_amp_h(dxy, phi, z, amp, flowTimeOffset, P.he, P);
 }
 
 static inline float disk_mri_heating_factor(float dxy, float phi, float z, constant Params& P) {
