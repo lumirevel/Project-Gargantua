@@ -162,7 +162,9 @@ enum RenderComposeFullGPUPhase {
             cameraSensorParams: config.cameraSensorParams,
             cameraNoiseParams: config.cameraNoiseParams,
             cameraColorParams: config.cameraColorParams,
-            cameraGlareParams: config.cameraGlareParams
+            cameraGlareParams: config.cameraGlareParams,
+            cameraPhotonParams: config.cameraPhotonParams,
+            cameraDiffractionParams: config.cameraDiffractionParams
         )
 
         guard let composeParamBuf = device.makeBuffer(length: MemoryLayout<ComposeParams>.stride, options: .storageModeShared) else {
@@ -462,6 +464,19 @@ enum RenderComposeFullGPUPhase {
         composeParamsTemplate = solvedComposeParams
         print("compose cloud normalization q10=\(globalCloudQ10) q90=\(globalCloudQ90)")
         print("exposure=\(composeExposure) (auto=\(autoExposureEnabled), mode=gpu-full-compose)")
+
+        if let eye = RenderEyePhotometric.resolve(
+            config: config,
+            cameraModelID: composeCameraModelID,
+            p50: exposureDebugP50.map(Double.init),
+            p995: exposureDebugPHigh.map(Double.init)
+        ) {
+            composeExposure = Float(eye.ndLinear)
+            composeParamsTemplate.exposure = composeExposure
+            composeParamsTemplate.eyeParams = eye.eyeParams
+            updateBuffer(composeParamBuf, with: &composeParamsTemplate)
+            print(eye.summary)
+        }
 
         var rgb = [UInt8](repeating: 0, count: outWidth * outHeight * 3)
         let composePixelOps = outWidth * outHeight

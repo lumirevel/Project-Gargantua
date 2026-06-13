@@ -107,7 +107,9 @@ enum RenderComposeHDRIntermediatePhase {
             cameraSensorParams: config.cameraSensorParams,
             cameraNoiseParams: config.cameraNoiseParams,
             cameraColorParams: config.cameraColorParams,
-            cameraGlareParams: config.cameraGlareParams
+            cameraGlareParams: config.cameraGlareParams,
+            cameraPhotonParams: config.cameraPhotonParams,
+            cameraDiffractionParams: config.cameraDiffractionParams
         )
 
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -254,6 +256,18 @@ enum RenderComposeHDRIntermediatePhase {
         }
 
         print("exposure=\(resolvedComposeExposure) (auto=\(config.autoExposureEnabled), mode=hdr32-file)")
+
+        if let eye = RenderEyePhotometric.resolve(
+            config: config,
+            cameraModelID: config.composeCameraModelID,
+            p50: exposureDebugP50.map(Double.init),
+            p995: exposureDebugPHigh.map(Double.init)
+        ) {
+            resolvedComposeExposure = Float(eye.ndLinear)
+            composeParamsTemplate.exposure = resolvedComposeExposure
+            composeParamsTemplate.eyeParams = eye.eyeParams
+            print(eye.summary)
+        }
 
         let readHandle = try FileHandle(forReadingFrom: linearURL)
         defer { try? readHandle.close() }

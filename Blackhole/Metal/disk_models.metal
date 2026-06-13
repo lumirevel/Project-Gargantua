@@ -117,15 +117,24 @@ static inline float disk_eddington_atmosphere_temp(float hNorm, float tauMid,
 //   δT/T ~ (α × H/r)^(1/4)   (thermal fluctuation amplitude from stress-to-flux relation)
 //   turbulence is represented as deterministic disk-coordinate shearing modes,
 //   not as screen-space or material texture.  Modes live in (log r, phi) and
-//   advect with Omega_K(r), approximating large-scale MRI/stress fluctuations
-//   that survive photospheric averaging.
+//   advect with Omega_K(r), approximating MRI/stress fluctuations that survive
+//   photospheric averaging.
 //
-// diskTurbulence is used as an α proxy; P.he is the disk scale height H.
-// disk_mri_heating_factor: amplitude-parameterised version.
-// amp:  fluctuation strength (0–1). Controls δT/T directly so callers can pass
-//       either diskTurbulence or diskPrecisionTexture as appropriate.
+// Spectral content (same physics as the compose-side heating field): radial
+// wavenumbers log-uniform from disk-scale waves down to the MRI driving scale
+// (radial wavelength ~ 2H), shear anisotropy m ~ kr / elongation with
+// elongation 3-11 (lambda_phi/lambda_r), Kolmogorov E(k) ~ k^-5/3 under
+// log-density sampling (per-mode amplitude ~ k^-1/3), and a thermalization
+// smoothing of ~0.6 H/r. The field is mapped through the standard log-normal
+// intermittency closure for turbulent dissipation, so the heating is carried
+// by sheared filament tails rather than a flat mean.
+//
+// flowTimeOffset shifts the advection time (slow light: pass the per-sample
+// -|ct| / (sqrt(2) rs) so each fluid parcel is seen as it was when its light
+// left). diskTurbulence is the α proxy; P.he is the scale height H.
 static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
-                                                  float amp, constant Params& P) {
+                                                  float amp, float flowTimeOffset,
+                                                  constant Params& P) {
     amp = clamp(amp, 0.0, 1.0);
     if (!(amp > 1e-6)) return 1.0;
 
@@ -133,16 +142,16 @@ static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
     float rs  = max(P.rs, 1e-6);
     float rRs = max(dxy / rs, 1.0001);
 
-    float HoverR = max(H / max(dxy, 1e-6), 1e-4);
-    float deltaAmp = amp * pow(max(HoverR, 1e-4), 0.25);
+    float HoverR = clamp(H / max(dxy, 1e-6), 0.002, 0.25);
     float logR = log(max(rRs, 1.0001));
     float omegaK = 1.0 / max(pow(rRs, 1.5), 1e-6);
-    float shearPhi = phi - P.diskFlowTime * omegaK;
+    float timeRs = P.diskFlowTime + flowTimeOffset;
+    float sigmaLog = 0.6 * HoverR;
     constexpr float twoPi = 6.283185307179586;
 
     float fluct = 0.0;
     float norm2 = 0.0;
-    constexpr uint modeCount = 16u;
+    constexpr uint modeCount = 48u;
     for (uint i = 0u; i < modeCount; ++i) {
         float id = float(i) + 1.0;
         float h0 = fract(id * 0.754877666 + 0.113);
@@ -151,24 +160,34 @@ static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
         float h3 = fract(id * 0.318309886 + 0.173);
         float h4 = fract(id * 0.221033321 + 0.619);
 
-        float m = floor(mix(2.0, 13.999, h0));
-        float kr = mix(0.75, 10.0, h1) * ((h2 < 0.5) ? -1.0 : 1.0);
+        float kr = 0.85 * pow(140.0, h1); // log-uniform 0.85 .. ~119 per ln r
+        float elong = mix(3.0, 11.0, h0);
+        float m = max(2.0, floor(kr / elong + 0.5));
+        kr *= (h2 < 0.5) ? -1.0 : 1.0;
         float kMag = sqrt(kr * kr + m * m);
-        float ampMode = pow(max(kMag, 1.0), -0.8333333) * mix(0.78, 1.22, h3);
-        float phase = kr * logR + m * (shearPhi * mix(0.82, 1.18, h4)) + twoPi * h3;
+        float ampMode = pow(max(kMag, 1.0), -0.3333333) * mix(0.78, 1.22, h3);
+        ampMode *= exp(-0.5 * kr * kr * sigmaLog * sigmaLog);
+        // The advection-rate jitter must multiply only the time term: the
+        // azimuthal coefficient has to stay the integer harmonic m, or the
+        // field is not 2pi-periodic and a seam appears at phi = 0.
+        float phase = kr * logR + m * (phi - timeRs * omegaK * mix(0.82, 1.18, h4)) + twoPi * h3;
         fluct += ampMode * cos(phase);
         norm2 += ampMode * ampMode;
     }
 
-    fluct /= max(sqrt(norm2), 1e-6);
+    // Unit-variance Gaussian proxy (random-phase variance of sum(a_i cos) is
+    // sum(a_i^2)/2), then the mean-one log-normal dissipation closure with
+    // the alpha- and H/r-scaled fluctuation amplitude.
+    float gauss = fluct / max(sqrt(0.5 * norm2), 1e-6);
     float radialGate = smoothstep(1.05, 1.9, rRs) * (1.0 - smoothstep(10.0, 18.0, rRs));
     float verticalGate = exp(-z * z / max(2.0 * H * H, 1e-12));
-    float delta = fluct * deltaAmp * radialGate * verticalGate;
-    return clamp(exp(clamp(delta - 0.5 * deltaAmp * deltaAmp, -0.50, 0.50)), 0.55, 1.75);
+    float sigmaT = clamp(0.9 * amp * pow(HoverR, 0.25), 0.0, 0.55)
+                 * radialGate * verticalGate;
+    return clamp(exp(sigmaT * gauss - 0.5 * sigmaT * sigmaT), 0.42, 2.4);
 }
 
 static inline float disk_mri_heating_factor(float dxy, float phi, float z, constant Params& P) {
-    return disk_mri_heating_factor_amp(dxy, phi, z, clamp(P.diskTurbulence, 0.0, 1.0), P);
+    return disk_mri_heating_factor_amp(dxy, phi, z, clamp(P.diskTurbulence, 0.0, 1.0), 0.0, P);
 }
 
 // --- End physical atmosphere helpers -------------------------------------------
@@ -386,6 +405,26 @@ static inline float disk_visible_teff(float rEmitM, constant Params& P) {
         float p = clamp(P.visibleTeffP, 0.05, 3.0);
         float ratio = max(r / r0, 1e-6);
         return max(t0 * pow(ratio, -p), 1.0);
+    }
+
+    if (P.visibleTeffModel == 4u) {
+        // Slim disk (super-Eddington, advection-dominated; Abramowicz et al.
+        // 1988, Watarai et al. 2000): radiation is advected with the flow, so
+        // the effective temperature follows T_eff ~ r^-1/2 - much flatter
+        // than the NT r^-3/4 - and flattens to a plateau inside the photon
+        // trapping radius instead of dropping to zero at a zero-torque inner
+        // edge. T0 is the user-facing calibration at r0, the trapping
+        // plateau is anchored to ~1.5x the inner emission radius.
+        float t0 = max(P.visibleTeffT0, 100.0);
+        float r0 = max(P.visibleTeffR0, rsGeom * 1.0001);
+        float rTrap = max(1.5 * rIn, rsGeom * 1.05);
+        float x = max(r / r0, 1e-6);
+        float xTrap = max(rTrap / r0, 1e-6);
+        // Smooth r^-1/2 envelope with a flat core: (x^2 + xTrap^2)^(-1/4),
+        // normalized so T(r0) = t0 when r0 >> rTrap.
+        float norm = pow(1.0 + xTrap * xTrap, 0.25);
+        float tSlim = t0 * norm * pow(x * x + xTrap * xTrap, -0.25);
+        return max(tSlim, 1.0);
     }
 
     if (P.visibleTeffModel == 3u) {
@@ -959,7 +998,7 @@ static inline float disk_precision_texture_factor(float dxy, float phi, float z,
     if (!(amp > 1e-6)) return 1.0;
     // Pass diskPrecisionTexture as the amplitude so the caller-controlled strength
     // is preserved, while the spatial structure is now physically derived from MRI.
-    return disk_mri_heating_factor_amp(dxy, phi, z, amp, P);
+    return disk_mri_heating_factor_amp(dxy, phi, z, amp, 0.0, P);
 }
 
 static inline float disk_flow_radial_mix(float rRs, constant Params& P) {

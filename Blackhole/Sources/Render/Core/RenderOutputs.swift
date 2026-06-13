@@ -119,6 +119,12 @@ struct RenderMeta: Codable {
     var cameraISO: Double
     var cameraShutterSeconds: Double
     var photographicExposureScale: Double
+    var photographicCalibration: String
+    var cameraLuminanceScale: Double
+    var photometricSaturationLuminance: Double
+    var motionBlurSamples: Int
+    var motionBlurTimeLapse: Double
+    var shutterFlowTimeSpan: Double
     var backgroundMode: String
     var backgroundStarDensity: Double
     var backgroundStarStrength: Double
@@ -146,6 +152,9 @@ struct ExposureDiagnostics: Codable {
     var cameraReadNoise: Double
     var cameraShotNoise: Double
     var photographicExposureScale: Double?
+    var photographicCalibration: String?
+    var cameraLuminanceScale: Double?
+    var photometricSaturationLuminance: Double?
     var baseExposure: Double?
     var resolvedExposure: Double?
     var solveMode: String
@@ -340,6 +349,12 @@ enum RenderOutputs {
             cameraISO: Double(config.cameraISOArg),
             cameraShutterSeconds: Double(config.cameraShutterSecondsArg),
             photographicExposureScale: Double(config.photographicExposureScale),
+            photographicCalibration: config.photographicCalibrationName,
+            cameraLuminanceScale: config.cameraLuminanceScaleArg,
+            photometricSaturationLuminance: config.photometricSaturationLuminance,
+            motionBlurSamples: config.motionBlurSamplesArg,
+            motionBlurTimeLapse: config.motionBlurTimeLapseArg,
+            shutterFlowTimeSpan: config.shutterFlowTimeSpan,
             backgroundMode: config.backgroundModeName,
             backgroundStarDensity: Double(config.backgroundStarDensityArg),
             backgroundStarStrength: Double(config.backgroundStarStrengthArg),
@@ -467,6 +482,9 @@ enum RenderOutputs {
             cameraReadNoise: Double(config.cameraReadNoiseArg),
             cameraShotNoise: Double(config.cameraShotNoiseArg),
             photographicExposureScale: config.exposureModeID == 2 ? finite(config.photographicExposureScale) : nil,
+            photographicCalibration: config.exposureModeID == 2 ? config.photographicCalibrationName : nil,
+            cameraLuminanceScale: config.exposureModeID == 2 ? finiteDouble(config.cameraLuminanceScaleArg) : nil,
+            photometricSaturationLuminance: config.exposureModeID == 2 ? finiteDouble(config.photometricSaturationLuminance) : nil,
             baseExposure: finite(config.composeExposureBase),
             resolvedExposure: finite(resolvedExposure),
             solveMode: solveMode,

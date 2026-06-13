@@ -472,6 +472,7 @@ static inline float comp_wrap_pi(float x) {
 static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rNorm,
                                                                         float rInNorm,
                                                                         float phi,
+                                                                        float flowTimeOffset,
                                                                         constant Params& P)
 {
     ThinSpectralHeatingField f;
@@ -479,7 +480,7 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
     float rOutNorm = max(P.re / max(P.rs, 1e-6), rInNorm + 1.0);
     float logRMax = log(max(rOutNorm / max(rInNorm, 1e-4), 1.05));
-    float timeRs = P.diskFlowTime;
+    float timeRs = P.diskFlowTime + flowTimeOffset;
     float orbitalBoost = max(P.diskOrbitalBoost, 0.05);
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.4);
     // Keep the canonical source calibrated around the registry default
@@ -495,25 +496,41 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     // the stochastic skin emissivity modes; the analytic photosphere is kept
     // untouched. The floor tracks a fraction of H/R so sub-photospheric structure
     // is not allowed to masquerade as resolvable radiance.
-    float sigmaPhiSrc = clamp(max(2.60 * hOverR, 1.20 * projected), 0.012, 0.120);
-    float sigmaLogSrc = clamp(max(1.65 * hOverR, 0.78 * projected), 0.010, 0.095);
+    // Photospheric smoothing scale: radiative diffusion through the tau ~ 1
+    // layer thermalizes horizontal structure below roughly one scale height,
+    // so the source filter floor is ~(0.6-1.0) H/r, not several H/r.
+    // Radiation-MHD disk photospheres retain clear surface-brightness
+    // structure down to a few H (Hirose+ 2006, Jiang+ 2013); the previous
+    // 1.65-2.60 H/r sigmas erased everything finer than ~10 H. The projected
+    // pixel-footprint terms are unchanged: structure the camera cannot
+    // resolve still averages away honestly.
+    float sigmaPhiSrc = clamp(max(1.05 * hOverR, 1.20 * projected), 0.0050, 0.120);
+    float sigmaLogSrc = clamp(max(0.62 * hOverR, 0.78 * projected), 0.0040, 0.095);
     float raw = 0.0;
     float low = 0.0;
     float cloud = 0.0;
     float cloudNormW = 0.0;
-    float filament = 0.0;
-    float filamentNormW = 0.0;
     float shearArc = 0.0;
     float shearArcNormW = 0.0;
     float normRaw2 = 0.0;
     float normLow2 = 0.0;
-    constexpr uint modeCount = 64u;
+    constexpr uint modeCount = 96u;
     constexpr float twoPi = 6.283185307179586;
 
     // Disk-coordinate spectral heating field. This is a deterministic,
     // band-limited approximation to MRI-like shearing emissivity structure:
     // modes live in (log r, phi), are advected by local Keplerian shear, and feed
     // emissivity/temperature only. It is not screen-space or material texture.
+    //
+    // Spectral content: radial wavenumbers are log-uniform from disk-scale
+    // waves (kr ~ 0.85) down to the MRI driving scale of a thin disk
+    // (kr ~ 170 per ln r, i.e. radial wavelength ~ 2 H for H/r ~ 0.02);
+    // the photospheric/footprint Gaussian below truncates whatever a given
+    // H/r or camera resolution cannot physically support. Shear stretches
+    // turbulence azimuthally, so each mode's azimuthal harmonic follows
+    // m ~ kr / elongation with elongation ~ 3-11 (lambda_phi/lambda_r),
+    // matching the trailing, azimuthally elongated filaments seen in
+    // shearing-box and global radiation-MHD simulations.
     for (uint i = 0u; i < modeCount; ++i) {
         float id = float(i) + 1.0;
         float h0 = fract(id * 0.754877666 + 0.113);
@@ -523,12 +540,15 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         float h4 = fract(id * 0.221033321 + 0.619);
         float h5 = fract(id * 0.141421356 + 0.347);
 
-        float m = floor(mix(2.0, 24.999, h0));
-        float kr = mix(0.85, 18.0, h1);
+        float kr = 0.85 * pow(200.0, h1); // log-uniform 0.85 .. 170 per ln r
+        float elongation = mix(3.0, 11.0, h0);
+        float m = max(2.0, floor(kr / elongation + 0.5));
         kr *= (h2 < 0.5) ? -1.0 : 1.0;
         float kMag = sqrt(kr * kr + m * m);
-        // Kolmogorov-like power spectrum: power ~ k^-5/3, amplitude ~ k^-5/6.
-        float amp = pow(max(kMag, 1.0), -0.8333333) * mix(0.72, 1.28, h3);
+        // Kolmogorov energy spectrum E(k) ~ k^-5/3 with log-uniform mode
+        // density (dk ~ k): per-mode energy ~ E(k)*k ~ k^-2/3, so the
+        // per-mode amplitude falls as k^-1/3.
+        float amp = pow(max(kMag, 1.0), -0.3333333) * mix(0.72, 1.28, h3);
         float footprintFilter = exp(-0.5 * (
             kr * kr * sigmaLogSrc * sigmaLogSrc +
             m * m * sigmaPhiSrc * sigmaPhiSrc
@@ -547,16 +567,6 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
         float lowGate = smoothstep(0.0, 1.0, 1.0 - clamp((abs(kr) + 0.60 * m - 3.5) / 7.0, 0.0, 1.0));
         low += amp * lowGate * v;
         normLow2 += amp * amp * lowGate * lowGate;
-
-        // Positive high-frequency ridges from the same sheared spectral basis.
-        // These are emissivity/heating filaments in disk coordinates, not a
-        // texture channel. The high-mode gate suppresses broad zonal waves so the
-        // body remains clean and only the hot skin receives narrow activity.
-        float highGate = smoothstep(5.5, 14.0, abs(kr) + 0.85 * m);
-        float ridge = pow(max(0.0, 0.5 + 0.5 * cos(phase)), 7.0);
-        float ridgeAmp = amp * highGate;
-        filament += ridgeAmp * ridge;
-        filamentNormW += ridgeAmp;
     }
 
     // Positive "cloud packet" heating field in disk coordinates. These are not
@@ -642,10 +652,20 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float cloudActivity = smoothstep(0.18 - 0.035 * turbulenceTune,
                                      0.82 - 0.060 * turbulenceTune,
                                      cloudNorm);
-    float filamentNorm = filament / max(0.205 * filamentNormW, 1e-6);
-    float filamentActivity = smoothstep(0.16 - 0.030 * turbulenceTune,
-                                        0.92 - 0.060 * turbulenceTune,
-                                        filamentNorm);
+    // Turbulent dissipation intermittency. Summing many independent positive
+    // ridge modes statistically flattens (~1/sqrt(N)), which is why the old
+    // mean-combined filament channel saturated its activity gate into a
+    // structureless constant. Cascade dissipation is a multiplicative process:
+    // model it as a mean-one log-normal of the unit-variance sheared spectral
+    // field (random-phase variance of sum(a_i cos) is sum(a_i^2)/2), and let
+    // the filament channel select its strong tail. This is the standard
+    // log-normal intermittency closure for turbulent dissipation, and the
+    // surviving structure inherits the sheared, azimuthally elongated, fine
+    // -scale anisotropy of the spectral basis above.
+    float rawGauss = raw / max(sqrt(0.5 * normRaw2), 1e-6);
+    float sigmaQ = 0.70 + 0.25 * turbulenceTune;
+    float dissip = exp(clamp(sigmaQ * rawGauss - 0.5 * sigmaQ * sigmaQ, -4.0, 3.0));
+    float filamentActivity = smoothstep(0.92, 1.95, dissip);
     float shearArcNorm = shearArc / max(0.062 * shearArcNormW, 1e-6);
     float shearArcActivity = smoothstep(0.13 - 0.035 * turbulenceTune,
                                         0.66 - 0.065 * turbulenceTune,
@@ -656,8 +676,11 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     f.high = clamp(max(highNorm, 0.0) * (1.0 + 0.10 * turbulenceTune), 0.0, 2.0);
     f.cloud = clamp(cloudActivity, 0.0, 1.0);
     f.filament = clamp(max(filamentActivity, 0.72 * shearArcActivity + 0.28 * filamentActivity), 0.0, 1.0);
-    float highActivity = smoothstep(0.38 - 0.035 * turbulenceTune,
-                                    1.12 - 0.055 * turbulenceTune,
+    // Window calibrated to the residual high-pass field's actual deviation
+    // (sigma ~ 0.22-0.31 across radii); the old (0.38, 1.12) window sat above
+    // nearly the whole distribution and pinned this channel at ~0.
+    float highActivity = smoothstep(0.08 - 0.010 * turbulenceTune,
+                                    0.50 - 0.040 * turbulenceTune,
                                     f.high);
     // The canonical skin should be positive emissive dissipation, not a broad
     // surface texture. Bias activity toward high/filament components while
@@ -873,6 +896,15 @@ struct ThinSpectralEmission {
     float skinRatio;
     float coronaRatio;
     float atlasActivity;
+    float densityProxy;
+    float temperatureProxy;
+    float emissivityProxy;
+    float opacityProxy;
+    float tauProxy;
+    float transferSaturation;
+    float spiralProxy;
+    float clumpProxy;
+    float hotCrescentProxy;
 };
 
 static inline float3 comp_visible_blackbody_rgb_from_observed_temp(float tObserved,
@@ -887,11 +919,17 @@ static inline float3 comp_visible_blackbody_rgb_from_observed_temp(float tObserv
     float cZ = 0.0;
     bool kahan = (C.precisionMode != 0u);
     float step = max(C.spectralStep, 0.25);
+    // dLambda in meters: with it, Y is SI spectral radiance integrated over
+    // wavelength (W m^-2 sr^-1) and 683.002 * Y is luminance in cd/m^2,
+    // matching comp_visible_xyz_from_spectrum. Without it this path was a
+    // factor 1/dLambda (~2e8 at the 5 nm default) above SI, which broke the
+    // absolute photometric camera/eye calibration for the canonical source.
+    float dLamM = step * 1e-9;
     for (float lam = 380.0; lam <= 750.001; lam += step) {
         float lamM = lam * 1e-9;
         float xBar, yBar, zBar;
         comp_cie_xyz_bar(lam, xBar, yBar, zBar);
-        float b = comp_planck_lambda(lamM, tObserved) * colorDilution;
+        float b = comp_planck_lambda(lamM, tObserved) * colorDilution * dLamM;
         if (kahan) {
             float yx = b * xBar - cX;
             float tx = X + yx;
@@ -955,6 +993,15 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     e.skinRatio = 0.0;
     e.coronaRatio = 0.0;
     e.atlasActivity = 0.0;
+    e.densityProxy = 0.0;
+    e.temperatureProxy = 0.0;
+    e.emissivityProxy = 0.0;
+    e.opacityProxy = 0.0;
+    e.tauProxy = 0.0;
+    e.transferSaturation = 0.0;
+    e.spiralProxy = 0.0;
+    e.clumpProxy = 0.0;
+    e.hotCrescentProxy = 0.0;
     float fColUsed = 1.0;
     float atlasTempRatio = 1.0;
     bool thinVisibleReference = false;
@@ -963,7 +1010,7 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
         float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
         float fluxTaper = comp_thin_outer_flux_taper(rNorm, P);
         float teff = thin_teff(rNorm, P);
-        if (P.visibleTeffModel == 3u) {
+        if ((P.visibleTeffModel == 3u || P.visibleTeffModel == 4u)) {
             thinVisibleReference = true;
             // Thin visible reference mode: use the NT-like flux shape normalized
             // by user-facing T0/r0 instead of mdot/geometry units. Ray-disk
@@ -999,7 +1046,7 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
     float mu = abs(dWorld.z) / max(length(dWorld), 1e-30);
     e.rgb *= comp_limb_factor(mu, P);
     e.bodyRgb = e.rgb;
-    if (thinVisibleReference && C.realismProfile == 5u) {
+    if (thinVisibleReference && (C.realismProfile == 5u || C.realismProfile == 6u)) {
         float rNorm = comp_emit_radius_norm(rec, P);
         float rs = max(P.rs, 1e-6);
         float rInNorm = max(disk_inner_radius_m(P) / rs, 1.0001);
@@ -1007,103 +1054,233 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
         float uOuter = clamp((rNorm - rInNorm) / max(rOutNorm - rInNorm, 1e-4), 0.0, 1.0);
         float phi = comp_emit_phi(rec);
         float bodyLum0 = dot(max(e.bodyRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
-        bool validDiskSource = isfinite(rNorm) && isfinite(phi)
-                            && rNorm > rInNorm && rNorm < rOutNorm
-                            && bodyLum0 > 1e-30;
+        bool validDiskSource = rNorm > rInNorm && rNorm < rOutNorm && bodyLum0 > 1e-30;
 
         // Plausible-disk-v1 in the thin reference path:
         // keep the analytic photosphere as the luminous energy backbone, then
         // add positive disk-coordinate heating packets as a hot skin. This is
         // source emissivity, not albedo/normal/screen-space texture.
         if (validDiskSource) {
-            ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(rNorm, rInNorm, phi, P);
             float turbulence = clamp(P.diskTurbulence, 0.0, 2.4);
             float turbulenceTune = clamp((turbulence - 1.6) / 0.8, -1.0, 1.0);
             float radialGate = smoothstep(rInNorm + 0.18, rInNorm + 1.20, rNorm)
                              * (1.0 - smoothstep(0.68, 0.98, uOuter));
+            bool pcdMode = (C.realismProfile == 6u);
+            float pcdDensityExp = clamp(P.pcdSourceA.x, 0.3, 3.0);
+            float pcdEmissivityScale = clamp(P.pcdSourceA.y, 0.1, 5.0);
+            float pcdOpacityScale = clamp(P.pcdSourceA.z, 0.0, 6.0);
+            float pcdStructureScale = clamp(P.pcdSourceB.x, 0.2, 3.0);
+            float pcdSpiralAmp = clamp(P.pcdSourceB.y, 0.0, 1.0);
+            float pcdSpiralPitch = clamp(P.pcdSourceB.z, 0.5, 14.0);
+            float pcdClumpContrast = clamp(P.pcdSourceB.w, 0.0, 1.0);
+            float pcdHotCrescent = clamp(P.pcdSourceC.x, 0.0, 1.0);
+            float rRatio = max(rNorm / max(rInNorm, 1e-4), 1.0);
+            float pcdDensity = clamp(radialGate * exp(-pcdDensityExp * log(rRatio)) * max(comp_thin_outer_flux_taper(rNorm, P), 0.0) * 1.32,
+                                     0.0,
+                                     1.0);
+            float pcdLogR = log(max(rRatio, 1.0001));
+            float pcdOmega = max(P.diskOrbitalBoost, 0.05) * pow(max(rNorm, 1.0), -1.5);
+            float pcdPhase = 6.28318530718 * fract(P.pcdSourceA.w * 0.013579 + 0.173);
             float pathRsLocal = abs(rec.ct) / max(P.rs, 1e-6);
             // Higher-order lensed images should preserve the analytic body but
             // average unresolved skin heating. Otherwise the same source
             // fluctuation is stretched into contour-like caustic strokes.
             float unresolvedAverage = mix(1.0, 0.36, smoothstep(42.0, 118.0, pathRsLocal));
-
-            float activityBase = clamp(0.60 * heat.activity + 0.14 * heat.cloud + 0.26 * heat.filament,
-                                       0.0, 1.0);
-            // Make skin support more intermittent without changing it into a
-            // subtractive texture. The skin still receives positive emissivity
-            // only; this remaps broad heating into localized dissipation patches
-            // while preserving the clean thermal body.
-            float activityIntermittent = pow(max(activityBase, 0.0), 1.58);
-            float filamentSupport = smoothstep(0.22, 0.86, max(heat.cloud, heat.filament));
-            float activity = clamp(activityIntermittent
-                                 * (0.72 + 0.28 * filamentSupport)
-                                 * radialGate
-                                 * unresolvedAverage, 0.0, 1.0);
-
-            float bodyHeat = 1.0 + clamp((0.010 + 0.018 * turbulence) * heat.low, 0.0, 0.055);
-
             float gBoost = smoothstep(0.85, 1.65, e.g);
-            float fCorona = radialGate
-                           * exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82))
-                           * (0.024 + 0.045 * heat.cloud + 0.024 * heat.filament)
-                           * (0.55 + 0.45 * activity)
-                           * (1.0 + 0.35 * turbulenceTune);
-            fCorona = clamp(fCorona, 0.0, 0.045);
-
-            float fSkin = radialGate
-                        * unresolvedAverage
-                        * (0.004
-                         + 0.520 * activity
-                         + 0.060 * heat.cloud * activity
-                         + 0.320 * heat.filament * smoothstep(0.06, 0.46, activity))
-                        * (1.0 + 0.18 * turbulenceTune)
-                        * (0.82 + 0.18 * gBoost);
-            fSkin = clamp(fSkin, 0.0, 0.180);
-            float fBody = clamp(1.0 - fSkin - fCorona, 0.75, 1.0);
-            float fNorm = max(fBody + fSkin + fCorona, 1e-6);
-            fBody /= fNorm;
-            fSkin /= fNorm;
-            fCorona /= fNorm;
-
+            float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
             // Energy-budgeted canonical source: redistribute the same local disk
             // flux into a photospheric body, positive hot skin, and weak corona.
             // This avoids reintroducing a global smooth floor while preventing the
             // skin branch from merely adding texture on top of a saturated body.
             float3 bodyShape = e.bodyRgb / max(bodyLum0, 1e-30);
-            e.bodyRgb = bodyShape * bodyLum0 * bodyHeat * fBody;
 
-            float skinObservedTemp = e.tObserved * (1.58
-                                                 + (1.94 + 0.12 * turbulenceTune) * activity
-                                                 + 0.34 * heat.filament
-                                                 + 0.10 * gBoost);
-            float3 skinShape = comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
-                             * comp_limb_factor(mu, P);
-            float skinLum = dot(max(skinShape, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
-            skinShape /= max(skinLum, 1e-30);
-            // The branch split is an energy-budget proxy, but the sensor sees a
-            // visible band. A hotter skin should therefore change not only hue
-            // but also visible-band radiance efficiency. Keep this bounded so a
-            // high-temperature filament cannot become a new white membrane.
-            float skinVisibleGain = clamp(pow(max(skinLum / max(bodyLum0, 1e-30), 1e-6), 0.16),
-                                          0.86,
-                                          1.18);
-            // Local magnetic/reconnection heating can raise the visible skin
-            // above a pure photospheric flux split. Keep it bounded and driven
-            // by positive disk-coordinate activity so it reads as self-emissive
-            // hot plasma, not subtractive surface texture.
-            float skinDissipationLift = 1.0 + clamp(radialGate
-                                                  * unresolvedAverage
-                                                  * (0.56 * activity
-                                                   + 0.04 * heat.cloud
-                                                   + 0.56 * heat.filament),
+            // Shutter-time temporal integration. Geodesics, the stationary flow
+            // field, the g-factor, and the analytic photosphere are
+            // time-independent; only the advected heating pattern moves during
+            // the exposure, so the shutter average is taken over the resulting
+            // radiance branches (not over the heating field, which would skip
+            // the nonlinear field-to-radiance response).
+            uint mbSamples = 1u;
+            float mbSpan = max(P.motionBlurParams.y, 0.0);
+            if (P.motionBlurParams.x > 1.5 && mbSpan > 1e-9) {
+                mbSamples = uint(clamp(P.motionBlurParams.x, 1.0, 64.0));
+            }
+            float invSamples = 1.0 / float(mbSamples);
+
+            float3 bodyAcc = float3(0.0);
+            float3 skinAcc = float3(0.0);
+            float3 coronaAcc = float3(0.0);
+            float activityAcc = 0.0;
+            float emissivityProxyAcc = 0.0;
+            float opacityProxyAcc = 0.0;
+            float tauProxyAcc = 0.0;
+            float transferSaturationAcc = 0.0;
+            float spiralProxyAcc = 0.0;
+            float clumpProxyAcc = 0.0;
+            float hotCrescentProxyAcc = 0.0;
+
+            // Slow light: the photons arriving now left the disk one
+            // light-travel time ago, and that time differs across the image
+            // (rs/c is ~0.5 s for the geometry-default hole, path-length
+            // spreads are tens of rs, the ISCO period is ~23 s - the same
+            // order). Offsetting the emission time by the per-hit path time
+            // |ct|/c (one flow-time unit = sqrt(2) rs / c) replaces the
+            // fast-light approximation for the time-dependent source: the
+            // higher-order lensed images now show the turbulent pattern as it
+            // was when their longer paths left the disk - the photon-ring
+            // time echo. The constant camera-distance part is a harmless
+            // common-mode phase.
+            float lightTravelOffset = -abs(rec.ct) / (1.4142135624 * max(P.rs, 1e-6));
+
+            for (uint mb = 0u; mb < mbSamples; ++mb) {
+                float flowOffset = lightTravelOffset
+                    + ((mbSamples > 1u)
+                        ? mbSpan * ((float(mb) + 0.5) * invSamples - 0.5)
+                        : 0.0);
+                ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(rNorm, rInNorm, phi, flowOffset, P);
+                float pcdSpiral = clamp(pcdSpiralAmp
+                                      * comp_periodic01(cos(phi - pcdOmega * (P.diskFlowTime + flowOffset) - pcdSpiralPitch * pcdLogR + pcdPhase))
+                                      * radialGate, 0.0, 1.0);
+                float pcdClump = clamp(pcdClumpContrast * max(heat.cloud, heat.filament) * radialGate, 0.0, 1.0);
+                float pcdHot = 0.0;
+
+                float activityBase = clamp(0.60 * heat.activity + 0.14 * heat.cloud + 0.26 * heat.filament,
+                                           0.0, 1.0);
+                // Make skin support more intermittent without changing it into a
+                // subtractive texture. The skin still receives positive emissivity
+                // only; this remaps broad heating into localized dissipation patches
+                // while preserving the clean thermal body.
+                float activityIntermittent = pow(max(activityBase, 0.0), 1.58);
+                float filamentSupport = smoothstep(0.22, 0.86, max(heat.cloud, heat.filament));
+                float activity = clamp(activityIntermittent
+                                     * (0.72 + 0.28 * filamentSupport)
+                                     * radialGate
+                                     * unresolvedAverage, 0.0, 1.0);
+                if (pcdMode) {
+                    activity = clamp(pcdStructureScale
+                                   * (0.42 * activity
+                                    + 0.24 * pcdSpiral
+                                    + 0.24 * pcdClump
+                                    + 0.10 * heat.filament)
+                                   * radialGate, 0.0, 1.0);
+                }
+                float pcdPositiveHeatingLift = 1.0;
+                if (pcdMode) {
+                    // Profile 6 is a physics-constrained surrogate, not a material
+                    // texture. Dense spiral/clump/hot-crescent support represents
+                    // extra local dissipation in the emitting layer, so it may add
+                    // radiance but must not subtract from or carve the photosphere.
+                    pcdPositiveHeatingLift += clamp(radialGate
+                                                  * (0.96 * activity
+                                                   + 0.26 * pcdSpiral
+                                                   + 0.36 * pcdClump
+                                                   + 0.52 * pcdHot),
                                                   0.0,
-                                                  0.92);
-            e.skinRgb += skinShape * bodyLum0 * bodyHeat * fSkin * skinDissipationLift * skinVisibleGain;
-            float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
-            float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
-            float coronaShapeLum = dot(coronaShape, float3(0.2126, 0.7152, 0.0722));
-            coronaShape /= max(coronaShapeLum, 1.0e-6);
-            e.coronaRgb += coronaShape * bodyLum0 * bodyHeat * fCorona * (0.85 + 0.15 * innerWeight);
+                                                  1.65);
+                }
+
+                float bodyHeat = 1.0 + clamp((0.010 + 0.018 * turbulence) * heat.low, 0.0, 0.055);
+
+                pcdHot = clamp(pcdHotCrescent * innerWeight * radialGate * smoothstep(1.0, 1.55, e.g), 0.0, 1.0);
+                float fCorona = radialGate
+                               * innerWeight
+                               * (0.024 + 0.045 * heat.cloud + 0.024 * heat.filament)
+                               * (0.55 + 0.45 * activity)
+                               * (1.0 + 0.35 * turbulenceTune);
+                if (pcdMode) {
+                    fCorona += 0.020 * pcdHot;
+                }
+                fCorona = clamp(fCorona, 0.0, 0.045);
+
+                float fSkin = radialGate
+                            * unresolvedAverage
+                            * (0.004
+                             + 0.520 * activity
+                             + 0.060 * heat.cloud * activity
+                             + 0.320 * heat.filament * smoothstep(0.06, 0.46, activity))
+                            * (1.0 + 0.18 * turbulenceTune)
+                            * (0.82 + 0.18 * gBoost);
+                if (pcdMode) {
+                    fSkin *= 1.0 + 0.85 * activity + 0.35 * pcdSpiral + 0.25 * pcdClump + 0.20 * pcdHot;
+                    fSkin += radialGate * unresolvedAverage
+                           * (0.040 * activity
+                            + 0.020 * pcdSpiral
+                            + 0.032 * pcdClump
+                            + 0.028 * pcdHot);
+                }
+                fSkin = clamp(fSkin, 0.0, pcdMode ? 0.480 : 0.180);
+                float fBody = clamp(1.0 - fSkin - fCorona, pcdMode ? 0.52 : 0.75, 1.0);
+                float fNorm = max(fBody + fSkin + fCorona, 1e-6);
+                fBody /= fNorm;
+                fSkin /= fNorm;
+                fCorona /= fNorm;
+
+                float sourceScale = pcdMode ? (pcdEmissivityScale * max(pcdDensity, 0.05 * radialGate) * pcdPositiveHeatingLift) : 1.0;
+                bodyAcc += bodyShape * bodyLum0 * bodyHeat * sourceScale * fBody;
+
+                float skinObservedTemp = e.tObserved * (1.58
+                                                     + (1.94 + 0.12 * turbulenceTune) * activity
+                                                     + 0.34 * heat.filament
+                                                     + 0.10 * gBoost);
+                float3 skinShape = comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
+                                 * comp_limb_factor(mu, P);
+                float skinLum = dot(max(skinShape, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+                skinShape /= max(skinLum, 1e-30);
+                // The branch split is an energy-budget proxy, but the sensor sees a
+                // visible band. A hotter skin should therefore change not only hue
+                // but also visible-band radiance efficiency. Keep this bounded so a
+                // high-temperature filament cannot become a new white membrane.
+                float skinVisibleGain = clamp(pow(max(skinLum / max(bodyLum0, 1e-30), 1e-6), 0.16),
+                                              0.86,
+                                              1.18);
+                // Local magnetic/reconnection heating can raise the visible skin
+                // above a pure photospheric flux split. Keep it bounded and driven
+                // by positive disk-coordinate activity so it reads as self-emissive
+                // hot plasma, not subtractive surface texture.
+                float skinDissipationLift = 1.0 + clamp(radialGate
+                                                      * unresolvedAverage
+                                                      * (0.56 * activity
+                                                       + 0.04 * heat.cloud
+                                                       + 0.56 * heat.filament),
+                                                      0.0,
+                                                      pcdMode ? 1.85 : 0.92);
+                if (pcdMode) {
+                    skinDissipationLift *= 1.0 + clamp(radialGate
+                                                     * (0.55 * activity
+                                                      + 0.18 * pcdSpiral
+                                                      + 0.30 * pcdClump
+                                                      + 0.42 * pcdHot),
+                                                     0.0,
+                                                     1.20);
+                }
+                skinAcc += skinShape * bodyLum0 * bodyHeat * sourceScale * fSkin * skinDissipationLift * skinVisibleGain;
+                float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
+                float coronaShapeLum = dot(coronaShape, float3(0.2126, 0.7152, 0.0722));
+                coronaShape /= max(coronaShapeLum, 1.0e-6);
+                coronaAcc += coronaShape * bodyLum0 * bodyHeat * sourceScale * fCorona * (0.85 + 0.15 * innerWeight);
+
+                activityAcc += activity;
+                if (pcdMode) {
+                    float pcdOpacity = pcdOpacityScale * pcdDensity * (0.55 + 0.30 * pcdSpiral + 0.15 * pcdClump);
+                    float pcdTau = clamp(pcdOpacity / max(mu, 0.22), 0.0, 4.0);
+                    emissivityProxyAcc += clamp(pcdEmissivityScale * pcdDensity * (1.0 + 0.55 * activity), 0.0, 2.2);
+                    opacityProxyAcc += clamp(pcdOpacity, 0.0, 4.0);
+                    tauProxyAcc += pcdTau;
+                    // The visible thin-disk surrogate is intentionally mostly thin;
+                    // use lower tau thresholds for the saturation diagnostic so
+                    // high/low opacity controls are visible before the source is
+                    // numerically blacked out by a thick-screen approximation.
+                    float opacityScaleSupport = smoothstep(0.45, 1.80, pcdOpacityScale);
+                    transferSaturationAcc += radialGate * opacityScaleSupport * smoothstep(0.15, 0.30, pcdTau);
+                    spiralProxyAcc += pcdSpiral;
+                    clumpProxyAcc += pcdClump;
+                    hotCrescentProxyAcc += pcdHot;
+                }
+            }
+
+            e.bodyRgb = bodyAcc * invSamples;
+            e.skinRgb += skinAcc * invSamples;
+            e.coronaRgb += coronaAcc * invSamples;
             e.rgb = e.bodyRgb + e.skinRgb + e.coronaRgb;
             float lumBody = dot(max(e.bodyRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
             float lumSkin = dot(max(e.skinRgb, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
@@ -1112,7 +1289,18 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             e.bodyRatio = lumBody / lumTotal;
             e.skinRatio = lumSkin / lumTotal;
             e.coronaRatio = lumCorona / lumTotal;
-            e.atlasActivity = max(e.atlasActivity, activity);
+            e.atlasActivity = max(e.atlasActivity, activityAcc * invSamples);
+            if (pcdMode) {
+                e.densityProxy = pcdDensity;
+                e.temperatureProxy = clamp((log(max(e.tObserved, 1.0)) * 0.4342944819032518 - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0);
+                e.emissivityProxy = emissivityProxyAcc * invSamples;
+                e.opacityProxy = opacityProxyAcc * invSamples;
+                e.tauProxy = tauProxyAcc * invSamples;
+                e.transferSaturation = transferSaturationAcc * invSamples;
+                e.spiralProxy = spiralProxyAcc * invSamples;
+                e.clumpProxy = clumpProxyAcc * invSamples;
+                e.hotCrescentProxy = hotCrescentProxyAcc * invSamples;
+            }
         }
     }
     if (thinVisibleReference && P.diskAtlasMode != 0u && P.diskAtlasDensityBlend > 1e-5) {
@@ -1196,7 +1384,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
     float tempShift = micro.tempShift;
     float fCol = (C.realismProfile >= 2u || comp_thin_hybrid_debug_active(C)) ? max(P.diskColorFactor, 1.24) : max(P.diskColorFactor, 1.0);
     float fluxTaper = comp_thin_outer_flux_taper(s.rNorm, P);
-    float baseTeff = ((P.visibleTeffModel == 3u) ? disk_visible_teff(s.rNorm * max(P.rs, 1e-6), P) : thin_teff(s.rNorm, P))
+    float baseTeff = (((P.visibleTeffModel == 3u || P.visibleTeffModel == 4u)) ? disk_visible_teff(s.rNorm * max(P.rs, 1e-6), P) : thin_teff(s.rNorm, P))
                    * pow(max(fluxTaper, 0.0), 0.25);
     float atlasTemp = comp_atlas_temperature_ratio(rec.T, baseTeff, P);
     s.observedTemp = max(baseTeff * atlasTemp * fCol * s.g * tempShift, 1.0);
@@ -1255,7 +1443,7 @@ static inline ThinHybridRealismSample comp_thin_hybrid_sample(const CollisionInf
         // backbone. A many-mode disk-coordinate spectral heating field splits
         // slow body heating from positive high-frequency skin activity. This is
         // source emissivity, not albedo/normal/screen texture.
-        ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(s.rNorm, rInNorm, s.phi, P);
+        ThinSpectralHeatingField heat = comp_thin_spectral_heating_field(s.rNorm, rInNorm, s.phi, 0.0, P);
         float sigmaBody = clamp(0.020 + 0.020 * P.diskTurbulence, 0.010, 0.060);
         float bodyHeat = exp(clamp(sigmaBody * heat.low - 0.5 * sigmaBody * sigmaBody, -0.10, 0.12));
         float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
@@ -1399,6 +1587,7 @@ static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
         return comp_debug_ramp(t);
     }
     if (C.analysisMode == 32u) {
+        if (C.realismProfile == 6u) return comp_debug_ramp(clamp(thin.emissivityProxy / 2.2, 0.0, 1.0));
         float e = comp_thin_nt_emissivity_norm(rNorm, P) * comp_thin_outer_flux_taper(rNorm, P);
         return float3(clamp(e / 2.2, 0.0, 1.0));
     }
@@ -1410,22 +1599,38 @@ static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
     if (C.analysisMode == 34u) return thin.bodyRgb * comp_canonical_abs_branch_debug_scale(); // absolute body radiance preview
     if (C.analysisMode == 35u) return thin.skinRgb * comp_canonical_abs_branch_debug_scale(); // absolute positive hot-skin radiance preview
     if (C.analysisMode == 36u) {
-        if (C.realismProfile == 5u) return thin.coronaRgb * comp_canonical_abs_branch_debug_scale(); // absolute weak corona radiance preview
+        if (C.realismProfile == 5u || C.realismProfile == 6u) return thin.coronaRgb * comp_canonical_abs_branch_debug_scale(); // absolute weak corona radiance preview
         return comp_debug_ramp(clamp(thin.atlasActivity, 0.0, 1.0));
     }
     if (C.analysisMode == 37u) {
-        if (C.realismProfile == 5u) {
+        if (C.realismProfile == 5u || C.realismProfile == 6u) {
             return clamp(float3(thin.bodyRatio, thin.skinRatio, thin.coronaRatio), 0.0, 1.0);
         }
         return comp_debug_ramp(clamp(thin.skinRatio / 0.25, 0.0, 1.0));
     }
     if (C.analysisMode == 38u) return thin.rgb * comp_canonical_abs_branch_debug_scale(); // absolute total radiance preview, pre-tone-map
     if (C.analysisMode == 39u) {
+        if (C.realismProfile == 6u) return comp_debug_ramp(thin.temperatureProxy);
         float lt = log(max(thin.tObserved, 1.0)) * 0.4342944819032518;
         return comp_debug_ramp(clamp((lt - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0));
     }
+    if (C.analysisMode == 40u && C.realismProfile == 6u) {
+        return comp_debug_ramp(clamp(thin.tauProxy / 4.0, 0.0, 1.0));
+    }
+    if (C.analysisMode == 41u && C.realismProfile == 6u) {
+        return comp_debug_ramp(clamp(thin.densityProxy, 0.0, 1.0));
+    }
     if (C.analysisMode == 42u && C.realismProfile == 5u) {
         return float3(clamp(thin.atlasActivity, 0.0, 1.0));
+    }
+    if (C.analysisMode == 42u && C.realismProfile == 6u) {
+        uint field = uint(clamp(P.pcdSourceC.y, 0.0, 5.0) + 0.5);
+        if (field == 1u) return comp_debug_ramp(clamp(thin.opacityProxy / 4.0, 0.0, 1.0));
+        if (field == 2u) return float3(clamp(thin.transferSaturation, 0.0, 1.0));
+        if (field == 3u) return comp_debug_ramp(clamp(thin.spiralProxy, 0.0, 1.0));
+        if (field == 4u) return comp_debug_ramp(clamp(thin.clumpProxy, 0.0, 1.0));
+        if (field == 5u) return comp_debug_ramp(clamp(thin.hotCrescentProxy, 0.0, 1.0));
+        return comp_debug_ramp(clamp(thin.atlasActivity, 0.0, 1.0));
     }
 
     // Remaining atmosphere/corona/tau/density maps are hybrid presentation
@@ -1843,11 +2048,15 @@ static inline float3 comp_linear_rgb_precloud_legacy_fast(float T_emit,
     float cZ = 0.0;
     bool kahan = (C.precisionMode != 0u);
     float step = max(C.spectralStep, 0.25);
+    // dLambda in meters keeps Y in SI integrated spectral radiance,
+    // consistent with the other spectral paths and the absolute photometric
+    // calibration.
+    float dLamM_legacy = step * 1e-9;
     for (float lam = 380.0; lam <= 750.001; lam += step) {
         float lam_m = lam * 1e-9;
         float x_bar, y_bar, z_bar;
         comp_cie_xyz_bar(lam, x_bar, y_bar, z_bar);
-        float b = comp_planck_lambda(lam_m, T_obs);
+        float b = comp_planck_lambda(lam_m, T_obs) * dLamM_legacy;
         if (kahan) {
             float yx = b * x_bar - cX;
             float tx = X + yx;
@@ -1909,7 +2118,7 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
     }
 
     float3 rgb = comp_linear_rgb_precloud(rec, P, C);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && comp_thin_physical_active(C)) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && comp_thin_physical_active(C)) {
         // Thin visible reference is a source-formation path: the photospheric
         // body and optional atlas hot-skin perturbation are already encoded in
         // comp_thin_spectral_emission. Do not run the legacy cloud/noise
@@ -2100,6 +2309,55 @@ static inline float3 comp_background_linear(float3 dir, constant ComposeParams& 
     // Background is authored in post-exposure-like domain for stable tuning.
     float invExposure = min(1.0 / max(C.exposure, 1e-30), 5.0e18);
     return displayLike * invExposure;
+}
+
+// Photon-statistics sensor noise, applied to the linear scene value at the
+// full input resolution (each photosite gets independent statistics; the
+// downsample average then behaves like binning, reducing noise by sqrt(N)).
+//
+// With the ISO 12232 absolute calibration the exposed linear value is
+// H / H_sat, so the electron count at this exposure is exact:
+//   N = rel * N_sat,  N_sat = cameraPhotonParams.x (host-computed:
+//   min(QE * kappa * pitch^2 * 78/ISO, fullWell)).
+// Shot noise is Poisson on N (Gaussian approximation), read noise / dark /
+// DSNU add in quadrature (cameraPhotonParams.y, electrons), PRNU scales
+// with N (cameraPhotonParams.z). The ADC clips at saturation, so the
+// exposed value is hard-limited to 1.0 before the display curve - exactly
+// what a digital sensor does to highlights.
+static inline float3 comp_apply_photon_noise_scene(float3 rgbLin,
+                                                   uint px,
+                                                   uint py,
+                                                   constant ComposeParams& C)
+{
+    if (!(C.cameraPhotonParams.w > 0.5)) return rgbLin;
+    float nSat = max(C.cameraPhotonParams.x, 1.0);
+    float readE = max(C.cameraPhotonParams.y, 0.0);
+    float prnu = max(C.cameraPhotonParams.z, 0.0);
+    float exposure = max(C.exposure, 1e-30);
+
+    float3 rel = clamp(rgbLin * exposure, float3(0.0), float3(4.0));
+    float3 nE = rel * nSat;
+    float3 prnuE = prnu * nE;
+    float3 sigmaE = sqrt(nE + float3(readE * readE) + prnuE * prnuE);
+
+    // Two uniform [-1,1] hashes per channel give a triangular profile;
+    // variance of each uniform is 1/3, so scale by sqrt(3/2) for unit
+    // variance.
+    float3 g1 = float3(
+        comp_hash_signed_u32(px, py, 211u),
+        comp_hash_signed_u32(px, py, 223u),
+        comp_hash_signed_u32(px, py, 227u)
+    );
+    float3 g2 = float3(
+        comp_hash_signed_u32(px, py, 229u),
+        comp_hash_signed_u32(px, py, 233u),
+        comp_hash_signed_u32(px, py, 239u)
+    );
+    float3 gauss = (g1 + g2) * 1.2247449;
+
+    float3 noisyRel = (nE + sigmaE * gauss) / nSat;
+    noisyRel = clamp(noisyRel, float3(0.0), float3(1.0));
+    return noisyRel / exposure;
 }
 
 static inline float3 comp_apply_camera_sensor(float3 color,
@@ -2410,6 +2668,69 @@ static inline float3 comp_sample_linear_dof_full(device const float4* inLinear,
     return max(sum / max(wSum, 1e-6), float3(0.0));
 }
 
+static inline float3 comp_sample_linear_tile_bilinear(device const float4* inLinear,
+                                                      float2 pos,
+                                                      constant ComposeParams& C);
+
+// Fraunhofer diffraction spikes of the polygonal iris, gathered in the
+// linear domain from bright-passed sources along each spike direction.
+//
+// Physical basis: each straight blade edge diffracts perpendicular to
+// itself, so an N-blade iris produces 2N spikes (N odd) or N doubled spikes
+// (N even, opposite edges parallel). The radial envelope of a straight-edge
+// diffraction pattern falls as 1/d^2 beyond a core scale d0 that grows with
+// the f-number (lobe spacing ~ lambda * N / pitch), and the sinc-lobe
+// interference is wavelength-scaled, which produces the characteristic
+// chromatic beading along real spikes. The total spike energy is a small
+// fraction of the source energy (cameraDiffractionParams.x), conserved by
+// normalizing the gather kernel; the approximation versus an exact
+// |FT(aperture)|^2 is the parameterized envelope, not the phenomenology.
+static inline float3 comp_add_aperture_diffraction(float3 base,
+                                                   device const float4* inLinear,
+                                                   float2 srcPos,
+                                                   bool fullFrame,
+                                                   constant ComposeParams& C)
+{
+    float strength = clamp(C.cameraDiffractionParams.x, 0.0, 0.25);
+    if (!(strength > 1e-6)) return base;
+    uint spikeCount = uint(clamp(C.cameraDiffractionParams.y, 2.0, 32.0));
+    float rot = C.cameraDiffractionParams.z;
+    float d0 = clamp(C.cameraDiffractionParams.w, 0.75, 24.0);
+
+    float frameW = fullFrame ? float(max(C.fullInputWidth, 2u) - 1u) : float(max(C.tileWidth, 2u) - 1u);
+    float frameH = fullFrame ? float(max(C.fullInputHeight, 2u) - 1u) : float(max(C.tileHeight, 2u) - 1u);
+    float dMin = max(1.75, 0.6 * d0);
+    float dMax = max(0.46 * min(frameW, frameH), dMin * 4.0);
+    // Lobe spacing scales with lambda * f-number; tie the beading period to
+    // d0 so stopping down stretches both the core and the rainbow beads.
+    float beadFreq = 0.55 / d0;
+    const float3 lamRatio = float3(1.0 / 1.114, 1.0, 1.0 / 0.847); // 612/549/465 nm vs green
+
+    constexpr uint K = 9u;
+    float3 acc = float3(0.0);
+    float wSum = 0.0;
+    float logSpan = log(dMax / dMin);
+    for (uint sIdx = 0u; sIdx < spikeCount; ++sIdx) {
+        float ang = rot + 6.283185307179586 * (float(sIdx) / float(spikeCount));
+        float2 dir = float2(cos(ang), sin(ang));
+        for (uint k = 0u; k < K; ++k) {
+            float t = (float(k) + 0.5) / float(K);
+            float d = dMin * exp(logSpan * t);
+            // 1/d^2 envelope integrated over log-spaced bins -> weight ~ 1/d,
+            // with the d0 core keeping the near field finite.
+            float w = d / (d * d + d0 * d0);
+            float2 p = srcPos + dir * d;
+            float3 s = fullFrame
+                ? comp_flare_bright_pass_scene(comp_sample_linear_full_bilinear(inLinear, p, C), C)
+                : comp_flare_bright_pass_scene(comp_sample_linear_tile_bilinear(inLinear, p, C), C);
+            float3 bead = max(1.0 + 0.55 * cos(d * beadFreq * lamRatio), float3(0.0));
+            acc += s * (w * bead);
+            wSum += w;
+        }
+    }
+    return base + acc * (strength / max(wSum, 1e-6));
+}
+
 static inline float3 comp_add_cinematic_flare_full(float3 base,
                                                    device const float4* inLinear,
                                                    float2 srcPos,
@@ -2558,6 +2879,7 @@ static inline float3 comp_sample_linear_psf_full(device const float4* inLinear,
         float3 halo = 0.68 * haloA + 0.32 * haloB;
         out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
+    out = comp_add_aperture_diffraction(out, inLinear, float2(float(srcX), float(srcY)), true, C);
     return comp_add_cinematic_flare_full(out, inLinear, float2(float(srcX), float(srcY)), C);
 }
 
@@ -2792,6 +3114,7 @@ static inline float3 comp_sample_linear_psf_tile(device const float4* inLinear,
         float3 halo = 0.68 * haloA + 0.32 * haloB;
         out = (profile == 4u) ? (out + wing * halo) : mix(out, halo, wing);
     }
+    out = comp_add_aperture_diffraction(out, inLinear, float2(float(lx), float(ly)), false, C);
     return comp_add_cinematic_flare_tile(out, inLinear, float2(float(lx), float(ly)), C);
 }
 
@@ -2973,13 +3296,89 @@ static inline float3 comp_sample_collision_psf_tile(device const CollisionInfo* 
     return comp_add_cinematic_flare_collision(out, inInfo, float2(float(lx), float(ly)), P, C);
 }
 
+// Inverse of comp_xyz_to_rgb (linear sRGB / D65).
+static inline float3 comp_rgb_to_xyz(float3 rgb) {
+    float3 c = max(rgb, 0.0);
+    return float3(
+        0.4124 * c.x + 0.3576 * c.y + 0.1805 * c.z,
+        0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z,
+        0.0193 * c.x + 0.1192 * c.y + 0.9505 * c.z
+    );
+}
+
+static inline bool comp_eye_physiological_enabled(constant ComposeParams& C) {
+    return (C.eyeParams.x > 0.0) && (C.cameraModel == 3u) && (C.analysisMode == 0u);
+}
+
+// Physically anchored human-eye display operator.
+//
+// The input is linear scene radiance after the neutral-density safe-viewing
+// filter (the ND attenuation is exactly a linear scale and is carried in
+// C.exposure). Absolute luminance L = eyeParams.y * CIE-Y, with eyeParams.y =
+// 683.002 * cameraLuminanceScale. The mapping is the established
+// physiologically based chain (Ferwerda et al. 1996 visual adaptation;
+// Durand & Dorsey 2000 night tone mapping; Larson et al. 1997 scotopic
+// luminance from XYZ):
+//
+//   cones: Naka-Rushton R = L^n / (L^n + sigma^n), n = 0.74, with
+//          semi-saturation at the adaptation luminance L_a and display white
+//          anchored at eyeParams.z * L_a;
+//   rods:  same response on the Larson scotopic luminance estimate
+//          V' = Y * (1.33 * (1 + (Y + Z) / X) - 1.68), with rods ~25x more
+//          sensitive and saturating above a few cd/m^2;
+//   mesopic blend: rod weight 1 below 0.005 cd/m^2, 0 above ~3 cd/m^2
+//          (rod-saturation), with the achromatic rod signal carrying the
+//          Purkinje blue-gray appearance.
+//
+// This is the eye as a measurement device; expressive grading stays in the
+// cinema path.
+static inline float3 comp_eye_physiological_display(float3 rgbExp,
+                                                    constant ComposeParams& C)
+{
+    float3 xyz = comp_rgb_to_xyz(rgbExp);
+    float absPerY = max(C.eyeParams.y, 1e-12);
+    float La = max(C.eyeParams.x, 1e-6);
+    float whiteMul = max(C.eyeParams.z, 1.5);
+
+    float L = absPerY * max(xyz.y, 0.0);
+    float scotRatio = 1.33 * (1.0 + (xyz.y + xyz.z) / max(xyz.x, 1e-30)) - 1.68;
+    float Vp = absPerY * max(xyz.y * scotRatio, 0.0);
+
+    const float n = 0.74;
+    float sigmaC = pow(La, n);
+    float Ln = pow(max(L, 0.0), n);
+    float Rc = Ln / max(Ln + sigmaC, 1e-20);
+    float Lw = whiteMul * La;
+    float Rw = pow(Lw, n) / max(pow(Lw, n) + sigmaC, 1e-20);
+    float dispC = Rc / max(Rw, 1e-9);
+
+    // Rods adapt with the same pool but are ~25x more sensitive.
+    float sigmaR = pow(max(0.04 * La, 1e-6), n);
+    float Vn = pow(max(Vp, 0.0), n);
+    float Rr = Vn / max(Vn + sigmaR, 1e-20);
+    float dispR = Rr / max(Rw, 1e-9);
+
+    // Mesopic regime from absolute photopic luminance: fully scotopic below
+    // 0.005 cd/m^2, rods saturated out above ~3 cd/m^2.
+    float lgL = log10(max(L, 1e-7));
+    float wRod = 1.0 - smoothstep(-2.301, 0.477, lgL);
+
+    float lum = dot(max(rgbExp, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+    float3 chroma = (lum > 1e-30) ? (rgbExp / lum) : float3(1.0);
+    // Purkinje blue-gray appearance of the achromatic rod signal,
+    // normalized to unit Rec.709 luminance.
+    const float3 rodTint = float3(0.7922, 0.9916, 1.6946);
+    float3 outLin = mix(chroma * dispC, rodTint * dispR, wRod);
+    return precise::pow(clamp(outLin, 0.0, 1.0), float3(1.0 / 2.2));
+}
+
 static inline float3 comp_shade(const CollisionInfo rec,
                                 constant Params& P,
                                 constant ComposeParams& C)
 {
     if (rec.hit == 0u) return float3(0.0);
     float3 rgb = comp_linear_rgb(rec, P, C);
-    if (C.realismProfile == 5u &&
+    if ((C.realismProfile == 5u || C.realismProfile == 6u) &&
         (C.analysisMode == 34u || C.analysisMode == 35u ||
          C.analysisMode == 36u || C.analysisMode == 38u)) {
         // Absolute canonical source radiance debug: output display-encoded
@@ -2990,6 +3389,12 @@ static inline float3 comp_shade(const CollisionInfo rec,
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
     }
     if (C.realismProfile == 5u && (C.analysisMode == 37u || C.analysisMode == 42u)) {
+        return clamp(rgb, 0.0, 1.0);
+    }
+    if (C.realismProfile == 6u &&
+        (C.analysisMode == 31u || C.analysisMode == 32u ||
+         C.analysisMode == 33u || C.analysisMode == 37u ||
+         (C.analysisMode >= 39u && C.analysisMode <= 42u))) {
         return clamp(rgb, 0.0, 1.0);
     }
     bool physicalVolumeDebug = (FC_PHYSICS_MODE == 3u) ||
@@ -3011,6 +3416,9 @@ static inline float3 comp_shade(const CollisionInfo rec,
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
     }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
+    if (comp_eye_physiological_enabled(C)) {
+        return comp_eye_physiological_display(rgbExp, C);
+    }
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);
@@ -3029,7 +3437,7 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
 {
     bool physicalVolumeDebug = (FC_PHYSICS_MODE == 3u) ||
                                (FC_PHYSICS_MODE == 2u && C.analysisMode != 0u);
-    if (C.realismProfile == 5u &&
+    if ((C.realismProfile == 5u || C.realismProfile == 6u) &&
         (C.analysisMode == 34u || C.analysisMode == 35u ||
          C.analysisMode == 36u || C.analysisMode == 38u)) {
         // Absolute canonical source radiance debug: output display-encoded
@@ -3044,6 +3452,15 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
         // values: RGB={body,skin,corona} ratios or grayscale activity. Do not run
         // exposure, tone mapping, or sRGB gamma here, otherwise PNG channel values
         // no longer match the physical branch diagnostics.
+        return clamp(rgb, 0.0, 1.0);
+    }
+    if (C.realismProfile == 6u &&
+        (C.analysisMode == 31u || C.analysisMode == 32u ||
+         C.analysisMode == 33u || C.analysisMode == 37u ||
+         (C.analysisMode >= 39u && C.analysisMode <= 42u))) {
+        // Profile-6 normalized source diagnostics are produced at source level.
+        // Keep them out of exposure/tone mapping so metrics correspond to
+        // density/temperature/tau/activity fields rather than display response.
         return clamp(rgb, 0.0, 1.0);
     }
     if (physicalVolumeDebug && C.analysisMode == 30u) {
@@ -3063,6 +3480,9 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
         return precise::pow(clamp(rgbExp, 0.0, 1.0), float3(1.0 / 2.2));
     }
     rgbExp = comp_apply_camera_scene_response(rgbExp, C);
+    if (comp_eye_physiological_enabled(C)) {
+        return comp_eye_physiological_display(rgbExp, C);
+    }
     float lum = dot(rgbExp, float3(0.2126, 0.7152, 0.0722));
     float lumTm = comp_tonemap_luma(lum, C.look);
     float scale = lumTm / max(lum, 1e-12);

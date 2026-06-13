@@ -180,7 +180,30 @@ enum ParamsBuilder {
     let diskReturningRadArg = diskPolicy.returningRad
     var diskPrecisionTextureArg = diskPolicy.precisionTexture
     let thickCloudExplicit = diskPolicy.thickCloudExplicit
-    let diskCloudCoverageArg = diskPolicy.cloudCoverage
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed. Parsed
+    // here so the compose policy treats it as a precision volume
+    // (analysisMode 0) and so the clumpy-atmosphere coverage knob bypasses
+    // the legacy precision-clouds gate, which zeroes cloud parameters when
+    // the Perlin cloud system is off.
+    let diskSpectralVolumeName = stringArg("--disk-spectral-volume", default: "off").lowercased()
+    let diskSpectralVolumeEnabled: Bool
+    switch diskSpectralVolumeName {
+    case "on", "true", "1", "yes", "spectral":
+        if diskPhysicsModeID != 2 {
+            FileHandle.standardError.write(Data("error: --disk-spectral-volume requires --disk-physics precision\n".utf8))
+            exit(2)
+        }
+        diskSpectralVolumeEnabled = true
+    case "off", "false", "0", "no":
+        diskSpectralVolumeEnabled = false
+    default:
+        FileHandle.standardError.write(Data("error: invalid --disk-spectral-volume \(diskSpectralVolumeName). use on|off\n".utf8))
+        exit(2)
+    }
+    let diskCloudCoverageArg = diskSpectralVolumeEnabled
+        ? max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: 0.45)))
+        : diskPolicy.cloudCoverage
     let diskCloudOpticalDepthArg = diskPolicy.cloudOpticalDepth
     let diskCloudPorosityArg = diskPolicy.cloudPorosity
     let diskCloudShadowStrengthArg = diskPolicy.cloudShadowStrength
@@ -253,6 +276,31 @@ enum ParamsBuilder {
     let grmhdCloudEmissionScaleArg = visibleSettings.grmhdCloudEmissionScaleArg
     let grmhdSmoothWeightName = visibleSettings.grmhdSmoothWeightName
     let grmhdSmoothWeightModeID = visibleSettings.grmhdSmoothWeightModeID
+    let pcdDensityExpArg = min(max(doubleArg("--pcd-density-exp", default: 1.15), 0.3), 3.0)
+    let pcdEmissivityScaleArg = min(max(doubleArg("--pcd-emissivity-scale", default: 1.0), 0.1), 5.0)
+    let pcdOpacityScaleArg = min(max(doubleArg("--pcd-opacity-scale", default: 1.0), 0.0), 6.0)
+    let pcdSeedArg = doubleArg("--pcd-seed", default: 1729.0)
+    let pcdStructureScaleArg = min(max(doubleArg("--pcd-structure-scale", default: 1.0), 0.2), 3.0)
+    let pcdSpiralAmpArg = min(max(doubleArg("--pcd-spiral-amp", default: 0.25), 0.0), 1.0)
+    let pcdSpiralPitchArg = min(max(doubleArg("--pcd-spiral-pitch", default: 5.0), 0.5), 14.0)
+    let pcdClumpContrastArg = min(max(doubleArg("--pcd-clump-contrast", default: 0.35), 0.0), 1.0)
+    let pcdHotCrescentArg = min(max(doubleArg("--pcd-hot-crescent", default: 0.35), 0.0), 1.0)
+    let pcdDebugFieldID: UInt32 = {
+        switch stringArg("--realism-debug", default: "off").lowercased() {
+        case "opacity", "alpha", "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            return 1
+        case "transfer-saturation", "saturation":
+            return 2
+        case "spiral", "spiral-wave":
+            return 3
+        case "clump", "clumps", "cloud", "clouds":
+            return 4
+        case "hot-crescent", "crescent":
+            return 5
+        default:
+            return 0
+        }
+    }()
     let thinPhotosphereEnabled = visibleSettings.thinPhotosphereEnabled
     let thinRadialTaperEnabled = visibleSettings.thinRadialTaperEnabled
     let thinHOverRBaseArg = visibleSettings.thinHOverRBaseArg
@@ -318,7 +366,7 @@ enum ParamsBuilder {
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
         diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
-        precisionVolumeEnabled: !diskVolumePathArg.isEmpty,
+        precisionVolumeEnabled: !diskVolumePathArg.isEmpty || diskSpectralVolumeEnabled,
         diskGrmhdDebugID: diskGrmhdDebugID,
         composeLookID: composeLookID,
         composeGPU: composeGPU,
@@ -341,6 +389,19 @@ enum ParamsBuilder {
     let cameraISOArg = visualSettings.cameraISOArg
     let cameraShutterSecondsArg = visualSettings.cameraShutterSecondsArg
     let photographicExposureScale = visualSettings.photographicExposureScale
+    let photographicCalibrationName = visualSettings.photographicCalibrationName
+    let cameraLuminanceScaleArg = visualSettings.cameraLuminanceScaleArg
+    let photometricSaturationLuminance = visualSettings.photometricSaturationLuminance
+    let motionBlurSamplesArg = visualSettings.motionBlurSamplesArg
+    let motionBlurTimeLapseArg = visualSettings.motionBlurTimeLapseArg
+    let eyePhotometricEnabled = visualSettings.eyePhotometricEnabled
+    let eyeNDArg = visualSettings.eyeNDArg
+    let eyeAdaptationArg = visualSettings.eyeAdaptationArg
+    let eyeTargetLuminanceArg = visualSettings.eyeTargetLuminanceArg
+    let eyeWhiteMultipleArg = visualSettings.eyeWhiteMultipleArg
+    let cameraPhotonNoiseEnabled = visualSettings.cameraPhotonNoiseEnabled
+    let cameraPhotonParamsResolved = visualSettings.cameraPhotonParamsResolved
+    let cameraDiffractionParamsResolved = visualSettings.cameraDiffractionParamsResolved
     let backgroundModeName = visualSettings.backgroundModeName
     let backgroundModeID = visualSettings.backgroundModeID
     let backgroundStarDensityArg = visualSettings.backgroundStarDensityArg
@@ -430,8 +491,19 @@ enum ParamsBuilder {
     let diskVol1PathResolved = diskVolumeAssembly.diskVol1PathResolved
     let diskVolumeRMin = diskVolumeAssembly.diskVolumeRMin
     let diskVolumeRMax = diskVolumeAssembly.diskVolumeRMax
-    let diskVolumeZMax = diskVolumeAssembly.diskVolumeZMax
     let diskVolumeRWarp = diskVolumeAssembly.diskVolumeRWarp
+    // The spectral volume needs vertical room for the Gaussian atmosphere:
+    // cover ~4 scale heights so the photosphere and thin corona both fit.
+    // Spectral-volume vertical extent follows the hydrostatic scale height,
+    // which the shader derives from mdot (H = 0.75 mdot rs asymptotically).
+    // Cover ~4 H so the photosphere and thin corona fit, but no more - a
+    // fixed-thick density box would let the optical-depth tail dominate and
+    // make thickness insensitive to the matter supply. Floor keeps a thin
+    // disk from collapsing below sampling resolution.
+    let spectralVolumeHMaxNorm = 0.75 * diskMdotEddArg
+    let diskVolumeZMax = diskSpectralVolumeEnabled
+        ? max(0.12, 4.0 * spectralVolumeHMaxNorm)
+        : diskVolumeAssembly.diskVolumeZMax
     // GRMHD volumes may use the existing packed radial-warp slot to avoid an
     // ABI expansion. Explicit --disk-atlas-r-warp still overrides metadata.
     let effectiveDiskAtlasRWarp = (diskVolumeGRMHDEnabled && diskAtlasRWarpArg < 0.0) ? diskVolumeRWarp : diskAtlasRWarp
@@ -452,6 +524,17 @@ enum ParamsBuilder {
     let rsD = 2.0 * G * M / (c * c)
     let reD = rsD * rcp
     let heD = rsD * diskHFactor
+    // Physical shutter window in diskFlowTime units. The heating-field shear
+    // uses phase = diskFlowTime * (r/rs)^-1.5, while the physical Keplerian
+    // rate is dphi/dt = (c / (sqrt(2) rs)) * (r/rs)^-1.5, so one flow-time
+    // unit equals sqrt(2)*rs/c seconds of coordinate time.
+    let shutterFlowTimeSpan: Double = {
+        guard motionBlurSamplesArg > 1 else { return 0.0 }
+        let span = Double(visualSettings.cameraShutterSecondsArg)
+            * motionBlurTimeLapseArg
+            * c / (2.0.squareRoot() * rsD)
+        return span.isFinite ? max(span, 0.0) : 0.0
+    }()
     let visibleTeffR0Meters = visibleTeffR0RsArg * rsD
     let visibleRInMeters = visibleRInRsArg * rsD
     let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
@@ -524,6 +607,7 @@ enum ParamsBuilder {
         config.diskAtlasRWarp = effectiveDiskAtlasRWarp
         config.diskAtlasData = diskAtlasData
         config.diskVolumeEnabled = diskVolumeEnabled
+        config.diskSpectralVolumeEnabled = diskSpectralVolumeEnabled
         config.diskVolumeLegacyEnabled = diskVolumeLegacyEnabled
         config.diskVolumeGRMHDEnabled = diskVolumeGRMHDEnabled
         config.diskVolumeThickEnabled = diskVolumeThickEnabled
@@ -559,6 +643,16 @@ enum ParamsBuilder {
         config.grmhdCloudEmissionScaleArg = grmhdCloudEmissionScaleArg
         config.grmhdSmoothWeightName = grmhdSmoothWeightName
         config.grmhdSmoothWeightModeID = grmhdSmoothWeightModeID
+        config.pcdDensityExpArg = pcdDensityExpArg
+        config.pcdEmissivityScaleArg = pcdEmissivityScaleArg
+        config.pcdOpacityScaleArg = pcdOpacityScaleArg
+        config.pcdSeedArg = pcdSeedArg
+        config.pcdStructureScaleArg = pcdStructureScaleArg
+        config.pcdSpiralAmpArg = pcdSpiralAmpArg
+        config.pcdSpiralPitchArg = pcdSpiralPitchArg
+        config.pcdClumpContrastArg = pcdClumpContrastArg
+        config.pcdHotCrescentArg = pcdHotCrescentArg
+        config.pcdDebugFieldID = pcdDebugFieldID
         config.useLinear32Intermediate = useLinear32Intermediate
         config.rayBundleEnabled = rayBundleEnabled
         config.rayBundleActive = rayBundleActive
@@ -613,6 +707,20 @@ enum ParamsBuilder {
         config.cameraISOArg = cameraISOArg
         config.cameraShutterSecondsArg = cameraShutterSecondsArg
         config.photographicExposureScale = photographicExposureScale
+        config.photographicCalibrationName = photographicCalibrationName
+        config.cameraLuminanceScaleArg = cameraLuminanceScaleArg
+        config.photometricSaturationLuminance = photometricSaturationLuminance
+        config.motionBlurSamplesArg = motionBlurSamplesArg
+        config.motionBlurTimeLapseArg = motionBlurTimeLapseArg
+        config.shutterFlowTimeSpan = shutterFlowTimeSpan
+        config.eyePhotometricEnabled = eyePhotometricEnabled
+        config.eyeNDArg = eyeNDArg
+        config.eyeAdaptationArg = eyeAdaptationArg
+        config.eyeTargetLuminanceArg = eyeTargetLuminanceArg
+        config.eyeWhiteMultipleArg = eyeWhiteMultipleArg
+        config.cameraPhotonNoiseEnabled = cameraPhotonNoiseEnabled
+        config.cameraPhotonParams = cameraPhotonParamsResolved
+        config.cameraDiffractionParams = cameraDiffractionParamsResolved
         config.composeCameraPsfSigmaArg = composeCameraPsfSigmaArg
         config.composeCameraReadNoiseArg = composeCameraReadNoiseArg
         config.composeCameraShotNoiseArg = composeCameraShotNoiseArg
@@ -788,6 +896,15 @@ enum ParamsBuilder {
             diskVolumeRMax: diskVolumeRMax,
             diskVolumeZMax: diskVolumeZMax,
             diskVolumeTauScaleArg: diskVolumeTauScaleArg,
+            pcdDensityExpArg: pcdDensityExpArg,
+            pcdEmissivityScaleArg: pcdEmissivityScaleArg,
+            pcdOpacityScaleArg: pcdOpacityScaleArg,
+            pcdSeedArg: pcdSeedArg,
+            pcdStructureScaleArg: pcdStructureScaleArg,
+            pcdSpiralAmpArg: pcdSpiralAmpArg,
+            pcdSpiralPitchArg: pcdSpiralPitchArg,
+            pcdClumpContrastArg: pcdClumpContrastArg,
+            pcdHotCrescentArg: pcdHotCrescentArg,
             rayBundleEnabled: rayBundleEnabled,
             rayBundleActive: rayBundleActive,
             rayBundleJacobianActive: rayBundleJacobianActive,
@@ -879,6 +996,13 @@ enum ParamsBuilder {
 
         var params = ParamsBuilder.buildPackedParams(from: config)
         accretionModel.buildPackedFields(into: &params, from: diskPolicy)
+        if diskSpectralVolumeEnabled {
+            // The accretion-model hook re-applies the precision-cloud-gated
+            // values after the generic pack. The spectral volume's
+            // clumpy-atmosphere coverage is independent of the legacy Perlin
+            // cloud system, so restore the resolved knob.
+            params.diskCloudCoverage = Float(diskCloudCoverageArg)
+        }
         if diskPhysicsModeID == 3 && visibleModeEnabled {
             // The accretion-model hook writes precision-mode defaults after the
             // generic pack step. GRMHD visible uses this field as its state/flow

@@ -69,9 +69,13 @@ static inline bool volume_integrate_thick_sample(float3 pos,
     if (FC_METRIC == 0) {
         float massLen = 0.5 * P.rs;
         float rM = r / max(massLen, 1e-12);
+        // Azimuthal speed is the local static-observer circular-orbit value
+        // sqrt(M/(r-2M)); the radial reference keeps the legacy sqrt(M/r)
+        // scale that vrRatio is defined against.
         float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+        float betaRefPhi = min(sqrt(max(1.0 / max(rM - 2.0, 1e-2), 1e-8)), 0.999);
         float betaRCoord = vrRatio * betaRef;
-        float betaPhiCoord = -vphiScale * betaRef;
+        float betaPhiCoord = -vphiScale * betaRefPhi;
         if (r < diskInner * (1.0 - 1e-4)) {
             float rMsM = diskInner / max(massLen, 1e-12);
             float betaR = 0.0;

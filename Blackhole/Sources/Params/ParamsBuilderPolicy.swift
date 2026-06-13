@@ -160,8 +160,10 @@ enum ParamsBuilderPolicy {
             visibleTeffModelID = 2
         case "grmhd-hybrid", "grmhd", "state", "state-driven":
             visibleTeffModelID = 3
+        case "slim", "slim-disk", "super-eddington", "supereddington":
+            visibleTeffModelID = 4
         default:
-            fail("invalid --teff-model \(visibleTeffModelName). use one of: parametric, thin-disk, nt, grmhd-hybrid")
+            fail("invalid --teff-model \(visibleTeffModelName). use one of: parametric, thin-disk, nt, grmhd-hybrid, slim")
         }
 
         let visibleExpressiveMode: Bool
@@ -539,7 +541,7 @@ enum ParamsBuilderPolicy {
         case "flow", "procedural", "legacy", "noise":
             diskModelResolved = "flow"
         case "perlin":
-            diskModelResolved = "perlin-ec7"
+            diskModelResolved = "perlin"
         case "perlin-ec7", "perlin-legacy":
             diskModelResolved = "perlin-ec7"
         case "perlin-classic", "perlin-f552":

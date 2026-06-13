@@ -169,22 +169,10 @@ static inline void volume_accum_note_transfer(thread VolumeAccum& A,
 }
 
 static inline void volume_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar) {
-    float t1 = (lam - 442.0) * ((lam < 442.0) ? 0.0624 : 0.0374);
-    float t2 = (lam - 599.8) * ((lam < 599.8) ? 0.0264 : 0.0323);
-    float t3 = (lam - 501.1) * ((lam < 501.1) ? 0.0490 : 0.0382);
-    x_bar = 0.362 * precise::exp(-0.5 * t1 * t1) + 1.056 * precise::exp(-0.5 * t2 * t2) - 0.065 * precise::exp(-0.5 * t3 * t3);
-
-    t1 = (lam - 568.8) * ((lam < 568.8) ? 0.0213 : 0.0247);
-    t2 = (lam - 530.9) * ((lam < 530.9) ? 0.0613 : 0.0322);
-    y_bar = 0.821 * precise::exp(-0.5 * t1 * t1) + 0.286 * precise::exp(-0.5 * t2 * t2);
-
-    t1 = (lam - 437.0) * ((lam < 437.0) ? 0.0845 : 0.0278);
-    t2 = (lam - 459.0) * ((lam < 459.0) ? 0.0385 : 0.0725);
-    z_bar = 1.217 * precise::exp(-0.5 * t1 * t1) + 0.681 * precise::exp(-0.5 * t2 * t2);
-
-    x_bar = max(x_bar, 0.0);
-    y_bar = max(y_bar, 0.0);
-    z_bar = max(z_bar, 0.0);
+    float3 bar = bh_cie1931_xyz_bar(lam);
+    x_bar = bar.x;
+    y_bar = bar.y;
+    z_bar = bar.z;
 }
 
 static inline float volume_visible_band_lambda_nm(uint k) {
@@ -318,7 +306,9 @@ static inline void volume_integrate_segment(float3 p0,
                                             float4 rayV1,
                                             float LzConst,
                                             float pr0,
-                                            float pr1);
+                                            float pr1,
+                                            float ctSeg0,
+                                            float ctSeg1);
 static inline bool disk_volume_mode_enabled_fc(constant Params& P);
 static inline bool trace_commit_volume_hit(thread const VolumeAccum& volumeA,
                                            bool volumeMode,
@@ -365,6 +355,23 @@ struct KerrSurfaceHitState {
     float r_M;
     float phiHit;
 };
+
+// Crossing predicate for the geodesic-level bisection: inside the disk
+// volume, or past the midplane for thin crossings whose endpoints both stay
+// outside the volume box. The midplane branch requires the trial point to be
+// radially within emission bounds, mirroring segment_enter_disk's validation
+// of the chord z-crossing, so the bracket cannot latch onto an equatorial
+// crossing far outside (or inside) the disk annulus.
+static inline bool trace_refine_crossed(float3 wT,
+                                        float zA,
+                                        float diskEmitMin,
+                                        constant Params& P)
+{
+    if (inside_disk_volume(wT, P)) return true;
+    if (!(wT.z * zA < 0.0)) return false;
+    float dxyT = length(float2(wT.x, wT.y));
+    return (dxyT > diskEmitMin && dxyT < P.re);
+}
 
 static inline SurfaceHitSegment trace_find_surface_hit_segment(float3 world0,
                                                                float3 worldMid,
@@ -414,21 +421,57 @@ static inline SchwarzschildSurfaceHitState trace_refine_schwarzschild_surface_hi
     SurfaceHitSegment hitSeg = trace_find_surface_hit_segment(world0, worldMid, worldPos, P);
     if (!hitSeg.entered) return result;
 
+    // Start of the bracketing sub-segment and its geodesic parameter length.
+    float4 pA = pPrev;
+    float4 vA = vPrev;
+    float3 worldA = world0;
+    float segLen = P.h;
     if (hitSeg.segment == 0) {
-        result.pHit = pPrev;
-        result.vHit = vPrev;
-        rk4_step_h(result.pHit, result.vHit, P, 0.5 * P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
+        segLen = 0.5 * P.h;
         result.segEnd = worldMid;
     } else if (hitSeg.segment == 1) {
-        result.pHit = pMid;
-        result.vHit = vMid;
-        rk4_step_h(result.pHit, result.vHit, P, 0.5 * P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
+        pA = pMid;
+        vA = vMid;
+        worldA = worldMid;
+        segLen = 0.5 * P.h;
         result.segStart = worldMid;
-    } else if (hitSeg.segment == 2) {
-        result.pHit = pPrev;
-        result.vHit = vPrev;
-        rk4_step_h(result.pHit, result.vHit, P, P.h * clamp(hitSeg.tEnter, 0.0, 1.0));
     }
+
+    // Bracketed bisection on the geodesic integration parameter. The chord
+    // solve in segment_enter_disk locates the crossing on the straight segment
+    // between integrated endpoints; here the bracket is tightened against true
+    // integrated states so the hit no longer inherits the chord's curvature
+    // error. "Crossed" means inside the disk volume, or past the midplane for
+    // thin crossings whose endpoints both stay outside the volume box.
+    float zA = worldA.z;
+    float sLo = 0.0;
+    float sHi = segLen * clamp(hitSeg.tEnter, 0.0, 1.0);
+    if (sHi > 0.0) {
+        float4 pT = pA;
+        float4 vT = vA;
+        rk4_step_h(pT, vT, P, sHi);
+        float3 lT = conv(pT.y, pT.z, pT.w);
+        float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
+        // Chord estimate can undershoot the geodesic crossing; fall back to
+        // the full sub-segment bracket when it has not crossed yet.
+        if (!trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = segLen;
+    } else {
+        sHi = segLen;
+    }
+    for (int i = 0; i < 5; ++i) {
+        float sMid = 0.5 * (sLo + sHi);
+        if (!(sMid > 0.0)) break;
+        float4 pT = pA;
+        float4 vT = vA;
+        rk4_step_h(pT, vT, P, sMid);
+        float3 lT = conv(pT.y, pT.z, pT.w);
+        float3 wT = lT.x * newX + lT.y * newY + lT.z * newZ;
+        if (trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = sMid;
+        else sLo = sMid;
+    }
+    result.pHit = pA;
+    result.vHit = vA;
+    rk4_step_h(result.pHit, result.vHit, P, sHi);
 
     float3 localHit = conv(result.pHit.y, result.pHit.z, result.pHit.w);
     result.hitPos = localHit.x * newX + localHit.y * newY + localHit.z * newZ;
@@ -475,23 +518,54 @@ static inline KerrSurfaceHitState trace_refine_kerr_surface_hit_state(float3 wor
     SurfaceHitSegment hitSeg = trace_find_surface_hit_segment(world0, midWorld, worldPos, P);
     if (!hitSeg.entered) return result;
 
+    // Start of the bracketing sub-segment and its geodesic parameter length.
+    KerrState stateA = prevState;
+    float3 worldA = world0;
+    float segLen = hUsed;
     if (hitSeg.segment == 0) {
-        float hitErr = 0.0;
-        float hitNull = 0.0;
-        result.hitState = prevState;
-        kerr_dp45_trial(prevState, 0.5 * hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        segLen = 0.5 * hUsed;
         result.segEnd = midWorld;
     } else if (hitSeg.segment == 1) {
-        float hitErr = 0.0;
-        float hitNull = 0.0;
-        result.hitState = midState;
-        kerr_dp45_trial(midState, 0.5 * hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        stateA = midState;
+        worldA = midWorld;
+        segLen = 0.5 * hUsed;
         result.segStart = midWorld;
-    } else if (hitSeg.segment == 2) {
+    }
+
+    // Bracketed bisection on the geodesic integration parameter against true
+    // integrated states (see the Schwarzschild variant for the rationale).
+    float zA = worldA.z;
+    float sLo = 0.0;
+    float sHi = segLen * clamp(hitSeg.tEnter, 0.0, 1.0);
+    {
+        float trialErr = 0.0;
+        float trialNull = 0.0;
+        if (sHi > 0.0) {
+            KerrState stT = stateA;
+            kerr_dp45_trial(stateA, sHi, a, Lz, stT, trialErr, trialNull);
+            float3 wT = conv(max(stT.r, 0.0) * massLen,
+                             clamp(stT.theta, 1e-4, M_PI - 1e-4),
+                             stT.phi);
+            if (!trace_refine_crossed(wT, zA, diskEmitMin, P) || !isfinite(stT.r)) sHi = segLen;
+        } else {
+            sHi = segLen;
+        }
+        for (int i = 0; i < 5; ++i) {
+            float sMid = 0.5 * (sLo + sHi);
+            if (!(sMid > 0.0)) break;
+            KerrState stT = stateA;
+            kerr_dp45_trial(stateA, sMid, a, Lz, stT, trialErr, trialNull);
+            if (!isfinite(stT.r) || !isfinite(stT.theta) || !isfinite(stT.phi)) break;
+            float3 wT = conv(max(stT.r, 0.0) * massLen,
+                             clamp(stT.theta, 1e-4, M_PI - 1e-4),
+                             stT.phi);
+            if (trace_refine_crossed(wT, zA, diskEmitMin, P)) sHi = sMid;
+            else sLo = sMid;
+        }
         float hitErr = 0.0;
         float hitNull = 0.0;
-        result.hitState = prevState;
-        kerr_dp45_trial(prevState, hUsed * clamp(hitSeg.tEnter, 0.0, 1.0), a, Lz, result.hitState, hitErr, hitNull);
+        result.hitState = stateA;
+        kerr_dp45_trial(stateA, sHi, a, Lz, result.hitState, hitErr, hitNull);
     }
 
     result.hitState.theta = clamp(result.hitState.theta, 1e-4, M_PI - 1e-4);
@@ -525,7 +599,7 @@ static inline void trace_store_schwarzschild_surface_hit(thread CollisionInfo& i
     info.T   = T;
     info.v_disk = float4(g_factor, hitState.dxy, vrRatio, 0.0);
     info.direct_world = float4(obsDir, 0.0);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && P.diskAtlasMode != 0u) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && P.diskAtlasMode != 0u) {
         // Thin visible reference is a ray/disk-intersection source model. Store
         // the actual geodesic hit coordinates, not the legacy probe offset used
         // for procedural cloud texture. If an atlas is present, it is only a
@@ -580,7 +654,7 @@ static inline void trace_store_kerr_surface_hit(thread CollisionInfo& info,
     info.T   = T;
     info.v_disk = float4(g_factor, hitState.dxy, vrRatio, 0.0);
     info.direct_world = float4(obsDir, 0.0);
-    if (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u && P.diskAtlasMode != 0u) {
+    if (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) && P.diskAtlasMode != 0u) {
         // Thin visible reference is a ray/disk-intersection source model. Store
         // the actual geodesic hit coordinates, not the legacy probe offset used
         // for procedural cloud texture. If an atlas is present, it is only a
@@ -678,7 +752,7 @@ static inline SchwarzschildSurfacePrepared trace_prepare_schwarzschild_surface(t
     float vrRatio = 0.0;
     float vphiScale = 1.0;
     float tempScale = 1.0;
-    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u);
+    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
         vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
         vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
@@ -701,7 +775,7 @@ static inline KerrSurfacePrepared trace_prepare_kerr_surface(thread const KerrSu
     float vrRatio = 0.0;
     float vphiScale = 1.0;
     float tempScale = 1.0;
-    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u);
+    bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
         vrRatio = clamp(atlas.z * P.diskAtlasVrScale, -1.0, 1.0);
         vphiScale = clamp(atlas.w * P.diskAtlasVphiScale, 0.0, 4.0);
@@ -799,9 +873,18 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
     float tempScale = prepared.tempScale;
     float massLen = 0.5 * P.rs;
     float rM = hitState.dxy / max(massLen, 1e-12);
+    // Radial velocities keep the legacy sqrt(M/r) reference scale: vrRatio is
+    // an atlas/flow-supplied fraction of that scale, so its meaning must not
+    // change. The azimuthal speed is physical, not a convention: the local
+    // static-observer speed of a circular Schwarzschild orbit is
+    // v = sqrt(M / (r - 2M)) (0.5c at the ISCO), not the coordinate value
+    // sqrt(M/r). The g-factor contraction below consumes local orthonormal
+    // velocities, so using the coordinate value under-beams the disk by ~5%
+    // in g at the ISCO and more at smaller emission radii.
     float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+    float betaRefPhi = min(sqrt(max(1.0 / max(rM - 2.0, 1e-2), 1e-8)), 0.999);
     float betaRCoord = vrRatio * betaRef;
-    float betaPhiCoord = -vphiScale * betaRef;
+    float betaPhiCoord = -vphiScale * betaRefPhi;
     float3 v_disk = absV * (vrRatio * er + vphiScale * ephi);
     if (allowPlunge && hitState.dxy < diskInner * (1.0 - 1e-4)) {
         float rMsM = diskInner / max(massLen, 1e-12);
@@ -827,7 +910,7 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
                                                        betaPhiCoord,
                                                        P);
 
-    float T = (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)
+    float T = (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))
         ? disk_visible_teff(hitState.dxy, P)
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
@@ -840,7 +923,8 @@ static inline bool trace_commit_schwarzschild_surface_hit_impl(constant Params& 
         T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
         // MRI turbulent heating: use diskPrecisionTexture (precision-mode texture parameter)
         float mriAmp_s = max(P.diskPrecisionTexture, P.diskTurbulence);
-        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_s, P);
+        float lightTravel_s = -abs(P.c * hitState.pHit.x) / (1.4142135624 * max(P.rs, 1e-6));
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_s, lightTravel_s, P);
     }
 
     trace_store_schwarzschild_surface_hit(info, hitState, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -969,7 +1053,7 @@ static inline bool trace_commit_kerr_surface_hit_impl(constant Params& P,
         }
     }
 
-    float T = (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)
+    float T = (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))
         ? disk_visible_teff(hitState.dxy, P)
         : disk_effective_temperature(hitState.dxy, diskInner, P);
     T *= tempScale;
@@ -978,7 +1062,9 @@ static inline bool trace_commit_kerr_surface_hit_impl(constant Params& P,
         float tauMid_hit = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
         T = disk_eddington_atmosphere_temp(hNorm_hit, tauMid_hit, T);
         float mriAmp_k = max(P.diskPrecisionTexture, P.diskTurbulence);
-        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_k, P);
+        float massLen_k = 0.5 * max(P.rs, 1e-6);
+        float lightTravel_k = -abs(hitState.hitState.t * massLen_k) / (1.4142135624 * max(P.rs, 1e-6));
+        T *= disk_mri_heating_factor_amp(hitState.dxy, hitState.phiHit, hitState.hitPos.z, mriAmp_k, lightTravel_k, P);
     }
 
     trace_store_kerr_surface_hit(info, hitState, massLen, g_factor, vrRatio, T, prepared.obsDir, world0, worldPos, P, diskAtlasTex);
@@ -1221,7 +1307,8 @@ static inline bool trace_schwarzschild_volume_ray(constant Params& P,
         if (hasPrev) {
             trace_update_volume_obs_dir(world0, worldPos, volumeObsDir, info);
             volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0Tex, diskVol1Tex, volumeA,
-                                     vPrev, v, 0.0, 0.0, 0.0);
+                                     vPrev, v, 0.0, 0.0, 0.0,
+                                     P.c * pPrev.x, P.c * p.x);
         }
 
         hasPrev = true;
@@ -1598,7 +1685,8 @@ static inline bool trace_kerr_volume_ray(constant Params& P,
             if (hasPrev) {
                 trace_update_volume_obs_dir(world0, worldPos, volumeObsDir, info);
                 volume_integrate_segment(world0, worldPos, volumeObsDir, diskInner, P, diskVol0Tex, diskVol1Tex, volumeA,
-                                         float4(0.0), float4(0.0), Lz, prevState.pr, state.pr);
+                                         float4(0.0), float4(0.0), Lz, prevState.pr, state.pr,
+                                         prevState.t * massLen, state.t * massLen);
             }
 
             hasPrev = true;
@@ -1654,7 +1742,9 @@ static inline void volume_integrate_segment(float3 p0,
                                             float4 rayV1,
                                             float LzConst,
                                             float pr0,
-                                            float pr1)
+                                            float pr1,
+                                            float ctSeg0,
+                                            float ctSeg1)
 {
     if (!disk_volume_mode_enabled_fc(P)) return;
     // Optional photosphere shortcut for visible mode.
@@ -2996,6 +3086,23 @@ static inline void volume_integrate_segment(float3 p0,
         float density = pow(clamp(vol.y, 0.0, 1.0), 0.65);
         float vrRatio = clamp(vol.z, -1.0, 1.0);
         float vphiScale = clamp(vol.w, 0.0, 4.0);
+        // Analytic spectral volume (diskVolumeMode == 2): the medium IS the
+        // physical model - smooth Gaussian-vertical, power-law-radial gas on
+        // circular geodesic orbits with a small alpha-disk inward drift - not
+        // a sampled texture. Brightness structure enters through the MRI
+        // heating field in the local temperature, as radiation-pressure
+        // dominated disks carry photospheric contrast in T rather than in
+        // surface density.
+        bool analyticSpectralVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeMode == 2u);
+        if (analyticSpectralVolume) {
+            float rInNormLoc = max(diskInner / max(P.rs, 1e-6), 1.0001);
+            density = pow(max(rNorm / rInNormLoc, 1.0), -1.1);
+            vrRatio = -0.012; // alpha-disk drift scale; the exact
+                              // conserved-quantity plunge takes over inside
+                              // the ISCO in the g-factor block below.
+            vphiScale = 1.0;
+            tempScale = 1.0;
+        }
         if (!(density > 1e-5)) continue;
 
         float transportGate = verticalEdgeGate * radialEdgeGate;
@@ -3004,11 +3111,11 @@ static inline void volume_integrate_segment(float3 p0,
         // In physical-flow volume mode, the imported/procedural volume is the
         // transport state. Avoid adding a second layer of random cloud/perlin
         // modulation that would turn disk-space fluid structure into a texture.
-        bool dataDrivenVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeFormat == 0u && P.diskVolumeMode != 0u);
+        bool dataDrivenVolume = (FC_PHYSICS_MODE == 2u && P.diskVolumeFormat == 0u && P.diskVolumeMode != 0u && !analyticSpectralVolume);
         float cloudSharp = clamp(density, 0.0, 1.0);
         float clumpGate = cloudSharp;
         float densityEff = density * transportGate;
-        if (!dataDrivenVolume) {
+        if (!dataDrivenVolume && !analyticSpectralVolume) {
             float cloudFlow = disk_cloud_noise(r, phi, pos.z, P.c * P.diskFlowTime + 0.12 * r, P);
             float cloudPerlin = 0.5 + 0.5 * disk_perlin_texture_noise(r, phi + 0.19 * P.diskFlowTime, pos.z, P);
             float cloudLocal = clamp(0.58 * cloudFlow + 0.42 * cloudPerlin, 0.0, 1.0);
@@ -3027,7 +3134,7 @@ static inline void volume_integrate_segment(float3 p0,
         float innerX = clamp((r - diskInner) / max(0.45 * diskInner, 1e-6), 0.0, 1.0);
         float innerGate = smoothstep(0.0, 1.0, innerX);
         densityEff *= (0.25 + 0.75 * innerGate);
-        if (!dataDrivenVolume) {
+        if (!dataDrivenVolume && !analyticSpectralVolume) {
             float voidNoise = fbm(float3(rNorm * 4.6, phi * 10.8, zNorm * 6.2 + 0.45 * P.diskFlowTime));
             float coherentVoid = smoothstep(0.46, 0.83, voidNoise);
             densityEff *= mix(1.0, coherentVoid, 0.30 * porosity);
@@ -3042,9 +3149,14 @@ static inline void volume_integrate_segment(float3 p0,
         if (FC_METRIC == 0) {
             float massLen = 0.5 * P.rs;
             float rM = r / max(massLen, 1e-12);
+            // Radial velocities keep the sqrt(M/r) reference scale (vrRatio is
+            // a fraction of it); the azimuthal speed is physical: the local
+            // static-observer speed of a circular orbit is sqrt(M/(r-2M)),
+            // matching the surface-path kinematics fix.
             float betaRef = sqrt(max(1.0 / max(rM, 1e-6), 1e-8));
+            float betaRefPhi = min(sqrt(max(1.0 / max(rM - 2.0, 1e-2), 1e-8)), 0.999);
             float betaRCoord = vrRatio * betaRef;
-            float betaPhiCoord = -vphiScale * betaRef;
+            float betaPhiCoord = -vphiScale * betaRefPhi;
             if (FC_PHYSICS_MODE != 0u && r < diskInner * (1.0 - 1e-4)) {
                 float rMsM = diskInner / max(massLen, 1e-12);
                 float betaR = 0.0;
@@ -3094,16 +3206,118 @@ static inline void volume_integrate_segment(float3 p0,
         float TBackbone = dataDrivenVolume ? disk_visible_teff(r, P)
                                            : disk_effective_temperature(r, diskInner, P);
         float T = TBackbone * tempScale;
+        float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
+        float lightTravel_v = -abs(mix(ctSeg0, ctSeg1, t)) / (1.4142135624 * max(P.rs, 1e-6));
+        // Hydrostatic radiation-zone scale height: the geometric thickness of
+        // a luminous disk is not a free knob, it is set by the amount of
+        // matter flowing through - H = (3/2) (L/L_Edd) r_g (1 - sqrt(r_in/r))
+        // (Shakura-Sunyaev zone a), so --mdot-edd controls temperature and
+        // thickness coherently. The disk rises from zero height at the inner
+        // edge to its asymptotic H. P.he stays the turbulence correlation
+        // scale; the non-spectral precision volume keeps its legacy constant
+        // slab height.
+        float hLocal = max(P.he, 1e-6);
+        if (analyticSpectralVolume) {
+            float hMax = 0.75 * max(P.diskMdotEdd, 0.02) * max(P.rs, 1e-6);
+            float fBound = max(1.0 - sqrt(max(diskInner, 1.0001 * P.rs) / max(r, 1.0002 * P.rs)), 0.06);
+            hLocal = clamp(hMax * fBound, 0.015 * max(P.rs, 1e-6), 0.6 * max(P.rs, 1e-6));
+        }
         if (FC_PHYSICS_MODE == 2u && !dataDrivenVolume) {
             // Eddington vertical atmosphere + MRI turbulent heating fluctuation.
             // Together these replace the Perlin noise texture: the Eddington profile
             // sets T(τ) from the disk photosphere inward, while MRI heating adds
             // α-disk-scaled spatial fluctuations with correlation length ~ H.
-            float hNorm_vol  = abs(pos.z) / max(P.he, 1e-6);
+            float hNorm_vol  = abs(pos.z) / max(hLocal, 1e-6);
             float tauMid_vol = max(P.diskCloudOpticalDepth * max(P.diskVolumeTauScale, 1.0), 0.5);
+            if (analyticSpectralVolume) {
+                // The spectral volume calibrates its own gray opacity from the
+                // tau scale; keep the interior T(tau) profile consistent with
+                // an optically thick midplane even when the legacy cloud-tau
+                // control is zeroed by the precision-cloud gate.
+                tauMid_vol = max(tauMid_vol, 0.35 * max(P.diskVolumeTauScale, 1.0));
+            }
             T = disk_eddington_atmosphere_temp(hNorm_vol, tauMid_vol, T);
-            float mriAmp_v = max(P.diskPrecisionTexture, P.diskTurbulence);
-            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, P);
+            // Slow light per sample: each fluid parcel is seen as it was when
+            // its light left (segment-interpolated coordinate time).
+            T *= disk_mri_heating_factor_amp(r, phi, pos.z, mriAmp_v, lightTravel_v, P);
+        }
+
+        if (analyticSpectralVolume) {
+            // LTE gray radiative transfer through the analytic medium:
+            // the source function is B(T_local) with absorption from the same
+            // gray opacity, integrated front-to-back so the photosphere
+            // emerges where tau crosses ~1 instead of being imposed as a
+            // surface. Every sample carries its own exact-metric g-factor,
+            // its own Eddington/MRI temperature, and its own slow-light
+            // emission time, so the fluid kinematics (orbital shear, plunge,
+            // turbulent advection) act per parcel along the ray.
+            A.visibleSpectrumMode = 1u;
+            A.pathRs += ds / max(P.rs, 1e-6);
+            float H_sigma = max(hLocal, 1e-6);
+            float zOverH = pos.z / H_sigma;
+            float gaussVertical = exp(-0.5 * zOverH * zOverH);
+            float dTau = min(tauScaleLegacy * densityEff * gaussVertical * ds, 4.0);
+
+            // Clumpy magnetically supported atmosphere (--disk-cloud-coverage).
+            // Radiation-MHD inner disks are strongly density-inhomogeneous,
+            // but below the photosphere (tau >> 1) that clumpiness is hidden -
+            // the visible face of an optically thick disk carries sheared
+            // filaments, not cloud blobs. What genuinely looks cloud-like is
+            // the optically thin atmosphere above ~1.5 H, where magnetic
+            // buoyancy lifts the strong-dissipation filaments into patchy
+            // clumps (magnetically supported atmospheres, Blaes+ 2007;
+            // photon-bubble / compressible-MRI inhomogeneity, Turner+ 2003,
+            // Jiang+ 2013). The clumps share the disk's shear advection and
+            // slow-light time, occult the photosphere from in front, and glow
+            // at the limb - real transfer behavior, not texture. Coverage 0
+            // keeps the smooth photosphere-only disk.
+            float clumpiness = clamp(P.diskCloudCoverage, 0.0, 1.0);
+            if (clumpiness > 1e-3) {
+                float zH = abs(zOverH);
+                float atmGate = smoothstep(1.10, 1.70, zH) * (1.0 - smoothstep(2.4, 3.8, zH));
+                if (atmGate > 1e-3) {
+                    // Seed the clumps from the midplane dissipation filaments
+                    // below this column (the heating field's own vertical
+                    // envelope has already decayed at these heights).
+                    float clumpSeed = disk_mri_heating_factor_amp(r, phi, 0.0, max(mriAmp_v, 0.55), lightTravel_v, P);
+                    float onset = mix(1.42, 1.06, clumpiness);
+                    float clumpField = smoothstep(onset, onset + 0.55, clumpSeed);
+                    if (clumpField > 1e-4) {
+                        // Buoyant magnetic loops have finite vertical extent:
+                        // modulate each column's clump top with a second,
+                        // decorrelated sample of the dissipation field so the
+                        // atmosphere breaks into discrete cloud bodies rather
+                        // than uniform vertical pillars.
+                        float heightSeed = disk_mri_heating_factor_amp(r, phi + 2.399, 0.0, max(mriAmp_v, 0.55), lightTravel_v, P);
+                        float zTop = mix(1.7, 3.4, clamp((heightSeed - 0.42) * 0.505, 0.0, 1.0));
+                        float heightGate = 1.0 - smoothstep(zTop - 0.45, zTop + 0.25, zH);
+                        float dTauAtm = tauScaleLegacy
+                                      * (3.0 * clumpiness * atmGate * clumpField * heightGate * density)
+                                      * ds;
+                        dTau = min(dTau + dTauAtm, 4.0);
+                    }
+                }
+            }
+            float transBefore = exp(-A.tau);
+            float emitW = transBefore * (1.0 - exp(-dTau));
+            if (emitW > 1e-9) {
+                float3 srcXYZ = volume_blackbody_observed_xyz(T, g, P);
+                A.IVisNu = max(A.IVisNu + srcXYZ * emitW, float3(0.0));
+                float dY = max(srcXYZ.y, 0.0) * emitW;
+                if (dY > 0.0) {
+                    volume_accum_add_sample(A, dY, T, g, r, vrRatio, cloudSharp, pos, obs);
+                }
+                A.maxSource = max(A.maxSource, max(srcXYZ.y, 0.0));
+                A.maxSourceThermal = max(A.maxSourceThermal, max(srcXYZ.y, 0.0));
+            }
+            A.tau += dTau;
+            A.tauVis = float3(A.tau);
+            A.maxRho = max(A.maxRho, densityEff);
+            A.maxThetae = max(A.maxThetae, T);
+            A.maxI = max(A.maxI, max(A.IVisNu.y, 0.0));
+            A.I = max(A.IVisNu.y, 0.0);
+            if (!(A.tau < 24.0)) break;
+            continue;
         }
 
         if (dataDrivenVolume) {
@@ -3461,7 +3675,7 @@ static inline void renderBH_core_bundle(constant Params& P,
 
     bool haveHit = false;
     bool thinReferenceBundle = (FC_PHYSICS_MODE == 0u &&
-                                P.visibleTeffModel == 3u &&
+                                (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) &&
                                 FC_TRACE_DEBUG_OFF != 0u);
     bool bundleLinearAnchors = thinReferenceBundle ||
                                (FC_PHYSICS_MODE == 3u &&
@@ -3664,7 +3878,7 @@ static inline void renderBH_core_bundle(constant Params& P,
 static inline bool renderBH_use_bundle(constant Params& P) {
     return (P.rayBundleSSAA != 0u &&
             ((FC_PHYSICS_MODE == 3u && FC_VISIBLE_MODE != 0u) ||
-             (FC_PHYSICS_MODE == 0u && P.visibleTeffModel == 3u)) &&
+             (FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u))) &&
             FC_TRACE_DEBUG_OFF != 0u);
 }
 

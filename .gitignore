@@ -10,6 +10,7 @@ __pycache__/
 
 # Local render outputs at repo root
 /*.png
+/*.exposure_debug.json
 /*.ppm
 /*.bin
 /*.bin.json
@@ -18,6 +19,7 @@ __pycache__/
 
 # Local render outputs under the app wrapper directory
 /Blackhole/*.png
+/Blackhole/*.exposure_debug.json
 /Blackhole/*.ppm
 /Blackhole/*.bin
 /Blackhole/*.bin.json

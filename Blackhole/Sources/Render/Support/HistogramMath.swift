@@ -149,5 +149,9 @@ func composeLuminanceLogRange(diskPhysicsModeID: UInt32) -> (min: Float, max: Fl
         // solve from a fake p50/p99.5 and hiding the broad disk body.
         return (-8.0, 8.0)
     }
-    return (8.0, 20.0)
+    // Visible spectral paths integrate SI spectral radiance (W m^-2 sr^-1):
+    // disk photospheres from a few thousand to a few million Kelvin span
+    // roughly Y ~ 1e2..1e9. The old (8, 20) range predates the SI dLambda
+    // normalization and pinned every SI-scale frame to the first bin.
+    return (-2.0, 12.0)
 }

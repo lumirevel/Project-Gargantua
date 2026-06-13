@@ -50,6 +50,22 @@ struct ComposeParams {
     float4 cameraNoiseParams; // vignette, chromaNoiseMix, rowNoiseScale, toeStrength
     float4 cameraColorParams; // saturation, displayShoulder, lens f-number, focus depth
     float4 cameraGlareParams; // pixelAngleDeg, minGlareAngleDeg, angularFalloff, maxSampleMix
+    // Physically anchored human-eye observer. x = adaptation luminance L_a in
+    // cd/m^2 (0 disables the physiological path), y = absolute luminance per
+    // CIE-Y unit after exposure (683.002 * cameraLuminanceScale; the neutral
+    // density safe-viewing filter is folded into C.exposure), z = display
+    // white anchor as a multiple of L_a, w = reserved.
+    float4 eyeParams;
+    // Photon-statistics sensor noise. x = photoelectrons at saturation for the
+    // active ISO, y = effective read noise in electrons (read + dark + DSNU in
+    // quadrature), z = PRNU fraction, w > 0.5 enables the physical noise model
+    // (heuristic display-domain noise is disabled by the host when set).
+    float4 cameraPhotonParams;
+    // Fraunhofer diffraction of the polygonal iris. x = spike energy fraction
+    // (0 disables), y = spike count (2N for odd blade counts, N for even),
+    // z = spike rotation in radians, w = core falloff scale d0 in pixels
+    // (grows with f-number: lobe spacing is proportional to lambda * N).
+    float4 cameraDiffractionParams;
 };
 
 struct ComposeSolveParams {
@@ -257,22 +273,10 @@ static inline float3 comp_apply_highlight_desaturation(float3 rgb, float lumTm, 
 }
 
 static inline void comp_cie_xyz_bar(float lam, thread float& x_bar, thread float& y_bar, thread float& z_bar) {
-    float t1 = (lam - 442.0) * ((lam < 442.0) ? 0.0624 : 0.0374);
-    float t2 = (lam - 599.8) * ((lam < 599.8) ? 0.0264 : 0.0323);
-    float t3 = (lam - 501.1) * ((lam < 501.1) ? 0.0490 : 0.0382);
-    x_bar = 0.362 * precise::exp(-0.5 * t1 * t1) + 1.056 * precise::exp(-0.5 * t2 * t2) - 0.065 * precise::exp(-0.5 * t3 * t3);
-
-    t1 = (lam - 568.8) * ((lam < 568.8) ? 0.0213 : 0.0247);
-    t2 = (lam - 530.9) * ((lam < 530.9) ? 0.0613 : 0.0322);
-    y_bar = 0.821 * precise::exp(-0.5 * t1 * t1) + 0.286 * precise::exp(-0.5 * t2 * t2);
-
-    t1 = (lam - 437.0) * ((lam < 437.0) ? 0.0845 : 0.0278);
-    t2 = (lam - 459.0) * ((lam < 459.0) ? 0.0385 : 0.0725);
-    z_bar = 1.217 * precise::exp(-0.5 * t1 * t1) + 0.681 * precise::exp(-0.5 * t2 * t2);
-
-    x_bar = max(x_bar, 0.0);
-    y_bar = max(y_bar, 0.0);
-    z_bar = max(z_bar, 0.0);
+    float3 bar = bh_cie1931_xyz_bar(lam);
+    x_bar = bar.x;
+    y_bar = bar.y;
+    z_bar = bar.z;
 }
 
 

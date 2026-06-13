@@ -149,6 +149,14 @@ struct PackedParams {
     var grmhdSmoothEmissionScale: Float
     var grmhdCloudEmissionScale: Float
     var grmhdSmoothWeightMode: UInt32
+    // Physics-constrained cinematic disk v1 source controls.
+    // A: density exponent, emissivity scale, opacity scale, deterministic seed.
+    // B: structure scale, spiral amplitude, spiral pitch, clump contrast.
+    // C: hot crescent strength, reserved, reserved, reserved.
+    var pcdSourceA: SIMD4<Float>
+    var pcdSourceB: SIMD4<Float>
+    var pcdSourceC: SIMD4<Float> // x=hotCrescent, y=profile-6 debug field selector
+    var motionBlurParams: SIMD4<Float> // x=samples (1=off), y=shutter span in flow-time units
 }
 
 struct CollisionInfo {
@@ -227,6 +235,16 @@ struct ComposeParams {
     var cameraNoiseParams: SIMD4<Float>
     var cameraColorParams: SIMD4<Float>
     var cameraGlareParams: SIMD4<Float>
+    // x = adaptation luminance cd/m^2 (0 = physiological eye disabled),
+    // y = absolute luminance per CIE-Y unit after exposure, z = white anchor
+    // multiple of adaptation, w = reserved.
+    var eyeParams: SIMD4<Float> = .zero
+    // x = photoelectrons at saturation, y = read noise electrons, z = PRNU
+    // fraction, w > 0.5 = physical photon noise enabled.
+    var cameraPhotonParams: SIMD4<Float> = .zero
+    // x = spike energy fraction, y = spike count, z = rotation radians,
+    // w = core falloff scale in pixels.
+    var cameraDiffractionParams: SIMD4<Float> = .zero
 }
 
 struct ComposeSolveParams {
@@ -273,8 +291,8 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 616
-    let expectedStride = 624
+    let expectedSize = 688
+    let expectedStride = 688
     let expectedAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
@@ -292,6 +310,10 @@ func validatePackedParamsABIOrThrow() throws {
         "visibleThermalTransferMode": 592,
         "grmhdBranchIsolationMode": 596,
         "grmhdSmoothWeightMode": 612,
+        "pcdSourceA": 624,
+        "pcdSourceB": 640,
+        "pcdSourceC": 656,
+        "motionBlurParams": 672,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -333,5 +355,9 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "visibleThermalTransferMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleThermalTransferMode) ?? -1,
         "grmhdBranchIsolationMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdBranchIsolationMode) ?? -1,
         "grmhdSmoothWeightMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdSmoothWeightMode) ?? -1,
+        "pcdSourceA": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceA) ?? -1,
+        "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
+        "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
+        "motionBlurParams": MemoryLayout<PackedParams>.offset(of: \PackedParams.motionBlurParams) ?? -1,
     ]
 }

@@ -90,6 +90,9 @@ struct ResolvedRenderConfig {
     var uploadedDiskAssetBytes: Int = 0
 
     var diskVolumeEnabled: Bool = false
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed.
+    var diskSpectralVolumeEnabled: Bool = false
     var diskVolumeLegacyEnabled: Bool = false
     var diskVolumeGRMHDEnabled: Bool = false
     var diskVolumeThickEnabled: Bool = false
@@ -122,6 +125,16 @@ struct ResolvedRenderConfig {
     var grmhdCloudEmissionScaleArg: Double = 1.0
     var grmhdSmoothWeightName: String = "constant"
     var grmhdSmoothWeightModeID: UInt32 = 0
+    var pcdDensityExpArg: Double = 1.15
+    var pcdEmissivityScaleArg: Double = 1.0
+    var pcdOpacityScaleArg: Double = 1.0
+    var pcdSeedArg: Double = 1729.0
+    var pcdStructureScaleArg: Double = 1.0
+    var pcdSpiralAmpArg: Double = 0.25
+    var pcdSpiralPitchArg: Double = 5.0
+    var pcdClumpContrastArg: Double = 0.35
+    var pcdHotCrescentArg: Double = 0.35
+    var pcdDebugFieldID: UInt32 = 0
     var diskPolarizedRTEnabled: Bool = false
     var diskPolarizationFracArg: Double = 0.0
     var diskFaradayRotScaleArg: Double = 0.0
@@ -224,6 +237,20 @@ struct ResolvedRenderConfig {
     var cameraISOArg: Float = 100.0
     var cameraShutterSecondsArg: Float = 1.0 / 60.0
     var photographicExposureScale: Float = 0.0
+    var photographicCalibrationName: String = "photometric"
+    var cameraLuminanceScaleArg: Double = 1.0
+    var photometricSaturationLuminance: Double = 0.0
+    var motionBlurSamplesArg: Int = 1
+    var motionBlurTimeLapseArg: Double = 1.0
+    var shutterFlowTimeSpan: Double = 0.0
+    var eyePhotometricEnabled: Bool = false
+    var eyeNDArg: Double = -1.0
+    var eyeAdaptationArg: Double = -1.0
+    var eyeTargetLuminanceArg: Double = 8000.0
+    var eyeWhiteMultipleArg: Double = 8.0
+    var cameraPhotonNoiseEnabled: Bool = false
+    var cameraPhotonParams: SIMD4<Float> = .zero
+    var cameraDiffractionParams: SIMD4<Float> = .zero
     var composeCameraPsfSigmaArg: Float = 0.0
     var composeCameraReadNoiseArg: Float = 0.0
     var composeCameraShotNoiseArg: Float = 0.0
