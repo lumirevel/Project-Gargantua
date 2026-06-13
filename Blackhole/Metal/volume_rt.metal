@@ -3479,7 +3479,7 @@ static inline float3 disk_sample_probe_pos(float3 hitPos,
             hitPos = mix(world0, worldPos, tEnter);
         }
     }
-    if (P.diskNoiseModel == 1u || P.diskNoiseModel == 2u) {
+    if (P.diskNoiseModel == 1u || P.diskNoiseModel == 2u || P.diskNoiseModel == 5u) {
         // Perlin modes sample exactly at hit position for stable streak texture.
         return hitPos;
     }
@@ -3522,6 +3522,8 @@ static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
         baseNoise = clamp(disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P), 0.0, 1.0);
     } else if (P.diskNoiseModel == 3u) {
         baseNoise = disk_classic_stripe_noise(sampleR, phiPos, samplePos.z, P);
+    } else if (P.diskNoiseModel == 5u) {
+        baseNoise = clamp(disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P), -1.0, 1.0);
     } else {
         baseNoise = disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
     }

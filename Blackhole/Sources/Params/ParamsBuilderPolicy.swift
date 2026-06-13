@@ -544,6 +544,8 @@ enum ParamsBuilderPolicy {
             diskModelResolved = "perlin"
         case "perlin-ec7", "perlin-legacy", "legacy-ec7", "ec7":
             diskModelResolved = "perlin-ec7"
+        case "legacy-feb24", "legacy-raw", "legacy-raw-perlin", "raw-perlin", "feb24", "legacy-582", "legacy-ea08066":
+            diskModelResolved = "legacy-feb24"
         case "perlin-classic", "perlin-f552", "legacy-f552", "flow-f552", "cloud-f552", "procedural-f552", "f552":
             diskModelResolved = "legacy-f552"
         case "legacy-periodic-thin", "periodic-thin", "legacy-936", "legacy-cinema-thin":
@@ -555,7 +557,7 @@ enum ParamsBuilderPolicy {
             // on the analytic ray/disk photosphere, not the disk model itself.
             diskModelResolved = (diskAtlasPathArg.isEmpty || thinVisibleAtlasSource) ? "flow" : "atlas"
         default:
-            fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-ec7, legacy-f552, legacy-periodic-thin, legacy-grmhd-atlas, atlas, auto (aliases include procedural, perlin-classic, perlin-f552, legacy-936)")
+            fail("invalid --disk-model \(diskModelArg). use one of: flow, perlin, perlin-ec7, legacy-feb24, legacy-f552, legacy-periodic-thin, legacy-grmhd-atlas, atlas, auto (aliases include procedural, legacy-raw, perlin-classic, perlin-f552, legacy-936)")
         }
 
         if (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) && diskModelResolved != "flow" {
@@ -576,6 +578,7 @@ enum ParamsBuilderPolicy {
             case "perlin-ec7": return 2
             case "legacy-f552": return 3
             case "legacy-periodic-thin": return 4
+            case "legacy-feb24": return 5
             default: return 0
             }
         }()

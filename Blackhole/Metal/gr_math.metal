@@ -75,7 +75,7 @@ struct Params {
     float  diskAtlasRNormMin;
     float  diskAtlasRNormMax;
     float  diskAtlasRNormWarp;
-    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin soft, 2=perlin ec7 legacy, 3=legacy f552 cloud, 4=legacy periodic thin
+    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin soft, 2=legacy ec7, 3=legacy f552, 4=legacy periodic thin, 5=legacy feb24 raw perlin
     float  diskMdotEdd;    // mdot / mdot_edd
     float  diskRadiativeEfficiency; // thin-disk eta
     uint   diskPhysicsMode; // 0=thin, 1=thick/plasma, 2=precision-nt, 3=grmhd-scalar-rt

@@ -36,7 +36,7 @@ struct ComposeParams {
     float backgroundStarStrength;
     float backgroundNebulaStrength;
     uint  preserveHighlightColor; // 1=reduce highlight desaturation to keep visible chroma
-    uint  diskNoiseModel; // 0=streamline, 1=perlin soft, 2=legacy ec7, 3=legacy f552, 4=legacy periodic thin
+    uint  diskNoiseModel; // 0=streamline, 1=perlin soft, 2=legacy ec7, 3=legacy f552, 4=legacy periodic thin, 5=legacy feb24 raw perlin
     uint  cameraProfile; // 0=ideal, 1=scientific, 2=cinema digital, 3=full-frame photo
     uint  realismProfile; // 0=off, 1=physical, 2=observational, 3=cinematic
     uint  cameraFlags; // bits: aperture blades, rotation byte, DOF strength byte

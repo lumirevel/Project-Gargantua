@@ -907,8 +907,9 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
     float c = cos(spiral);
     float s = sin(spiral);
 
-    if (P.diskNoiseModel == 2u) {
-        // ec7c7cd legacy perlin path (returns [0,1]) for crisp stripe-like texture.
+    if (P.diskNoiseModel == 2u || P.diskNoiseModel == 5u) {
+        // Feb 24/25 raw Perlin field. ec7 keeps the later [0,1] compatibility
+        // contract; legacy-feb24 preserves the original signed shader output.
         float bx = 12.0 * u + 2.6 * c;
         float by = 2.6 * s;
 
@@ -935,6 +936,7 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
         float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
         float radialFade = edgeIn * edgeOut;
         float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
+        if (P.diskNoiseModel == 5u) return n;
         return 0.5 + 0.5 * n;
     }
 

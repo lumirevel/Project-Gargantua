@@ -2222,6 +2222,16 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
         return comp_apply_precision_cloud_to_rgb(rgb, rec, P, C, cloudRaw);
     }
     if (C.analysisMode != 0u) return rgb;
+    if (P.diskNoiseModel == 5u) {
+        float cloud = clamp(cloudRaw, 0.0, 1.0);
+        float density = 0.72 + 0.68 * cloud;
+        float clump = precise::pow(cloud, 1.8);
+        rgb *= density;
+        rgb *= (1.0 + 0.20 * clump);
+        rgb.x *= (1.0 + 0.06 * clump);
+        rgb.z *= (1.0 - 0.04 * clump);
+        return rgb;
+    }
     if (P.diskNoiseModel == 1u) {
         // Perlin mode targets a softer cloud look: avoid strong stripe amplification.
         float cloud = comp_cloud_norm_from_raw(cloudRaw, C);
@@ -2245,6 +2255,16 @@ static inline float3 comp_apply_linear_cloud_from_raw(float3 rgb,
                                                       constant ComposeParams& C)
 {
     if (comp_linear_rgb_is_final_sentinel(cloudRaw)) {
+        return rgb;
+    }
+    if (FC_PHYSICS_MODE == 0u && C.diskNoiseModel == 5u) {
+        float rawCloud = clamp(cloudRaw, 0.0, 1.0);
+        float density = 0.72 + 0.68 * rawCloud;
+        float clump = precise::pow(rawCloud, 1.8);
+        rgb *= density;
+        rgb *= (1.0 + 0.20 * clump);
+        rgb.x *= (1.0 + 0.06 * clump);
+        rgb.z *= (1.0 - 0.04 * clump);
         return rgb;
     }
     float cloud = comp_cloud_norm_from_raw(cloudRaw, C);

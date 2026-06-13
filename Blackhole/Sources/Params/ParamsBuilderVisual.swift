@@ -402,6 +402,8 @@ enum ParamsBuilderVisual {
         let composeDitherDefault: Double = {
             switch diskModelArg {
             case "perlin", "perlin-ec7", "perlin-legacy", "legacy-ec7", "ec7",
+                 "legacy-feb24", "legacy-raw", "legacy-raw-perlin", "raw-perlin",
+                 "feb24", "legacy-582", "legacy-ea08066",
                  "perlin-classic", "perlin-f552", "legacy-f552", "flow-f552",
                  "cloud-f552", "procedural-f552", "f552",
                  "legacy-periodic-thin", "periodic-thin", "legacy-936", "legacy-cinema-thin":
