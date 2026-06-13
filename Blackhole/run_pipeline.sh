@@ -409,6 +409,9 @@ canonical_disk_model() {
     perlin-classic|perlin-f552|legacy-f552|flow-f552|cloud-f552|procedural-f552|f552)
       printf 'legacy-f552'
       ;;
+    legacy-periodic-thin|periodic-thin|legacy-936|legacy-cinema-thin)
+      printf 'legacy-periodic-thin'
+      ;;
     perlin-ec7|perlin-legacy|legacy-ec7|ec7)
       printf 'perlin-ec7'
       ;;
@@ -1498,6 +1501,9 @@ Legacy / compatibility options:
   --disk-model perlin-classic   Alias of legacy-f552.
   --disk-model perlin-f552      Alias of legacy-f552.
   --disk-model flow-f552        Alias of legacy-f552 for old procedural-flow renders.
+  --disk-model legacy-periodic-thin
+                                Apr-2026 periodic thin-disk texture mode recovered from 93615c3.
+  --disk-model legacy-936       Alias of legacy-periodic-thin.
   --disk-model perlin-ec7       EC7 crisp legacy Perlin disk.
   --disk-model perlin-legacy    Alias of perlin-ec7.
   --disk-model legacy-ec7       Alias of perlin-ec7.
@@ -1508,7 +1514,7 @@ Legacy / compatibility options:
   --disk-model auto             Context-dependent default.
 
 Legacy source selectors:
-  --disk-source {flow|perlin|legacy-f552|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
+  --disk-source {flow|perlin|legacy-f552|legacy-periodic-thin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
   --disk-mode {thin|thick|precision|grmhd|auto}
   --disk-repr {2d|3d}
 
@@ -1645,13 +1651,13 @@ Routing rules:
 - Legacy/debug source families are hidden from the recommended surface. Use --science-regime <old-name> --experimental only when reproducing an old experiment.
 - Swift-only: --preset --camX --camY --camZ --fov --roll --diskH --maxSteps/--max-steps --h --metric --spin --kerr-substeps --kerr-tol --kerr-escape-mult --kerr-radial-scale --kerr-azimuth-scale --kerr-impact-scale --disk-time --disk-orbital-boost --disk-radial-drift --disk-turbulence --disk-orbital-boost-inner --disk-orbital-boost-outer --disk-radial-drift-inner --disk-radial-drift-outer --disk-turbulence-inner --disk-turbulence-outer --disk-flow-step --disk-flow-steps --disk-mdot-edd --disk-radiative-efficiency --disk-mode --disk-physics --disk-physics-mode --mdot-edd --eta --fcol --thick-scale --cloud-tau --nu-obs-hz --rt-steps --disk-plunge-floor --disk-thick-scale --disk-color-factor --disk-returning-rad --disk-return-bounces --disk-rt-steps --disk-scattering-albedo --disk-precision-texture --disk-precision-clouds --disk-cloud-coverage --disk-cloud-optical-depth --disk-cloud-porosity --disk-cloud-shadow-strength --disk-model --disk-atlas --disk-atlas-width --disk-atlas-height --disk-atlas-temp-scale --disk-atlas-density-blend --disk-atlas-vr-scale --disk-atlas-vphi-scale --disk-atlas-r-min --disk-atlas-r-max --disk-atlas-r-warp --disk-volume --disk-spectral-volume --disk-volume-r --disk-volume-phi --disk-volume-z --disk-volume-tau-scale --disk-volume-hdf5 --disk-volume-out --disk-volume-nr --disk-volume-nphi --disk-volume-nz --disk-volume-z-max --disk-vol0 --disk-vol1 --disk-meta --disk-nu-obs-hz --disk-grmhd-density-scale --disk-grmhd-b-scale --disk-grmhd-emission-scale --disk-grmhd-absorption-scale --disk-grmhd-vel-scale --disk-grmhd-debug --disk-grmhd-phi-contrast --disk-grmhd-phi-contrast-max-ratio --disk-polarized-rt --disk-pol-frac --disk-faraday-rot --disk-faraday-conv --visible-mode --visible-policy --visible-samples --visible-emission-model --visible-synch-alpha --visible-synch-scale --visible-kappa --grmhd-branch-isolation --grmhd-transport-alpha-scale --grmhd-smooth-emission-scale --grmhd-cloud-emission-scale --pcd-density-exp --pcd-emissivity-scale --pcd-opacity-scale --pcd-seed --pcd-structure-scale --pcd-spiral-amp --pcd-spiral-pitch --pcd-clump-contrast --pcd-hot-crescent --thin-photosphere --thin-h-over-r-base --thin-h-over-r-inner --thin-h-over-r-outer --thin-radial-taper --thin-weight-power-emission --thin-weight-power-absorption --corona-layer --corona-h-over-r --corona-weight-power --thermal-transfer-mode --teff-model --teff-T0 --teff-r0 --teff-p --bh-mass --mdot --r-in --photosphere-rho-threshold --ray-bundle --ray-bundle-jacobian --ray-bundle-jacobian-strength --ray-bundle-footprint-clamp --trace-hdr-direct --exposure-mode --exposure-ev --presentation-mode/--presentation --camera-model --camera-profile --camera-profile-json --realism-profile --camera-psf-sigma --camera-read-noise --camera-shot-noise --camera-flare --camera-f-number --camera-iso --camera-shutter --photographic-calibration --camera-luminance-scale --motion-blur-samples --motion-blur-time-lapse --eye-photometric --eye-nd --eye-adaptation --eye-target-luminance --eye-white-multiple --camera-photon-noise --camera-photon-scale --camera-diffraction --camera-focus-depth --camera-dof-strength --camera-aperture-blades --camera-aperture-rotation --background --bg-stars --bg-star-density --bg-star-strength --bg-nebula-strength --realism-debug --science-regime
 - Ray bundle values: --ray-bundle {off|on|jacobian}; legacy override: --ray-bundle-jacobian {off|on}
-- Disk model values: --disk-model {flow|perlin|legacy-f552|perlin-ec7|legacy-grmhd-atlas|atlas|auto} (aliases: procedural, perlin-classic, perlin-f552)
+- Disk model values: --disk-model {flow|perlin|legacy-f552|legacy-periodic-thin|perlin-ec7|legacy-grmhd-atlas|atlas|auto} (aliases: procedural, perlin-classic, perlin-f552, legacy-936)
 - Disk mode values: --disk-mode {thin|thick|precision|grmhd|auto} (legacy: --disk-physics-mode)
   - profile override: --disk-physics {legacy|thin|thick|eht}
   - auto: precision alias with diskH-adaptive thin/thick defaults
 - Disk representation selector: --disk-repr {2d|3d}
-- Disk source selector: --disk-source {flow|perlin|legacy-f552|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
-  - 2d + {perlin|legacy-f552|perlin-classic|perlin-ec7|atlas|hdf5|pluto}: textured/atlas path (hdf5/pluto auto-bridge to atlas)
+- Disk source selector: --disk-source {flow|perlin|legacy-f552|legacy-periodic-thin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}
+  - 2d + {perlin|legacy-f552|legacy-periodic-thin|perlin-classic|perlin-ec7|atlas|hdf5|pluto}: textured/atlas path (hdf5/pluto auto-bridge to atlas)
   - 3d + {flow|hdf5|pluto}: precision/grmhd volumetric path
 - Precision texture controls: --disk-returning-rad <0..1> --disk-return-bounces <1..4> --disk-rt-steps <0..32> --disk-scattering-albedo <0..1> --disk-precision-texture <0..1>
 - Precision cloud controls: --disk-precision-clouds {on|off} --disk-cloud-coverage <0..1> --disk-cloud-optical-depth <0..12> --disk-cloud-porosity <0..1> --disk-cloud-shadow-strength <0..1>
@@ -3050,9 +3056,9 @@ fi
 
 if [[ "$DISK_SOURCE_SET" -eq 1 ]]; then
   case "$DISK_SOURCE_VALUE" in
-    flow|perlin|legacy-f552|perlin-classic|perlin-f552|flow-f552|cloud-f552|procedural-f552|f552|perlin-ec7|legacy-ec7|ec7|atlas|hdf5|pluto) ;;
+    flow|perlin|legacy-f552|perlin-classic|perlin-f552|flow-f552|cloud-f552|procedural-f552|f552|legacy-periodic-thin|periodic-thin|legacy-936|legacy-cinema-thin|perlin-ec7|legacy-ec7|ec7|atlas|hdf5|pluto) ;;
     *)
-      echo "error: --disk-source must be one of flow, perlin, legacy-f552, perlin-classic, perlin-ec7, atlas, hdf5, pluto" >&2
+      echo "error: --disk-source must be one of flow, perlin, legacy-f552, legacy-periodic-thin, perlin-classic, perlin-ec7, atlas, hdf5, pluto" >&2
       exit 2
       ;;
   esac
@@ -3242,6 +3248,14 @@ if [[ "$DISK_SOURCE_SET" -eq 1 ]]; then
         exit 2
       fi
       REQUESTED_DISK_MODEL="legacy-f552"
+      ;;
+    legacy-periodic-thin|periodic-thin|legacy-936|legacy-cinema-thin)
+      if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
+        echo "error: --disk-source legacy-periodic-thin is a 2d thin-disk path and cannot be combined with 3d representation." >&2
+        echo "hint: use --disk-repr 2d or switch source to flow/hdf5/pluto." >&2
+        exit 2
+      fi
+      REQUESTED_DISK_MODEL="legacy-periodic-thin"
       ;;
     perlin-ec7|legacy-ec7|ec7)
       if [[ "$EFFECTIVE_DISK_REPR" == "3d" ]]; then
@@ -4513,7 +4527,7 @@ AUTO_TILE_COLLISION_BYTES=$((RENDER_WIDTH * RENDER_HEIGHT * 64))
 if [[ "$GPU_STREAM_LINEAR32" -eq 0 && "$COLLISIONS_MODE" == "auto" && "$COLLISIONS_OUT_EXPLICIT" -eq 0 && -z "$STOKES_OUT" ]]; then
   AUTO_HDR_INTERMEDIATE_REASON=""
   case "$DISK_MODEL_VALUE" in
-    perlin|perlin-ec7|perlin-legacy|legacy-ec7|ec7|legacy-f552|perlin-classic|perlin-f552|flow-f552|cloud-f552|procedural-f552|f552)
+    perlin|perlin-ec7|perlin-legacy|legacy-ec7|ec7|legacy-f552|perlin-classic|perlin-f552|flow-f552|cloud-f552|procedural-f552|f552|legacy-periodic-thin|periodic-thin|legacy-936|legacy-cinema-thin)
       AUTO_HDR_INTERMEDIATE_REASON="large perlin-family render"
       ;;
   esac

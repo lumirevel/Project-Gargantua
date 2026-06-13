@@ -179,6 +179,7 @@ struct ThinHybridRealismConfig {
     float innerBoost;
     float outerFadeStart;
     float outerFadeEnd;
+    float legacyPeriodicThin;
     float3 atmosphereTint;
     float3 coronaTint;
 };
@@ -212,12 +213,14 @@ struct ThinDiskStructureSample {
 };
 
 static inline bool comp_thin_physical_active(constant ComposeParams& C) {
-    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.realismProfile >= 1u);
+    return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u &&
+            (C.realismProfile >= 1u || C.diskNoiseModel == 4u));
 }
 
 static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
     return (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u &&
-            (C.realismProfile == 2u || C.realismProfile == 3u || C.realismProfile == 4u));
+            (C.realismProfile == 2u || C.realismProfile == 3u || C.realismProfile == 4u ||
+             C.diskNoiseModel == 4u));
 }
 
 static inline bool comp_thin_realism_debug_active(constant ComposeParams& C) {
@@ -352,7 +355,21 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
 {
     ThinHybridRealismConfig cfg;
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.0);
-    if (C.realismProfile == 5u) {
+    bool legacyPeriodicThin = (C.diskNoiseModel == 4u);
+    cfg.legacyPeriodicThin = legacyPeriodicThin ? 1.0 : 0.0;
+    if (legacyPeriodicThin && C.realismProfile >= 3u) {
+        cfg.perturbAmp = clamp(0.62 + 0.20 * turbulence, 0.54, 0.88);
+        cfg.atmosphereTau = 0.30;
+        cfg.coronaStrength = 0.055;
+        cfg.beamingStrength = 0.0;
+        cfg.innerBoost = 0.84;
+    } else if (legacyPeriodicThin) {
+        cfg.perturbAmp = clamp(0.50 + 0.20 * turbulence, 0.38, 0.74);
+        cfg.atmosphereTau = 0.17;
+        cfg.coronaStrength = 0.024;
+        cfg.beamingStrength = 0.0;
+        cfg.innerBoost = 0.48;
+    } else if (C.realismProfile == 5u) {
         cfg.perturbAmp = clamp(0.34 + 0.18 * turbulence, 0.18, 0.58);
         cfg.atmosphereTau = 0.0;
         cfg.coronaStrength = 0.018;
@@ -383,7 +400,13 @@ static inline ThinHybridRealismConfig comp_thin_hybrid_config(constant Params& P
         cfg.beamingStrength = 0.0;
         cfg.innerBoost = 0.0;
     }
-    if (C.realismProfile == 5u) {
+    if (legacyPeriodicThin && C.realismProfile >= 3u) {
+        cfg.outerFadeStart = 0.50;
+        cfg.outerFadeEnd = 0.98;
+    } else if (legacyPeriodicThin) {
+        cfg.outerFadeStart = 0.66;
+        cfg.outerFadeEnd = 1.00;
+    } else if (C.realismProfile == 5u) {
         cfg.outerFadeStart = 0.74;
         cfg.outerFadeEnd = 1.00;
     } else if (C.realismProfile == 4u) {
@@ -743,7 +766,10 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     // differential rotation, while radial coherence scales with H/r. This is a
     // constrained turbulence model, not a solved MHD simulation.
     float hOverR = clamp(P.he / max(rr * rs, 1e-6), 0.003, 0.12);
-    float radialCoherence = clamp(0.045 / hOverR, 1.2, 6.0);
+    bool legacyPeriodicThin = (cfg.legacyPeriodicThin > 0.5);
+    float radialCoherence = legacyPeriodicThin
+        ? clamp(0.20 / hOverR, 2.5, 32.0)
+        : clamp(0.045 / hOverR, 1.2, 6.0);
     float innerActivity = smoothstep(0.15, 2.2, dr) * (1.0 - smoothstep(46.0, 96.0, rr));
     float innerGain = 0.76 + 0.42 * (1.0 - smoothstep(4.0, 15.0, dr));
 
@@ -752,14 +778,13 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     float channel5 = sin(5.0 * (phi - 2.15 * omega * timeRs) + 14.0 * logR + 0.13 * rr);
     f.channel = 0.48 * channel2 + 0.32 * channel3 + 0.20 * channel5;
 
-    // Keep weak zonal modulation, but avoid thin-disk H/R turning it into
-    // screen-visible concentric standing rings. The azimuthal terms make this a
-    // sheared disk-space fluctuation rather than a radial contour texture.
-    float zonalPhase = 0.45 * radialCoherence * logR
-                     + 0.035 * timeRs
-                     + 0.55 * sin(2.0 * shear)
-                     + 0.24 * sin(5.0 * (phi - 1.15 * omega * timeRs));
-    f.zonal = 0.55 * sin(zonalPhase);
+    float zonalPhase = legacyPeriodicThin
+        ? (radialCoherence * logR + 0.035 * timeRs + 0.18 * sin(2.0 * shear))
+        : (0.45 * radialCoherence * logR
+            + 0.035 * timeRs
+            + 0.55 * sin(2.0 * shear)
+            + 0.24 * sin(5.0 * (phi - 1.15 * omega * timeRs)));
+    f.zonal = legacyPeriodicThin ? sin(zonalPhase) : 0.55 * sin(zonalPhase);
 
     float streak = comp_thin_periodic_streak(shear, logR, rr, omega, timeRs, radialCoherence);
     float eddy = comp_thin_periodic_eddy(phi, logR, rr, omega, timeRs, radialCoherence);
@@ -767,8 +792,8 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     f.filament = smoothstep(0.40, 0.86, 0.72 * ridge + 0.28 * eddy);
 
     float cloudCentered = cloudNorm - 0.5;
-    float raw = 0.60 * f.channel
-              + 0.06 * f.zonal
+    float raw = (legacyPeriodicThin ? 0.54 : 0.60) * f.channel
+              + (legacyPeriodicThin ? 0.16 : 0.06) * f.zonal
               + 0.34 * (f.filament - 0.5)
               + 0.16 * (eddy - 0.5)
               + 0.10 * cloudCentered;
@@ -845,6 +870,38 @@ static inline ThinDiskStructureSample comp_thin_disk_structure(float rNorm,
     float rr = max(rNorm, 1.0001);
     float dr = max(rr - rInNorm, 0.0);
     ThinMRIShearingField mri = comp_thin_mri_shearing_field(rr, rInNorm, phi, cloudNorm, P, cfg);
+    bool legacyPeriodicThin = (cfg.legacyPeriodicThin > 0.5);
+    if (legacyPeriodicThin) {
+        m.filament = mri.filament;
+        m.perturb = mri.perturb;
+
+        float radialTau = comp_thin_alpha_opacity_proxy(rr, rInNorm, P);
+        m.radialTau = radialTau;
+        float densityBase = comp_thin_optical_depth_density(rr, rInNorm, m.perturb, cloudNorm, cfg);
+        float cloudCentered = cloudNorm - 0.5;
+        float innerTaper = 1.0 - smoothstep(2.2, 14.0, dr);
+        float contrast = 0.62 * mri.densityContrast
+                       + 0.22 * cloudCentered
+                       + 0.30 * (m.filament - 0.5)
+                       + 0.06 * mri.zonal
+                       + 0.10 * innerTaper * mri.channel;
+        float sigma = 0.18 + 0.42 * cfg.perturbAmp;
+        float logDensity = clamp(sigma * contrast - 0.5 * sigma * sigma, -0.58, 0.72);
+        float turbulentDensity = densityBase * exp(logDensity);
+        float densityMix = clamp(0.45 + 0.45 * cfg.perturbAmp, 0.0, 0.92);
+        m.density = clamp(radialTau * mix(1.0, turbulentDensity, densityMix), 0.22, 2.55);
+
+        float tempContrast = cfg.perturbAmp * (0.30 * (m.perturb - 0.5)
+                             + 0.16 * (m.filament - 0.5)
+                             + 0.08 * cloudCentered
+                             + 0.06 * (m.density - 1.0)
+                             + 0.08 * innerTaper * mri.channel);
+        m.tempShift = clamp(exp(tempContrast), 0.78, 1.30);
+        m.opacity = clamp(radialTau * m.density
+                        * (0.82 + 0.30 * m.filament)
+                        * (0.90 + 0.16 * innerTaper), 0.18, 2.90);
+        return m;
+    }
     float atlasBlend = (P.diskAtlasMode != 0u) ? clamp(P.diskAtlasDensityBlend, 0.0, 1.0) : 0.0;
     float atlasCentered = cloudNorm - 0.5;
     // When an HDF5/GRMHD atlas is present, rec.noise is no longer procedural

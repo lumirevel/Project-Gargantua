@@ -227,6 +227,8 @@ enum RenderOutputs {
             diskModelLabel = "perlin_texture_ec7_v1"
         } else if config.diskModelResolved == "legacy-f552" {
             diskModelLabel = "legacy_f552_cloud_v1"
+        } else if config.diskModelResolved == "legacy-periodic-thin" {
+            diskModelLabel = "legacy_periodic_thin_93615c3_v1"
         } else {
             diskModelLabel = "streamline_particles_v1"
         }
