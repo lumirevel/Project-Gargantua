@@ -179,6 +179,7 @@ PRESENTATION_MODE_EXPLICIT=0
 SCIENCE_REGIME_VALUE=""
 SCIENCE_REGIME_SET=0
 LEGACY_BH_FINISH_GRMHD=0
+LEGACY_THIN_DISK_PRESET_DEFAULT=0
 SOURCE_MODEL_VALUE=""
 SOURCE_MODEL_SET=0
 SOURCE_QUALITY_VALUE=""
@@ -649,7 +650,7 @@ apply_source_model_defaults() {
 require_experimental_for_hidden_source() {
   [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
   case "$SCIENCE_REGIME_VALUE" in
-    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq|legacy-bh-finish-grmhd|bh-finish-grmhd|legacy-grmhd-bh-finish)
+    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq|legacy-bh-finish-grmhd|bh-finish-grmhd|legacy-grmhd-bh-finish|legacy-thin-disk-preset-default|thin-disk-preset-default|legacy-dngr-thin-preset)
       return 0
       ;;
     *)
@@ -940,9 +941,24 @@ apply_science_regime_defaults() {
         set_look_arg "realistic"
       fi
       ;;
-    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin)
+    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin|legacy-thin-disk-preset-default|thin-disk-preset-default|legacy-dngr-thin-preset)
       set_default_disk_mode "precision"
       set_default_presentation_mode "eye"
+      LEGACY_THIN_DISK_PRESET_DEFAULT=0
+      case "$SCIENCE_REGIME_VALUE" in
+        legacy-thin-disk-preset-default|thin-disk-preset-default|legacy-dngr-thin-preset)
+          LEGACY_THIN_DISK_PRESET_DEFAULT=1
+          if [[ "$METRIC_EXPLICIT" -eq 0 ]]; then
+            METRIC_VALUE="kerr"
+            SWIFT_ARGS+=(--metric "kerr")
+          fi
+          if ! swift_arg_present --preset; then
+            PRESET_VALUE="thin-disk"
+            SWIFT_ARGS+=(--preset "thin-disk")
+          fi
+          append_swift_default --spin "0.92"
+          ;;
+      esac
       PIPELINE_MODE="gpu-only"
       if [[ "$DISK_REPR_SET" -eq 0 ]]; then
         DISK_REPR_SET=1
@@ -1186,7 +1202,7 @@ apply_science_regime_defaults() {
       echo "warn: --science-regime grmhd-photosphere is a diagnostic photosphere path; use thin-visible/experience for human-visible thin disk renders." >&2
       ;;
     *)
-      echo "error: --science-regime must be one of thin-visible, thin-disk-visible-reference, thin-disk-visible-reference-hq, plausible-disk-v1, plausible-disk-v1-hq, experience, dngr-thin, dngr-flow, dngr-volume, grmhd-temperature-flow, grmhd-temperature-flow-scientific, grmhd-temperature-flow-human-visible, grmhd-temperature-flow-hq, legacy-bh-finish-grmhd, grmhd-hot-flow, grmhd-structure-flow, grmhd-eye-flow, grmhd-photosphere-atlas, grmhd-photosphere" >&2
+      echo "error: --science-regime must be one of thin-visible, thin-disk-visible-reference, thin-disk-visible-reference-hq, plausible-disk-v1, plausible-disk-v1-hq, experience, dngr-thin, dngr-flow, dngr-volume, legacy-thin-disk-preset-default, grmhd-temperature-flow, grmhd-temperature-flow-scientific, grmhd-temperature-flow-human-visible, grmhd-temperature-flow-hq, legacy-bh-finish-grmhd, grmhd-hot-flow, grmhd-structure-flow, grmhd-eye-flow, grmhd-photosphere-atlas, grmhd-photosphere" >&2
       exit 2
       ;;
   esac
@@ -1577,6 +1593,12 @@ Old experiment selector:
                                 visible blackbody volume RT, and state smooth
                                 weighting. Presentation remains selectable with
                                 --presentation scientific|eye|cinema.
+  --science-regime legacy-thin-disk-preset-default
+                                Replays thin_disk_preset_default.png from the
+                                old DNGR volume preset comparison: dngr-volume,
+                                thin-disk camera preset, Kerr a=0.92, and eye
+                                presentation. It changes only source/geometry
+                                selection, not camera/interpreter code.
 
 Old aliases still accepted for reproduction:
   dngr-thin, interstellar-thin, gargantua-thin
@@ -3683,7 +3705,7 @@ fi
 
 if [[ "$DISK_VOLUME_SET" -eq 0 && "$DISK_VOL0_SET" -eq 0 && "$DISK_VOL1_SET" -eq 0 && -z "$VOLUME_HDF5_SOURCE" ]]; then
   case "$SCIENCE_REGIME_VALUE" in
-    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin)
+    dngr-volume|interstellar-volume|thin-volume|photosphere-volume|volumetric-thin|legacy-thin-disk-preset-default|thin-disk-preset-default|legacy-dngr-thin-preset)
       THIN_VOLUME_SCRIPT="$SCRIPT_DIR/build_thin_photosphere_volume.py"
       if [[ ! -f "$THIN_VOLUME_SCRIPT" ]]; then
         echo "error: thin photosphere volume script not found: $THIN_VOLUME_SCRIPT" >&2
