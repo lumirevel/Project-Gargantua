@@ -58,7 +58,9 @@ enum MetalPipelines {
         traceDebugOff: UInt32,
         grmhdWeightMode: UInt32,
         visibleEmissionMode: UInt32,
-        compileCollisionCompose: Bool = true
+        compileCollisionCompose: Bool = true,
+        compileCollisionFinalCompose: Bool = true,
+        compileBHLinearTileCompose: Bool = true
     ) throws -> RenderPipelines {
         let fc = makeFunctionConstants(
             metric: metric,
@@ -97,7 +99,9 @@ enum MetalPipelines {
         let composeLinearTilePipeline = try makePipeline(composeLinearTileKernelName)
         let composeLinearTileLitePipeline = try makePipeline("composeLinearRGBTileLite")
         let composeBHLinearPipeline = try makePipeline("composeBHLinear")
-        let composeBHLinearTilePipeline = try makePipeline("composeBHLinearTile")
+        let composeBHLinearTilePipeline = compileBHLinearTileCompose
+            ? try makePipeline("composeBHLinearTile")
+            : composeBHLinearPipeline
         let cloudHistLinearPipeline = try makePipeline("composeCloudHistLinear")
         let lumHistLinearPipeline = try makePipeline("composeLumHistLinear")
         let lumHistLinearTileCloudPipeline = try makePipeline("composeLumHistLinearTileCloud")
@@ -109,7 +113,7 @@ enum MetalPipelines {
         // with the current thin visible reference constants can dominate startup
         // or hang Metal specialization. Use valid placeholder pipelines when the
         // execution plan cannot reach collision-compose kernels.
-        let composePipeline = compileCollisionCompose ? try makePipeline("composeBH") : composeBHLinearPipeline
+        let composePipeline = compileCollisionFinalCompose ? try makePipeline("composeBH") : composeBHLinearPipeline
         let cloudHistPipeline = compileCollisionCompose ? try makePipeline("composeCloudHist") : cloudHistLinearPipeline
         let cloudHistLitePipeline = compileCollisionCompose ? try makePipeline("composeCloudHistLite") : cloudHistLinearPipeline
         let lumHistPipeline = compileCollisionCompose ? try makePipeline("composeLumHist") : lumHistLinearPipeline

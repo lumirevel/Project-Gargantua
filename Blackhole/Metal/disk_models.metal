@@ -899,6 +899,42 @@ static inline float perlin2_repeat(float x, float y, int repeatX, int repeatY, u
     return perlin_lerp(nx0, nx1, v);
 }
 
+static inline float disk_feb24_raw_perlin_texture_noise(float dxy, float phi, float z, constant Params& P) {
+    float denom = max(P.re - P.rs, 1e-6);
+    float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
+
+    float spiral = phi + 1.8 * log(max(dxy / P.rs, 1.0));
+    float c = cos(spiral);
+    float s = sin(spiral);
+
+    float bx = 12.0 * u + 2.6 * c;
+    float by = 2.6 * s;
+
+    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
+    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+
+    float fbmVal = 0.0;
+    float amp = 1.0;
+    float freq = 1.0;
+    float ampSum = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        float nx = (bx + 0.20 * w1) * freq;
+        float ny = (by + 0.18 * w2) * freq;
+        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+        fbmVal += amp * n;
+        ampSum += amp;
+        amp *= 0.55;
+        freq *= 2.0;
+    }
+    fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
+
+    float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
+    float edgeIn = smoothstep(0.01, 0.08, u);
+    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
+    float radialFade = edgeIn * edgeOut;
+    return clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
+}
+
 static inline float disk_perlin_texture_noise(float dxy, float phi, float z, constant Params& P) {
     float denom = max(P.re - P.rs, 1e-6);
     float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
@@ -907,9 +943,8 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
     float c = cos(spiral);
     float s = sin(spiral);
 
-    if (P.diskNoiseModel == 2u || P.diskNoiseModel == 5u) {
-        // Feb 24/25 raw Perlin field. ec7 keeps the later [0,1] compatibility
-        // contract; legacy-feb24 preserves the original signed shader output.
+    if (P.diskNoiseModel == 2u) {
+        // ec7c7cd legacy perlin path (returns [0,1]) for crisp stripe-like texture.
         float bx = 12.0 * u + 2.6 * c;
         float by = 2.6 * s;
 
@@ -936,7 +971,6 @@ static inline float disk_perlin_texture_noise(float dxy, float phi, float z, con
         float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
         float radialFade = edgeIn * edgeOut;
         float n = clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
-        if (P.diskNoiseModel == 5u) return n;
         return 0.5 + 0.5 * n;
     }
 

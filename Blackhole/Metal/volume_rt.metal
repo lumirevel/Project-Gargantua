@@ -3523,7 +3523,7 @@ static inline void disk_set_noise_and_bridge(thread CollisionInfo& info,
     } else if (P.diskNoiseModel == 3u) {
         baseNoise = disk_classic_stripe_noise(sampleR, phiPos, samplePos.z, P);
     } else if (P.diskNoiseModel == 5u) {
-        baseNoise = clamp(disk_perlin_texture_noise(sampleR, phiPos, samplePos.z, P), -1.0, 1.0);
+        baseNoise = clamp(disk_feb24_raw_perlin_texture_noise(sampleR, phiPos, samplePos.z, P), -1.0, 1.0);
     } else {
         baseNoise = disk_cloud_noise(sampleR, phiPos, samplePos.z, ctLen, P);
     }
