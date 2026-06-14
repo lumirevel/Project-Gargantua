@@ -64,6 +64,23 @@ enum RenderSetup {
         )
 
         let useInMemoryCollisions = config.composeGPU && config.gpuFullCompose
+        let resourcePolicy = RenderResourcePolicy(config: config, params: params, device: device)
+        let setupFlags = RenderExecutionPlanning.makeFlags(config: config, policy: resourcePolicy)
+        let compileCollisionCompose = !(setupFlags.effectiveUseDirectLinear || setupFlags.effectiveUseLinear32Intermediate)
+        let fullFrameComposeFits =
+            resourcePolicy.workingSetCap <= 0 ||
+            resourcePolicy.projectedFullComposeBytes <= Int(Double(resourcePolicy.workingSetCap) * 0.92)
+        let compileCollisionFinalCompose =
+            compileCollisionCompose &&
+            (!config.autoExposureEnabled ||
+             resourcePolicy.composeStrategyPreference == .tileFirst ||
+             !fullFrameComposeFits)
+        let compileBHLinearTileCompose =
+            config.composeGPU &&
+            config.gpuFullCompose &&
+            config.autoExposureEnabled &&
+            !setupFlags.effectiveUseDirectLinear &&
+            (resourcePolicy.composeStrategyPreference == .tileFirst || !fullFrameComposeFits)
         let traceKernelBase: String
         traceKernelBase = config.rayBundleActive ? "renderBHBundle" : "renderBHClassic"
         let traceKernelName = useInMemoryCollisions ? "\(traceKernelBase)Global" : traceKernelBase
@@ -75,7 +92,12 @@ enum RenderSetup {
             metric: config.metricArg,
             physicsMode: config.diskPhysicsModeID,
             visibleMode: UInt32((config.diskPhysicsModeID == 3 && config.visibleModeEnabled) ? 1 : 0),
-            traceDebugOff: UInt32(config.diskGrmhdDebugID == 0 ? 1 : 0)
+            traceDebugOff: UInt32(config.diskGrmhdDebugID == 0 ? 1 : 0),
+            grmhdWeightMode: config.grmhdSmoothWeightModeID,
+            visibleEmissionMode: config.visibleEmissionModelID,
+            compileCollisionCompose: compileCollisionCompose,
+            compileCollisionFinalCompose: compileCollisionFinalCompose,
+            compileBHLinearTileCompose: compileBHLinearTileCompose
         )
 
         return RenderRuntime(

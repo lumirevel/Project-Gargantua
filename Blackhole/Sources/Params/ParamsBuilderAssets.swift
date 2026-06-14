@@ -6,6 +6,7 @@ struct RuntimeIOResolution {
     let discardCollisionOutput: Bool
     let linear32Intermediate: Bool
     let linear32OutPath: String
+    let composeHDRInputPath: String
     let outPath: String
     let imageOutPath: String
     let traceHDRDirectMode: String
@@ -29,6 +30,7 @@ struct DiskVolumeResourceResolution {
     let metaRMin: Double?
     let metaRMax: Double?
     let metaZMax: Double?
+    let metaRWarp: Double?
     let vol0PathResolved: String
     let vol1PathResolved: String
 }
@@ -52,10 +54,13 @@ enum ParamsBuilderAssets {
     ) -> RuntimeIOResolution {
         let outputLooksLikeCollision = rawOutputPath.lowercased().hasSuffix(".bin")
         let composeGPU = true
-        let linear32Intermediate = flagArgAny(["--linear32-intermediate", "--hdr-intermediate"])
+        let composeHDRInputPath = stringArgAny(["--compose-hdr-in", "--compose-linear32-in"], default: "")
+        let linear32Intermediate = flagArgAny(["--linear32-intermediate", "--hdr-intermediate"]) || !composeHDRInputPath.isEmpty
         let gpuFullCompose = !linear32Intermediate
         let discardCollisionOutput = !flagArgAny(["--debug"])
-        let linear32OutPath = stringArgAny(["--linear32-out", "--hdr-out"], default: rawOutputPath + ".linear32f32")
+        let linear32OutPath = !composeHDRInputPath.isEmpty
+            ? composeHDRInputPath
+            : stringArgAny(["--linear32-out", "--hdr-out"], default: rawOutputPath + ".linear32f32")
         let outPath: String = {
             if !explicitImageOutPath.isEmpty { return rawOutputPath }
             if outputLooksLikeCollision { return rawOutputPath }
@@ -85,6 +90,7 @@ enum ParamsBuilderAssets {
             discardCollisionOutput: discardCollisionOutput,
             linear32Intermediate: linear32Intermediate,
             linear32OutPath: linear32OutPath,
+            composeHDRInputPath: composeHDRInputPath,
             outPath: outPath,
             imageOutPath: imageOutPath,
             traceHDRDirectMode: traceHDRDirectMode
@@ -158,6 +164,7 @@ enum ParamsBuilderAssets {
                     metaRMin: loaded.rNormMin,
                     metaRMax: loaded.rNormMax,
                     metaZMax: loaded.zNormMax,
+                    metaRWarp: loaded.rNormWarp,
                     vol0PathResolved: diskVolumePathArg,
                     vol1PathResolved: ""
                 )
@@ -194,6 +201,7 @@ enum ParamsBuilderAssets {
                     metaRMin: loaded0.rNormMin ?? loaded1.rNormMin,
                     metaRMax: loaded0.rNormMax ?? loaded1.rNormMax,
                     metaZMax: loaded0.zNormMax ?? loaded1.zNormMax,
+                    metaRWarp: loaded0.rNormWarp ?? loaded1.rNormWarp,
                     vol0PathResolved: diskVol0PathArg,
                     vol1PathResolved: diskVol1PathArg
                 )
@@ -213,6 +221,7 @@ enum ParamsBuilderAssets {
             metaRMin: nil,
             metaRMax: nil,
             metaZMax: nil,
+            metaRWarp: nil,
             vol0PathResolved: "",
             vol1PathResolved: ""
         )

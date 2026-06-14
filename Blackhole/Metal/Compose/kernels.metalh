@@ -1,3 +1,51 @@
+static inline float4 renderBH_linear_from_collision(bool traced,
+                                                    CollisionInfo rec,
+                                                    constant Params& P,
+                                                    constant ComposeParams& C)
+{
+    if (!traced || rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            return float4(float3(0.0), 2.0);
+        }
+        float3 bg = comp_background_linear(rec.direct_world.xyz, C);
+        return float4(bg, -2.0);
+    }
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
+        float3 rgb = comp_linear_rgb(rec, P, C);
+        return float4(rgb, 2.0);
+    }
+    if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+        float cloudRaw = 0.0;
+        float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
+                                                 rec.v_disk.xyz,
+                                                 rec.direct_world.xyz,
+                                                 rec.noise,
+                                                 P,
+                                                 C,
+                                                 cloudRaw);
+        return float4(rgb, cloudRaw);
+    }
+
+    float cloudRaw = comp_cloud_raw(rec, P, C);
+    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (comp_grmhd_visible_final_rec(rec, C)) {
+        // GRMHD visible volume RT has already produced final linear radiance.
+        // Preserve it through direct-linear/full-GPU compose; otherwise the
+        // negative sentinel in rec.noise is reinterpreted as a zero cloud mask
+        // and the final image can collapse to black.
+        return float4(rgbBase, 2.0);
+    }
+    if (FC_PHYSICS_MODE == 2u) {
+        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
+        rgbBase *= retFactor;
+    }
+    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
+        float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
+        return float4(rgb, cloudRaw);
+    }
+    return float4(rgbBase, cloudRaw);
+}
+
 kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
                                  constant ComposeParams& C [[buffer(1)]],
                                  device float4* outLinear [[buffer(2)]],
@@ -22,40 +70,51 @@ kernel void renderBHLinearGlobal(constant Params& P [[buffer(0)]],
             float x = (float(gx) + 0.5) - float(P.fullWidth)  * 0.5;
             float y = (float(gy) + 0.5) - float(P.fullHeight) * 0.5;
 
-            CollisionInfo rec;
-            bool traced = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, rec);
-            if (!traced || rec.hit == 0u) {
-                float3 bg = comp_background_linear(rec.direct_world.xyz, C);
-                outLinear[gidx] = float4(bg, -2.0);
-            } else {
-                if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
-                    float3 rgb = comp_linear_rgb(rec, P, C);
-                    outLinear[gidx] = float4(rgb, 2.0);
-                } else if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
-                    float cloudRaw = 0.0;
-                    float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
-                                                             rec.v_disk.xyz,
-                                                             rec.direct_world.xyz,
-                                                             rec.noise,
-                                                             P,
-                                                             C,
-                                                             cloudRaw);
-                    outLinear[gidx] = float4(rgb, cloudRaw);
-                } else {
-                    float cloudRaw = comp_cloud_raw(rec, P, C);
-                    float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
-                    if (FC_PHYSICS_MODE == 2u) {
-                        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-                        rgbBase *= retFactor;
+            bool thinReferenceBundle = (P.rayBundleSSAA != 0u &&
+                                        FC_PHYSICS_MODE == 0u &&
+                                        (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u) &&
+                                        FC_TRACE_DEBUG_OFF != 0u);
+            if (thinReferenceBundle) {
+                const float2 ssaaJitter[4] = {
+                    float2(-0.25, -0.25),
+                    float2( 0.25, -0.25),
+                    float2(-0.25,  0.25),
+                    float2( 0.25,  0.25)
+                };
+                float3 rgbSum = float3(0.0);
+                uint hitSamples = 0u;
+                for (uint s = 0u; s < 4u; ++s) {
+                    CollisionInfo subRec;
+                    init_collision_info(subRec);
+                    bool subTraced = trace_single_ray(P,
+                                                       x + ssaaJitter[s].x,
+                                                       y + ssaaJitter[s].y,
+                                                       diskAtlasTex,
+                                                       diskVol0Tex,
+                                                       diskVol1Tex,
+                                                       subRec);
+                    if (subTraced && subRec.hit != 0u) {
+                        // This path averages final source radiance per subray.
+                        // The compose-time thin-reference coverage multiplier is
+                        // only for collision-bundle payloads; per-subray source
+                        // samples represent full infinitesimal rays.
+                        subRec.v_disk.w = 1.0;
+                        hitSamples += 1u;
                     }
-                    if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
-                        float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
-                        outLinear[gidx] = float4(rgb, cloudRaw);
-                    } else {
-                        outLinear[gidx] = float4(rgbBase, cloudRaw);
-                    }
+                    rgbSum += renderBH_linear_from_collision(subTraced, subRec, P, C).xyz;
                 }
-                localHits[localIndex] = 1u;
+                outLinear[gidx] = float4(rgbSum * 0.25, (hitSamples > 0u) ? 2.0 : -2.0);
+                if (hitSamples > 0u) {
+                    localHits[localIndex] = 1u;
+                }
+            } else {
+                CollisionInfo rec;
+                bool traced = trace_single_ray(P, x, y, diskAtlasTex, diskVol0Tex, diskVol1Tex, rec);
+                float4 linearOut = renderBH_linear_from_collision(traced, rec, P, C);
+                outLinear[gidx] = linearOut;
+                if (traced && rec.hit != 0u) {
+                    localHits[localIndex] = 1u;
+                }
             }
         }
     }
@@ -90,17 +149,37 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
 
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gidx] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gidx] = float4(rgb, 2.0);
         return;
     }
+    if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+        float cloudRaw = 0.0;
+        float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
+                                                 rec.v_disk.xyz,
+                                                 rec.direct_world.xyz,
+                                                 rec.noise,
+                                                 P,
+                                                 C,
+                                                 cloudRaw);
+        outLinear[gidx] = float4(rgb, cloudRaw);
+        return;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (comp_grmhd_visible_final_rec(rec, C)) {
+        outLinear[gidx] = float4(rgbBase, 2.0);
+        return;
+    }
     if (FC_PHYSICS_MODE == 2u) {
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgbBase *= retFactor;
@@ -131,17 +210,37 @@ kernel void composeLinearRGBLite(constant Params& P [[buffer(0)]],
 
     CollisionInfo rec = unpack_collision_lite32(inInfo[gidx]);
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gidx] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gidx] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gidx] = float4(rgb, 2.0);
         return;
     }
+    if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+        float cloudRaw = 0.0;
+        float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
+                                                 rec.v_disk.xyz,
+                                                 rec.direct_world.xyz,
+                                                 rec.noise,
+                                                 P,
+                                                 C,
+                                                 cloudRaw);
+        outLinear[gidx] = float4(rgb, cloudRaw);
+        return;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (comp_grmhd_visible_final_rec(rec, C)) {
+        outLinear[gidx] = float4(rgbBase, 2.0);
+        return;
+    }
     outLinear[gidx] = float4(rgbBase, cloudRaw);
 }
 
@@ -155,17 +254,37 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
     if (gid >= count) return;
     CollisionInfo rec = inInfo[gid];
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gid] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gid] = float4(rgb, 2.0);
         return;
     }
+    if (FC_PHYSICS_MODE == 0u && FC_VISIBLE_MODE == 0u && C.analysisMode == 0u) {
+        float cloudRaw = 0.0;
+        float3 rgb = comp_linear_rgb_legacy_fast(rec.T,
+                                                 rec.v_disk.xyz,
+                                                 rec.direct_world.xyz,
+                                                 rec.noise,
+                                                 P,
+                                                 C,
+                                                 cloudRaw);
+        outLinear[gid] = float4(rgb, cloudRaw);
+        return;
+    }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (comp_grmhd_visible_final_rec(rec, C)) {
+        outLinear[gid] = float4(rgbBase, 2.0);
+        return;
+    }
     if (FC_PHYSICS_MODE == 2u) {
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgbBase *= retFactor;
@@ -188,17 +307,25 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
     if (gid >= count) return;
     CollisionInfo rec = unpack_collision_lite32(inInfo[gid]);
     if (rec.hit == 0u) {
+        if (C.analysisMode == 65u) {
+            outLinear[gid] = float4(float3(0.0), 2.0);
+            return;
+        }
         float3 bg = comp_background_linear(rec.direct_world.xyz, C);
         outLinear[gid] = float4(bg, -2.0);
         return;
     }
-    if (comp_thin_hybrid_active(C) || comp_thin_hybrid_debug_active(C)) {
+    if (comp_thin_physical_active(C) || comp_thin_hybrid_debug_active(C)) {
         float3 rgb = comp_linear_rgb(rec, P, C);
         outLinear[gid] = float4(rgb, 2.0);
         return;
     }
     float cloudRaw = comp_cloud_raw(rec, P, C);
     float3 rgbBase = comp_linear_rgb_precloud(rec, P, C);
+    if (comp_grmhd_visible_final_rec(rec, C)) {
+        outLinear[gid] = float4(rgbBase, 2.0);
+        return;
+    }
     if (FC_PHYSICS_MODE == 2u) {
         float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
         rgbBase *= retFactor;
@@ -410,10 +537,20 @@ kernel void composeSolveExposure(constant ComposeSolveParams& S [[buffer(0)]],
     float p50Log = comp_quantile_from_hist(lumHist, max(C.lumBins, 1u), 0.50, C.lumLogMin, C.lumLogMax, totalP50);
     uint totalP995 = 0u;
     float p995Log = comp_quantile_from_hist(lumHist, max(C.lumBins, 1u), S.lumQuantile, C.lumLogMin, C.lumLogMax, totalP995);
+    uint totalPMid = 0u;
+    float pMidLog = (S.lumMidQuantile > 0.0)
+        ? comp_quantile_from_hist(lumHist, max(C.lumBins, 1u), S.lumMidQuantile, C.lumLogMin, C.lumLogMax, totalPMid)
+        : p50Log;
 
     float p50 = (totalP50 > 0u) ? pow(10.0, p50Log) : 0.0;
     float p995 = (totalP995 > 0u) ? pow(10.0, p995Log) : 0.0;
+    float pMid = (totalPMid > 0u) ? pow(10.0, pMidLog) : 0.0;
     float exposure = (totalP995 == 0u) ? 1.0 : (S.targetWhite / max(p995, S.pFloor));
+    if (S.lumMidQuantile > 0.0 && S.targetMid > 0.0 && pMid > 0.0) {
+        float midExposure = S.targetMid / max(pMid, S.pFloor);
+        float maxBoost = max(S.maxExposureBoost, 1.0);
+        exposure = max(exposure, min(midExposure, exposure * maxBoost));
+    }
 
     C.exposure = exposure;
     ioCompose[0] = C;
@@ -421,6 +558,7 @@ kernel void composeSolveExposure(constant ComposeSolveParams& S [[buffer(0)]],
     R.p50 = p50;
     R.p995 = p995;
     R.exposure = exposure;
+    R.pMid = pMid;
     R.lumSamples = totalP995;
     outResult[0] = R;
 }
@@ -449,6 +587,7 @@ kernel void composeBH(constant Params& P [[buffer(0)]],
             uint lx = srcX - C.srcOffsetX;
             uint ly = srcY - C.srcOffsetY;
             float3 rgbLin = comp_sample_collision_psf_tile(inInfo, lx, ly, P, C);
+            rgbLin = comp_apply_photon_noise_scene(rgbLin, srcX, srcY, C);
             acc += comp_shade_linear(rgbLin, C);
             cnt += 1u;
         }
@@ -490,7 +629,18 @@ kernel void composeBHLinear(constant ComposeParams& C [[buffer(0)]],
             if (srcY < C.srcOffsetY || srcY >= C.srcOffsetY + C.tileHeight) continue;
 
             float3 rgb = comp_sample_linear_psf_full(inLinear, srcX, srcY, C);
-            acc += comp_shade_linear(rgb, C);
+            if (comp_eye_local_adaptation_enabled(C)) {
+                rgb = comp_eye_scene_adapt_rgb(rgb,
+                                               comp_eye_scene_surround_full(inLinear, srcX, srcY, C),
+                                               comp_eye_scene_glare_full(inLinear, srcX, srcY, C),
+                                               C);
+            }
+            rgb = comp_apply_photon_noise_scene(rgb, srcX, srcY, C);
+            float3 shaded = comp_shade_linear(rgb, C);
+            if (comp_eye_local_adaptation_enabled(C)) {
+                shaded = comp_eye_local_adaptation_apply(shaded, comp_eye_surround_full(inLinear, srcX, srcY, C));
+            }
+            acc += shaded;
             cnt += 1u;
         }
     }
@@ -533,7 +683,18 @@ kernel void composeBHLinearTile(constant ComposeParams& C [[buffer(0)]],
             uint lx = srcX - C.srcOffsetX;
             uint ly = srcY - C.srcOffsetY;
             float3 rgb = comp_sample_linear_psf_tile(inLinear, lx, ly, C);
-            acc += comp_shade_linear(rgb, C);
+            if (comp_eye_local_adaptation_enabled(C)) {
+                rgb = comp_eye_scene_adapt_rgb(rgb,
+                                               comp_eye_scene_surround_tile(inLinear, lx, ly, C),
+                                               comp_eye_scene_glare_tile(inLinear, lx, ly, C),
+                                               C);
+            }
+            rgb = comp_apply_photon_noise_scene(rgb, srcX, srcY, C);
+            float3 shaded = comp_shade_linear(rgb, C);
+            if (comp_eye_local_adaptation_enabled(C)) {
+                shaded = comp_eye_local_adaptation_apply(shaded, comp_eye_surround_tile(inLinear, lx, ly, C));
+            }
+            acc += shaded;
             cnt += 1u;
         }
     }

@@ -69,6 +69,138 @@ static inline float disk_half_thickness_m(float rEmitM, constant Params& P) {
     return P.he;
 }
 
+// --- Physical atmosphere / turbulence helpers ----------------------------------
+
+// Complementary error function via Abramowitz & Stegun 7.1.26 (max error < 1.5e-7).
+static inline float disk_erfc_approx(float x) {
+    float t = 1.0 / (1.0 + 0.3275911 * x);
+    float poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+                + t * (-1.453152027 + t * 1.061405429))));
+    return clamp(poly * exp(-x * x), 0.0, 1.0);
+}
+
+// Cumulative optical depth from the disk surface (|z| → ∞) down to height hNorm = |z|/H.
+// Assumes Gaussian vertical density: ρ(z) = ρ_mid exp(-z²/2H²).
+// τ(hNorm) = τ_mid/2 × erfc(hNorm/√2), where τ_mid is the full column (midplane to ∞).
+static inline float disk_tau_from_surface(float hNorm, float tauMid) {
+    float x = max(hNorm, 0.0) * 0.7071067811865f; // hNorm / sqrt(2)
+    return clamp(tauMid * 0.5 * disk_erfc_approx(x), 0.0, tauMid);
+}
+
+// Eddington atmosphere temperature at optical depth τ(z), with MRI magnetic surface heating.
+//
+// Physical basis:
+//   Eddington (1926): T⁴(τ) = (3/4) T_eff⁴ × (τ + 2/3)  → T = T_eff at τ = 2/3
+//   MRI buoyancy concentrates ~30 % of viscous dissipation near the photosphere
+//   (Hirose et al. 2006, Blaes et al. 2011), producing a temperature excess at τ ~ 0.3–1.
+//
+// T_col_photo: color temperature at the photosphere = f_col × T_eff (caller-supplied).
+// Returns the color temperature at height hNorm = |z|/H using tauMid for the column.
+static inline float disk_eddington_atmosphere_temp(float hNorm, float tauMid,
+                                                    float T_col_photo) {
+    float tau = disk_tau_from_surface(hNorm, tauMid);
+
+    // Eddington profile (normalised so that h = 1 at τ = 2/3, i.e. at the photosphere).
+    float eddNorm = pow(max(0.75 * (tau + 2.0/3.0), 1e-8), 0.25);
+
+    // Magnetic surface heating: Gaussian peak at τ_peak ≈ 0.5 in log-τ space.
+    float tau_peak = 0.5;
+    float log_tau_ratio = log(max(tau, 1e-5) / tau_peak);
+    float f_heat = 0.32 * exp(-0.5 * log_tau_ratio * log_tau_ratio / 0.64);
+
+    return max(T_col_photo * eddNorm * pow(1.0 + f_heat, 0.25), 0.0);
+}
+
+// MRI-motivated turbulent heating fluctuation – physically replaces Perlin FBM texture.
+//
+// Physical basis (α-disk + MRI theory):
+//   δT/T ~ (α × H/r)^(1/4)   (thermal fluctuation amplitude from stress-to-flux relation)
+//   turbulence is represented as deterministic disk-coordinate shearing modes,
+//   not as screen-space or material texture.  Modes live in (log r, phi) and
+//   advect with Omega_K(r), approximating MRI/stress fluctuations that survive
+//   photospheric averaging.
+//
+// Spectral content (same physics as the compose-side heating field): radial
+// wavenumbers log-uniform from disk-scale waves down to the MRI driving scale
+// (radial wavelength ~ 2H), shear anisotropy m ~ kr / elongation with
+// elongation 3-11 (lambda_phi/lambda_r), Kolmogorov E(k) ~ k^-5/3 under
+// log-density sampling (per-mode amplitude ~ k^-1/3), and a thermalization
+// smoothing of ~0.6 H/r. The field is mapped through the standard log-normal
+// intermittency closure for turbulent dissipation, so the heating is carried
+// by sheared filament tails rather than a flat mean.
+//
+// flowTimeOffset shifts the advection time (slow light: pass the per-sample
+// -|ct| / (sqrt(2) rs) so each fluid parcel is seen as it was when its light
+// left). diskTurbulence is the alpha proxy. hScale is the local scale height H,
+// so volume models with radius-dependent hydrostatic thickness can use the same
+// H for vertical support, atmosphere depth, and MRI correlation/vertical gates.
+static inline float disk_mri_heating_factor_amp_h(float dxy, float phi, float z,
+                                                  float amp, float flowTimeOffset,
+                                                  float hScale,
+                                                  constant Params& P) {
+    amp = clamp(amp, 0.0, 1.0);
+    if (!(amp > 1e-6)) return 1.0;
+
+    float H   = max(hScale, 1e-6);
+    float rs  = max(P.rs, 1e-6);
+    float rRs = max(dxy / rs, 1.0001);
+
+    float HoverR = clamp(H / max(dxy, 1e-6), 0.002, 0.25);
+    float logR = log(max(rRs, 1.0001));
+    float omegaK = 1.0 / max(pow(rRs, 1.5), 1e-6);
+    float timeRs = P.diskFlowTime + flowTimeOffset;
+    float sigmaLog = 0.6 * HoverR;
+    constexpr float twoPi = 6.283185307179586;
+
+    float fluct = 0.0;
+    float norm2 = 0.0;
+    constexpr uint modeCount = 48u;
+    for (uint i = 0u; i < modeCount; ++i) {
+        float id = float(i) + 1.0;
+        float h0 = fract(id * 0.754877666 + 0.113);
+        float h1 = fract(id * 0.569840291 + 0.217);
+        float h2 = fract(id * 0.438572245 + 0.431);
+        float h3 = fract(id * 0.318309886 + 0.173);
+        float h4 = fract(id * 0.221033321 + 0.619);
+
+        float kr = 0.85 * pow(140.0, h1); // log-uniform 0.85 .. ~119 per ln r
+        float elong = mix(3.0, 11.0, h0);
+        float m = max(2.0, floor(kr / elong + 0.5));
+        kr *= (h2 < 0.5) ? -1.0 : 1.0;
+        float kMag = sqrt(kr * kr + m * m);
+        float ampMode = pow(max(kMag, 1.0), -0.3333333) * mix(0.78, 1.22, h3);
+        ampMode *= exp(-0.5 * kr * kr * sigmaLog * sigmaLog);
+        // The advection-rate jitter must multiply only the time term: the
+        // azimuthal coefficient has to stay the integer harmonic m, or the
+        // field is not 2pi-periodic and a seam appears at phi = 0.
+        float phase = kr * logR + m * (phi - timeRs * omegaK * mix(0.82, 1.18, h4)) + twoPi * h3;
+        fluct += ampMode * cos(phase);
+        norm2 += ampMode * ampMode;
+    }
+
+    // Unit-variance Gaussian proxy (random-phase variance of sum(a_i cos) is
+    // sum(a_i^2)/2), then the mean-one log-normal dissipation closure with
+    // the alpha- and H/r-scaled fluctuation amplitude.
+    float gauss = fluct / max(sqrt(0.5 * norm2), 1e-6);
+    float radialGate = smoothstep(1.05, 1.9, rRs) * (1.0 - smoothstep(10.0, 18.0, rRs));
+    float verticalGate = exp(-z * z / max(2.0 * H * H, 1e-12));
+    float sigmaT = clamp(0.9 * amp * pow(HoverR, 0.25), 0.0, 0.55)
+                 * radialGate * verticalGate;
+    return clamp(exp(sigmaT * gauss - 0.5 * sigmaT * sigmaT), 0.42, 2.4);
+}
+
+static inline float disk_mri_heating_factor_amp(float dxy, float phi, float z,
+                                                  float amp, float flowTimeOffset,
+                                                  constant Params& P) {
+    return disk_mri_heating_factor_amp_h(dxy, phi, z, amp, flowTimeOffset, P.he, P);
+}
+
+static inline float disk_mri_heating_factor(float dxy, float phi, float z, constant Params& P) {
+    return disk_mri_heating_factor_amp(dxy, phi, z, clamp(P.diskTurbulence, 0.0, 1.0), 0.0, P);
+}
+
+// --- End physical atmosphere helpers -------------------------------------------
+
 static inline float disk_nt_flux_shape(float rM, float rMsM, float a) {
     if (!(rM > rMsM)) return 0.0;
     float aSafe = clamp(a, -0.999, 0.999);
@@ -269,9 +401,12 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
 
 static inline float disk_visible_teff(float rEmitM, constant Params& P) {
     const float sigmaSB = 5.670374419e-8;
-    float r = max(rEmitM, P.rs * 1.0001);
-    float rInAuto = max(disk_inner_radius_m(P), P.rs * 1.0001);
-    float rIn = (P.visibleRIn > 0.0) ? max(P.visibleRIn, P.rs * 1.0001) : rInAuto;
+    float rsGeom = max(P.rs, 1e-6);
+    float r = max(rEmitM, rsGeom * 1.0001);
+    float rNorm = max(r / rsGeom, 1.0001);
+    float rInAuto = max(disk_inner_radius_m(P), rsGeom * 1.0001);
+    float rIn = (P.visibleRIn > 0.0) ? max(P.visibleRIn, rsGeom * 1.0001) : rInAuto;
+    float rInNorm = max(rIn / rsGeom, 1.0001);
 
     if (P.visibleTeffModel == 0u) {
         float t0 = max(P.visibleTeffT0, 100.0);
@@ -281,19 +416,68 @@ static inline float disk_visible_teff(float rEmitM, constant Params& P) {
         return max(t0 * pow(ratio, -p), 1.0);
     }
 
+    if (P.visibleTeffModel == 4u) {
+        // Slim disk (super-Eddington, advection-dominated; Abramowicz et al.
+        // 1988, Watarai et al. 2000): radiation is advected with the flow, so
+        // the effective temperature follows T_eff ~ r^-1/2 - much flatter
+        // than the NT r^-3/4 - and flattens to a plateau inside the photon
+        // trapping radius instead of dropping to zero at a zero-torque inner
+        // edge. T0 is the user-facing calibration at r0, the trapping
+        // plateau is anchored to ~1.5x the inner emission radius.
+        float t0 = max(P.visibleTeffT0, 100.0);
+        float r0 = max(P.visibleTeffR0, rsGeom * 1.0001);
+        float rTrap = max(1.5 * rIn, rsGeom * 1.05);
+        float x = max(r / r0, 1e-6);
+        float xTrap = max(rTrap / r0, 1e-6);
+        // Smooth r^-1/2 envelope with a flat core: (x^2 + xTrap^2)^(-1/4),
+        // normalized so T(r0) = t0 when r0 >> rTrap.
+        float norm = pow(1.0 + xTrap * xTrap, 0.25);
+        float tSlim = t0 * norm * pow(x * x + xTrap * xTrap, -0.25);
+        return max(tSlim, 1.0);
+    }
+
+    if (P.visibleTeffModel == 3u) {
+        // GRMHD-hybrid visible temperature backbone: use the NT flux shape,
+        // normalized to the user-facing T0 at r0. This keeps a physically
+        // motivated inner-edge/relativistic radial shape without requiring the
+        // public code-unit snapshot to carry calibrated Mdot/SI density units.
+        float t0 = max(P.visibleTeffT0, 100.0);
+        float r0 = max(P.visibleTeffR0, rIn * 1.35);
+        if (!(r > rIn)) return 0.0;
+
+        float rsSafe = max(P.rs, 1e-6);
+        float massLen = max(0.5 * rsSafe, 1e-12);
+        float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
+        float rM = r / massLen;
+        float rInM = rIn / massLen;
+        float r0M = max(r0 / massLen, rInM * 1.05);
+        float f = disk_nt_flux_shape(rM, rInM, a);
+        float f0 = disk_nt_flux_shape(r0M, rInM, a);
+        if (!(f > 0.0) || !(f0 > 0.0) || !isfinite(f) || !isfinite(f0)) {
+            float p = clamp(P.visibleTeffP, 0.05, 3.0);
+            return max(t0 * pow(max(r / max(r0, 1e-6), 1e-6), -p), 1.0);
+        }
+        return max(t0 * pow(max(f / f0, 1e-12), 0.25), 1.0);
+    }
+
     // Simplified thin-disk Teff profile:
     // Teff ~ [ 3 G M dotM / (8 pi sigma r^3) * (1 - sqrt(r_in / r)) ]^(1/4)
     float m = max(P.visibleBhMass, 1e20);
     float mdot = max(P.visibleMdot, 0.0);
-    if (!(r > rIn) || !(mdot > 0.0)) return 0.0;
-    float boundary = max(1.0 - sqrt(rIn / r), 0.0);
-    float flux = (3.0 * P.G * m * mdot) / max(8.0 * M_PI * sigmaSB * pow(r, 3.0), 1e-30);
+    if (!(rNorm > rInNorm) || !(mdot > 0.0)) return 0.0;
+    // The ray tracer is scale-free in r/rs. For physical visible color, convert
+    // that dimensionless radius to the Schwarzschild radius implied by the
+    // user-supplied visibleBhMass, not the fixed geometry scale used internally.
+    float rsPhysical = max(2.0 * P.G * m / max(P.c * P.c, 1e-30), 1e-12);
+    float rPhysical = rNorm * rsPhysical;
+    float rInPhysical = rInNorm * rsPhysical;
+    float boundary = max(1.0 - sqrt(rInPhysical / rPhysical), 0.0);
+    float flux = (3.0 * P.G * m * mdot) / max(8.0 * M_PI * sigmaSB * pow(rPhysical, 3.0), 1e-30);
     flux *= boundary;
 
     if (P.visibleTeffModel == 2u) {
-        float massLen = max(0.5 * P.rs, 1e-12);
-        float rM = r / massLen;
-        float rInM = rIn / massLen;
+        float rM = 2.0 * rNorm;
+        float rInM = 2.0 * rInNorm;
         float a = (FC_METRIC == 0) ? 0.0 : clamp(P.spin, -0.999, 0.999);
         float rel = disk_nt_flux_correction(rM, rInM, a);
         flux *= rel;
@@ -433,6 +617,38 @@ static inline float disk_schwarzschild_direct_gfactor(float rEmit,
     return clamp(eObs / eEmit, 1e-4, 1e4);
 }
 
+// Invariant Kerr redshift factor for an equatorial emitter. In these units the
+// distant observer contribution is normalized to k_t=-1, so
+// g = 1 / (u^t * (1 - Omega * Lz - v^r * p_r)).
+static inline bool disk_kerr_flow_gfactor(float rM,
+                                          float a,
+                                          float omega,
+                                          float drdt,
+                                          float LzConst,
+                                          float prRay,
+                                          thread float& gOut)
+{
+    KerrCovMetric cov = kerr_cov_metric(max(rM, 1.0001), 0.5 * M_PI, a);
+    float uDen = -(cov.gtt
+                 + 2.0 * omega * cov.gtphi
+                 + omega * omega * cov.gphiphi
+                 + cov.grr * drdt * drdt);
+    if (!(uDen > 1e-12) || !isfinite(uDen)) return false;
+
+    float uTime = 1.0 / sqrt(max(uDen, 1e-12));
+    float eEmit = uTime * (1.0 - omega * LzConst - drdt * prRay);
+    if (!(eEmit > 1e-8) || !isfinite(eEmit)) {
+        // Preserve the legacy safety fallback: if the radial momentum term
+        // drives the local photon energy invalid, keep the same emitter u^t
+        // but drop the radial contribution before declaring the sample bad.
+        eEmit = uTime * max(1.0 - omega * LzConst, 1e-8);
+    }
+    if (!(eEmit > 1e-8) || !isfinite(eEmit)) return false;
+
+    gOut = clamp(1.0 / eEmit, 1e-4, 1e4);
+    return isfinite(gOut);
+}
+
 static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     float dxy = length(float2(pos.x, pos.y));
     float rMin = disk_emit_min_radius_m(P);
@@ -460,6 +676,27 @@ static inline bool inside_disk_volume(float3 pos, constant Params& P) {
     return (dxy > rMin && dxy < rMax && abs(pos.z) < halfH);
 }
 
+// Signed disk-surface function: negative (< 0) when inside the disk volume,
+// positive (> 0) when outside. Crosses zero at the disk surface boundary |z| = halfH.
+// Mirrors the halfH resolution in inside_disk_volume.
+// Used by downstream callers (e.g. photosphere refinement) and by segment_enter_disk.
+static inline float disk_signed_surface_fn(float3 pos, constant Params& P) {
+    float dxy = length(float2(pos.x, pos.y));
+    float halfH = disk_half_thickness_m(dxy, P);
+    if (P.diskVolumeMode != 0u) {
+        bool useVol = (FC_PHYSICS_MODE == 3u || FC_PHYSICS_MODE == 2u);
+        if (!useVol && FC_PHYSICS_MODE == 1u) {
+            float tauCtrl = max(P.diskCloudOpticalDepth, 0.0) * max(P.diskVolumeTauScale, 0.0);
+            useVol = (tauCtrl > 1e-8);
+        }
+        if (useVol) {
+            float volHalfH = max(P.diskVolumeZNormMax * max(P.rs, 1e-6), 1e-6);
+            halfH = max(halfH, volHalfH);
+        }
+    }
+    return abs(pos.z) - halfH;
+}
+
 static inline bool segment_enter_disk(float3 p0,
                                       float3 p1,
                                       constant Params& P,
@@ -481,8 +718,25 @@ static inline bool segment_enter_disk(float3 p0,
         return true;
     }
 
-    // Outside -> outside skip protection for thin disk crossings.
-    const int coarse = 48;
+    // Outside -> outside: fast thin-disk midplane crossing check.
+    // For thin disks (halfH << segment length), the ray crosses z = 0 (equatorial
+    // plane) without either endpoint landing inside the volume box. Solve
+    //   t_cross = p0.z / (p0.z - p1.z)   (linear zero of z along segment)
+    // analytically and validate against radial disk bounds. This replaces the
+    // 48-step coarse scan for the dominant thin-disk skip-through case.
+    if (p0.z * p1.z < 0.0) {
+        float tZ = clamp(p0.z / (p0.z - p1.z), 0.0, 1.0);
+        float3 crossPos = mix(p0, p1, tZ);
+        if (inside_disk_volume(crossPos, P)) {
+            tEnter = tZ;
+            return true;
+        }
+    }
+
+    // Fallback coarse scan for thick-disk radial entry (segment approaches from
+    // the side without crossing the midplane, e.g. near-equatorial grazing rays).
+    // Reduced to 16 steps; the midplane fast path above handles the thin-disk case.
+    const int coarse = 16;
     bool prevIn = in0;
     float prevT = 0.0;
     for (int i = 1; i <= coarse; ++i) {
@@ -645,6 +899,42 @@ static inline float perlin2_repeat(float x, float y, int repeatX, int repeatY, u
     return perlin_lerp(nx0, nx1, v);
 }
 
+static inline float disk_feb24_raw_perlin_texture_noise(float dxy, float phi, float z, constant Params& P) {
+    float denom = max(P.re - P.rs, 1e-6);
+    float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
+
+    float spiral = phi + 1.8 * log(max(dxy / P.rs, 1.0));
+    float c = cos(spiral);
+    float s = sin(spiral);
+
+    float bx = 12.0 * u + 2.6 * c;
+    float by = 2.6 * s;
+
+    float w1 = perlin2_repeat(96.0 * bx, 96.0 * by, 8192, 8192, 23u);
+    float w2 = perlin2_repeat(144.0 * bx + 1.6 * w1, 144.0 * by - 1.1 * w1, 8192, 8192, 71u);
+
+    float fbmVal = 0.0;
+    float amp = 1.0;
+    float freq = 1.0;
+    float ampSum = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        float nx = (bx + 0.20 * w1) * freq;
+        float ny = (by + 0.18 * w2) * freq;
+        float n = perlin2_repeat(128.0 * nx, 128.0 * ny, 8192, 8192, 101u + uint(i * 53));
+        fbmVal += amp * n;
+        ampSum += amp;
+        amp *= 0.55;
+        freq *= 2.0;
+    }
+    fbmVal = (ampSum > 0.0) ? (fbmVal / ampSum) : 0.0;
+
+    float zFade = exp(-abs(z) / max(1.25 * P.he, 1e-6));
+    float edgeIn = smoothstep(0.01, 0.08, u);
+    float edgeOut = 1.0 - smoothstep(0.94, 0.998, u);
+    float radialFade = edgeIn * edgeOut;
+    return clamp(3.2 * fbmVal * zFade * radialFade, -1.0, 1.0);
+}
+
 static inline float disk_perlin_texture_noise(float dxy, float phi, float z, constant Params& P) {
     float denom = max(P.re - P.rs, 1e-6);
     float u = clamp((dxy - P.rs) / denom, 0.0, 1.0);
@@ -744,18 +1034,16 @@ static inline float disk_classic_stripe_noise(float r, float phi, float z, const
     return clamp(n * radialEdge * verticalEdge, 0.0, 1.0);
 }
 
+// NOTE: This function previously applied Perlin FBM + phase-wave texture to temperature.
+// It is now replaced by disk_mri_heating_factor(), which derives fluctuation amplitude
+// and correlation length from α-disk / MRI physics (H scale, α proxy) rather than from
+// an arbitrary noise frequency. The diskPrecisionTexture parameter continues to gate it.
 static inline float disk_precision_texture_factor(float dxy, float phi, float z, constant Params& P) {
     float amp = clamp(P.diskPrecisionTexture, 0.0, 1.0);
     if (!(amp > 1e-6)) return 1.0;
-    float centered = disk_perlin_texture_noise(dxy, phi + 0.23 * P.diskFlowTime, z, P);
-    float rsSafe = max(P.rs, 1e-6);
-    float rr = dxy / rsSafe;
-    float radial = smoothstep(1.05, 1.9, rr) * (1.0 - smoothstep(10.0, 18.0, rr));
-    float vertical = exp(-abs(z) / max(1.5 * P.he, 1e-6));
-    float phaseWave = sin(7.0 * phi + 0.55 * log(max(rr, 1.0)));
-    float micro = 0.72 * centered + 0.28 * phaseWave;
-    float fac = 1.0 + (0.48 * amp * radial * vertical) * micro;
-    return clamp(fac, 0.20, 2.10);
+    // Pass diskPrecisionTexture as the amplitude so the caller-controlled strength
+    // is preserved, while the spatial structure is now physically derived from MRI.
+    return disk_mri_heating_factor_amp(dxy, phi, z, amp, 0.0, P);
 }
 
 static inline float disk_flow_radial_mix(float rRs, constant Params& P) {
@@ -846,7 +1134,7 @@ static inline float disk_cloud_noise(float r, float phi, float z, float ctLen, c
         float ridge = 1.0 - abs(2.0 * fil - 1.0);
         float filament = smoothstep(0.38, 0.86, ridge);
 
-        float radialEdge = smoothstep(0.01, 0.10, radialNorm) * (1.0 - smoothstep(0.90, 1.0, radialNorm));
+        float radialEdge = smoothstep(0.00, 0.13, radialNorm) * (1.0 - smoothstep(0.78, 1.0, radialNorm));
         float verticalEdge = 1.0 - smoothstep(0.75, 1.9, abs(zRs) / heRsSafe);
         float sample = mix(particle, filament, 0.35) * radialEdge * verticalEdge;
 
@@ -912,6 +1200,78 @@ static inline float4 disk_sample_atlas(float r,
     return diskAtlasTex.sample(ATLAS_CLAMP_SAMPLER, float2(u, v));
 }
 
+static inline float4 disk_sample_atlas_source_filtered(float r,
+                                                       float phi,
+                                                       float pathRs,
+                                                       constant Params& P,
+                                                       texture2d<float, access::sample> diskAtlasTex)
+{
+    float4 c = disk_sample_atlas(r, phi, P, diskAtlasTex);
+    if (P.diskAtlasMode == 0u || P.diskAtlasWidth <= 1u || P.diskAtlasHeight <= 1u) {
+        return c;
+    }
+
+    float rs = max(P.rs, 1e-6);
+    float rRs = max(r / rs, 1.0);
+    float atlasRSpan = max(P.diskAtlasRNormMax - P.diskAtlasRNormMin, 1e-4);
+    float texelR = atlasRSpan / max(float(P.diskAtlasHeight), 1.0);
+    float texelPhi = 6.283185307179586 / max(float(P.diskAtlasWidth), 1.0);
+    float hOverR = clamp((P.he / rs) / max(rRs, 1.0), 0.002, 0.080);
+
+    // Source-space footprint for unresolved photospheric heating. This is not a
+    // screen-space blur: offsets live in disk (r,phi). Higher-order rays near the
+    // critical curve are intentionally filtered a little more because one pixel
+    // maps to a long, thin source footprint there.
+    float highOrder = smoothstep(48.0, 128.0, pathRs);
+    float sigmaRrs = max(1.25 * texelR, 0.42 * hOverR * rRs);
+    sigmaRrs = max(sigmaRrs, mix(0.0, 0.120, highOrder));
+    float sigmaPhi = max(1.25 * texelPhi, 0.42 * hOverR);
+    sigmaPhi = max(sigmaPhi, mix(0.0, 0.034, highOrder));
+
+    float dr = sigmaRrs * rs;
+    float dp = sigmaPhi;
+    float4 sum = c * 0.36;
+    sum += disk_sample_atlas(r + dr, phi, P, diskAtlasTex) * 0.12;
+    sum += disk_sample_atlas(r - dr, phi, P, diskAtlasTex) * 0.12;
+    sum += disk_sample_atlas(r, phi + dp, P, diskAtlasTex) * 0.12;
+    sum += disk_sample_atlas(r, phi - dp, P, diskAtlasTex) * 0.12;
+    sum += disk_sample_atlas(r + dr, phi + dp, P, diskAtlasTex) * 0.04;
+    sum += disk_sample_atlas(r + dr, phi - dp, P, diskAtlasTex) * 0.04;
+    sum += disk_sample_atlas(r - dr, phi + dp, P, diskAtlasTex) * 0.04;
+    sum += disk_sample_atlas(r - dr, phi - dp, P, diskAtlasTex) * 0.04;
+
+    // Estimate the local low-frequency atlas background in disk coordinates.
+    // For hot-skin activity, compare primarily along phi at fixed radius. A
+    // radial mean would mistake the physical radial flux/column gradient for a
+    // heating excess and paint ring-like contours onto the photosphere.
+    float bp = max(3.8 * sigmaPhi, 0.020);
+
+    float4 azMean = sum * 0.22;
+    azMean += disk_sample_atlas(r, phi + 1.7 * bp, P, diskAtlasTex) * 0.18;
+    azMean += disk_sample_atlas(r, phi - 1.7 * bp, P, diskAtlasTex) * 0.18;
+    azMean += disk_sample_atlas(r, phi + 3.4 * bp, P, diskAtlasTex) * 0.13;
+    azMean += disk_sample_atlas(r, phi - 3.4 * bp, P, diskAtlasTex) * 0.13;
+    azMean += disk_sample_atlas(r, phi + 5.1 * bp, P, diskAtlasTex) * 0.08;
+    azMean += disk_sample_atlas(r, phi - 5.1 * bp, P, diskAtlasTex) * 0.08;
+
+    float posColumn = max(sum.y - azMean.y, 0.0);
+    float posTemp = max(sum.x - azMean.x, 0.0);
+    float shearLike = abs(sum.z - azMean.z);
+    float hotExcess = posColumn + 0.75 * posTemp + 0.55 * shearLike;
+    float hotActivity = smoothstep(0.006, 0.058, hotExcess);
+
+    // A high-order lensed pixel subtends a long source footprint. Unresolved
+    // small-scale heating should average away there; only the smooth analytic
+    // photosphere is allowed to remain. This affects atlas perturbation channels
+    // only, not the disk body or geodesics.
+    float neutralBlend = 0.72 * highOrder;
+    sum.x = mix(sum.x, 1.0, neutralBlend);
+    sum.y = hotActivity * (1.0 - 0.82 * highOrder);
+    sum.z = mix(sum.z, 0.0, neutralBlend);
+    sum.w = mix(sum.w, 1.0, neutralBlend);
+    return sum;
+}
+
 static inline float4 disk_sample_volume_grid(float rNorm,
                                              float phi,
                                              float zNorm,
@@ -936,6 +1296,12 @@ static inline float4 disk_sample_volume_grid(float rNorm,
     float uz = (zNorm + zMax) / max(2.0 * zMax, 1e-6);
     if (!(ur >= 0.0 && ur <= 1.0 && uz >= 0.0 && uz <= 1.0)) {
         return float4(0.0);
+    }
+    if (P.diskVolumeFormat == 1u) {
+        // GRMHD volume metadata may use the packed atlas radial-warp slot to
+        // allocate more samples to the inner flow. Older volumes omit the field
+        // and therefore keep the linear mapping with warp=1.
+        ur = pow(clamp(ur, 0.0, 1.0), max(P.diskAtlasRNormWarp, 1e-3));
     }
     float up = fract(phi * (0.5 / M_PI));
 

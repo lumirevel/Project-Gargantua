@@ -53,6 +53,7 @@ enum ParamsBuilder {
     let discardCollisionOutput = runtimeIO.discardCollisionOutput
     let linear32Intermediate = runtimeIO.linear32Intermediate
     let linear32OutPath = runtimeIO.linear32OutPath
+    let composeHDRInputPath = runtimeIO.composeHDRInputPath
     let outPath = runtimeIO.outPath
     let imageOutPath = runtimeIO.imageOutPath
     let traceHDRDirectMode = runtimeIO.traceHDRDirectMode
@@ -95,6 +96,11 @@ enum ParamsBuilder {
     let diskPhysicsModeID = diskPhysicsSelection.diskPhysicsModeID
     let diskPhysicsModeArg = diskPhysicsSelection.diskPhysicsModeArg
     let diskPhysicsThinProfile = diskPhysicsSelection.diskPhysicsThinProfile
+    if diskPhysicsModeID == 3 && maxStepsArg < 1000 {
+        FileHandle.standardError.write(Data(
+            "warn: GRMHD volume tracing with maxSteps=\(maxStepsArg) may miss the emitting volume and render black; prefer the preset default or >=1000 for validation renders\n".utf8
+        ))
+    }
     let diskMdotEddArg = max(1e-5, doubleArgAny(["--mdot-edd", "--disk-mdot-edd"], default: 0.1))
     let diskRadiativeEfficiencyArg = min(max(doubleArgAny(["--eta", "--disk-radiative-efficiency"], default: 0.1), 0.01), 0.42)
     let hasDiskVolumeArg = diskPhysicsSelection.hasDiskVolumeArg
@@ -174,7 +180,30 @@ enum ParamsBuilder {
     let diskReturningRadArg = diskPolicy.returningRad
     var diskPrecisionTextureArg = diskPolicy.precisionTexture
     let thickCloudExplicit = diskPolicy.thickCloudExplicit
-    let diskCloudCoverageArg = diskPolicy.cloudCoverage
+    // Analytic spectral volume RT (diskVolumeMode 2): LTE gray transfer
+    // through the physical disk medium, no volume data files needed. Parsed
+    // here so the compose policy treats it as a precision volume
+    // (analysisMode 0) and so the clumpy-atmosphere coverage knob bypasses
+    // the legacy precision-clouds gate, which zeroes cloud parameters when
+    // the Perlin cloud system is off.
+    let diskSpectralVolumeName = stringArg("--disk-spectral-volume", default: "off").lowercased()
+    let diskSpectralVolumeEnabled: Bool
+    switch diskSpectralVolumeName {
+    case "on", "true", "1", "yes", "spectral":
+        if diskPhysicsModeID != 2 {
+            FileHandle.standardError.write(Data("error: --disk-spectral-volume requires --disk-physics precision\n".utf8))
+            exit(2)
+        }
+        diskSpectralVolumeEnabled = true
+    case "off", "false", "0", "no":
+        diskSpectralVolumeEnabled = false
+    default:
+        FileHandle.standardError.write(Data("error: invalid --disk-spectral-volume \(diskSpectralVolumeName). use on|off\n".utf8))
+        exit(2)
+    }
+    let diskCloudCoverageArg = diskSpectralVolumeEnabled
+        ? max(0.0, min(1.0, doubleArg("--disk-cloud-coverage", default: 0.45)))
+        : diskPolicy.cloudCoverage
     let diskCloudOpticalDepthArg = diskPolicy.cloudOpticalDepth
     let diskCloudPorosityArg = diskPolicy.cloudPorosity
     let diskCloudShadowStrengthArg = diskPolicy.cloudShadowStrength
@@ -240,6 +269,49 @@ enum ParamsBuilder {
     let visiblePolicyName = visibleSettings.visiblePolicyName
     let visibleEmissionModelName = visibleSettings.visibleEmissionModelName
     let visibleKappaArg = visibleSettings.visibleKappaArg
+    let grmhdBranchIsolationName = visibleSettings.grmhdBranchIsolationName
+    let grmhdBranchIsolationID = visibleSettings.grmhdBranchIsolationID
+    let grmhdTransportAlphaScaleArg = visibleSettings.grmhdTransportAlphaScaleArg
+    let grmhdSmoothEmissionScaleArg = visibleSettings.grmhdSmoothEmissionScaleArg
+    let grmhdCloudEmissionScaleArg = visibleSettings.grmhdCloudEmissionScaleArg
+    let grmhdSmoothWeightName = visibleSettings.grmhdSmoothWeightName
+    let grmhdSmoothWeightModeID = visibleSettings.grmhdSmoothWeightModeID
+    let pcdDensityExpArg = min(max(doubleArg("--pcd-density-exp", default: 1.15), 0.3), 3.0)
+    let pcdEmissivityScaleArg = min(max(doubleArg("--pcd-emissivity-scale", default: 1.0), 0.1), 5.0)
+    let pcdOpacityScaleArg = min(max(doubleArg("--pcd-opacity-scale", default: 1.0), 0.0), 6.0)
+    let pcdSeedArg = doubleArg("--pcd-seed", default: 1729.0)
+    let pcdStructureScaleArg = min(max(doubleArg("--pcd-structure-scale", default: 1.0), 0.2), 3.0)
+    let pcdSpiralAmpArg = min(max(doubleArg("--pcd-spiral-amp", default: 0.25), 0.0), 1.0)
+    let pcdSpiralPitchArg = min(max(doubleArg("--pcd-spiral-pitch", default: 5.0), 0.5), 14.0)
+    let pcdClumpContrastArg = min(max(doubleArg("--pcd-clump-contrast", default: 0.35), 0.0), 1.0)
+    let pcdHotCrescentArg = min(max(doubleArg("--pcd-hot-crescent", default: 0.35), 0.0), 1.0)
+    let pcdDebugFieldID: UInt32 = {
+        switch stringArg("--realism-debug", default: "off").lowercased() {
+        case "opacity", "alpha", "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            return 1
+        case "transfer-saturation", "saturation":
+            return 2
+        case "spiral", "spiral-wave":
+            return 3
+        case "clump", "clumps", "cloud", "clouds":
+            return 4
+        case "hot-crescent", "crescent":
+            return 5
+        default:
+            return 0
+        }
+    }()
+    let thinPhotosphereEnabled = visibleSettings.thinPhotosphereEnabled
+    let thinRadialTaperEnabled = visibleSettings.thinRadialTaperEnabled
+    let thinHOverRBaseArg = visibleSettings.thinHOverRBaseArg
+    let thinHOverRInnerArg = visibleSettings.thinHOverRInnerArg
+    let thinHOverROuterArg = visibleSettings.thinHOverROuterArg
+    let thinWeightPowerEmissionArg = visibleSettings.thinWeightPowerEmissionArg
+    let thinWeightPowerAbsorptionArg = visibleSettings.thinWeightPowerAbsorptionArg
+    let coronaLayerEnabled = visibleSettings.coronaLayerEnabled
+    let coronaHOverRArg = visibleSettings.coronaHOverRArg
+    let coronaWeightPowerArg = visibleSettings.coronaWeightPowerArg
+    let visibleThermalTransferModeID = visibleSettings.visibleThermalTransferModeID
     let coolDustToGasArg = visibleSettings.coolDustToGasArg
     let coolDustKappaVArg = visibleSettings.coolDustKappaVArg
     let coolDustBetaArg = visibleSettings.coolDustBetaArg
@@ -253,6 +325,7 @@ enum ParamsBuilder {
     let visibleExpressiveMode = visibleSettings.visibleExpressiveMode
     let visibleEmissionModelID = visibleSettings.visibleEmissionModelID
     let visibleSynchAlphaArg = visibleSettings.visibleSynchAlphaArg
+    let visibleSynchScaleArg = visibleSettings.visibleSynchScaleArg
     let coolAbsorptionEnabled = visibleSettings.coolAbsorptionEnabled
     diskPrecisionTextureArg = visibleSettings.effectiveDiskPrecisionTextureArg
     let rayBundleName = stringArg("--ray-bundle", default: "off").lowercased()
@@ -265,6 +338,7 @@ enum ParamsBuilder {
     let rayBundlePolicy = ParamsBuilderPolicy.resolveRayBundlePolicy(
         cliArguments: cliArguments,
         diskPhysicsModeID: diskPhysicsModeID,
+        visibleTeffModelID: visibleTeffModelID,
         visibleModeEnabled: visibleModeEnabled,
         diskGrmhdDebugID: diskGrmhdDebugID,
         rayBundleName: rayBundleName,
@@ -292,6 +366,7 @@ enum ParamsBuilder {
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
         diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
+        precisionVolumeEnabled: !diskVolumePathArg.isEmpty || diskSpectralVolumeEnabled,
         diskGrmhdDebugID: diskGrmhdDebugID,
         composeLookID: composeLookID,
         composeGPU: composeGPU,
@@ -301,10 +376,32 @@ enum ParamsBuilder {
     let composeDitherArg = visualSettings.composeDitherArg
     let cameraModelName = visualSettings.cameraModelName
     let cameraModelID = visualSettings.cameraModelID
+    let cameraProfileName = visualSettings.cameraProfileName
+    let cameraProfileID = visualSettings.cameraProfileID
+    let realismProfileName = visualSettings.realismProfileName
+    let realismProfileID = visualSettings.realismProfileID
+    let cameraProfileJSONPath = visualSettings.cameraProfileJSONPath
     let cameraPsfSigmaArg = visualSettings.cameraPsfSigmaArg
     let cameraReadNoiseArg = visualSettings.cameraReadNoiseArg
     let cameraShotNoiseArg = visualSettings.cameraShotNoiseArg
     let cameraFlareStrengthArg = visualSettings.cameraFlareStrengthArg
+    let cameraFNumberArg = visualSettings.cameraFNumberArg
+    let cameraISOArg = visualSettings.cameraISOArg
+    let cameraShutterSecondsArg = visualSettings.cameraShutterSecondsArg
+    let photographicExposureScale = visualSettings.photographicExposureScale
+    let photographicCalibrationName = visualSettings.photographicCalibrationName
+    let cameraLuminanceScaleArg = visualSettings.cameraLuminanceScaleArg
+    let photometricSaturationLuminance = visualSettings.photometricSaturationLuminance
+    let motionBlurSamplesArg = visualSettings.motionBlurSamplesArg
+    let motionBlurTimeLapseArg = visualSettings.motionBlurTimeLapseArg
+    let eyePhotometricEnabled = visualSettings.eyePhotometricEnabled
+    let eyeNDArg = visualSettings.eyeNDArg
+    let eyeAdaptationArg = visualSettings.eyeAdaptationArg
+    let eyeTargetLuminanceArg = visualSettings.eyeTargetLuminanceArg
+    let eyeWhiteMultipleArg = visualSettings.eyeWhiteMultipleArg
+    let cameraPhotonNoiseEnabled = visualSettings.cameraPhotonNoiseEnabled
+    let cameraPhotonParamsResolved = visualSettings.cameraPhotonParamsResolved
+    let cameraDiffractionParamsResolved = visualSettings.cameraDiffractionParamsResolved
     let backgroundModeName = visualSettings.backgroundModeName
     let backgroundModeID = visualSettings.backgroundModeID
     let backgroundStarDensityArg = visualSettings.backgroundStarDensityArg
@@ -330,11 +427,14 @@ enum ParamsBuilder {
     let composeExposureBase = visualSettings.composeExposureBase
     let spectralEncodingID = visualSettings.spectralEncodingID
     let composeExposure = visualSettings.composeExposure
+    let presentationModeName = visualSettings.presentationModeName
+    let presentationModeID = visualSettings.presentationModeID
     let preserveHighlightColor: UInt32 = (diskPhysicsModeID == 3 && visibleModeEnabled && composeAnalysisMode == 0) ? 1 : 0
     let useLinear32Intermediate = visualSettings.useLinear32Intermediate
     let diskModelResolution = ParamsBuilderPolicy.resolveDiskModel(
         diskModelArg: diskModelArg,
         diskPhysicsModeID: diskPhysicsModeID,
+        visibleTeffModelID: visibleTeffModelID,
         diskAtlasPathArg: diskAtlasPathArg
     )
     let diskModelResolved = diskModelResolution.diskModelResolved
@@ -391,7 +491,22 @@ enum ParamsBuilder {
     let diskVol1PathResolved = diskVolumeAssembly.diskVol1PathResolved
     let diskVolumeRMin = diskVolumeAssembly.diskVolumeRMin
     let diskVolumeRMax = diskVolumeAssembly.diskVolumeRMax
-    let diskVolumeZMax = diskVolumeAssembly.diskVolumeZMax
+    let diskVolumeRWarp = diskVolumeAssembly.diskVolumeRWarp
+    // The spectral volume needs vertical room for the Gaussian atmosphere:
+    // cover ~4 scale heights so the photosphere and thin corona both fit.
+    // Spectral-volume vertical extent follows the hydrostatic scale height,
+    // which the shader derives from mdot (H = 0.75 mdot rs asymptotically).
+    // Cover ~4 H so the photosphere and thin corona fit, but no more - a
+    // fixed-thick density box would let the optical-depth tail dominate and
+    // make thickness insensitive to the matter supply. Floor keeps a thin
+    // disk from collapsing below sampling resolution.
+    let spectralVolumeHMaxNorm = 0.75 * diskMdotEddArg
+    let diskVolumeZMax = diskSpectralVolumeEnabled
+        ? max(0.12, 4.0 * spectralVolumeHMaxNorm)
+        : diskVolumeAssembly.diskVolumeZMax
+    // GRMHD volumes may use the existing packed radial-warp slot to avoid an
+    // ABI expansion. Explicit --disk-atlas-r-warp still overrides metadata.
+    let effectiveDiskAtlasRWarp = (diskVolumeGRMHDEnabled && diskAtlasRWarpArg < 0.0) ? diskVolumeRWarp : diskAtlasRWarp
     let photosphereRhoThresholdResolved = diskVolumeAssembly.photosphereRhoThresholdResolved
 
     if composeGPU {
@@ -409,10 +524,39 @@ enum ParamsBuilder {
     let rsD = 2.0 * G * M / (c * c)
     let reD = rsD * rcp
     let heD = rsD * diskHFactor
+    // Physical shutter window in diskFlowTime units. The heating-field shear
+    // uses phase = diskFlowTime * (r/rs)^-1.5, while the physical Keplerian
+    // rate is dphi/dt = (c / (sqrt(2) rs)) * (r/rs)^-1.5, so one flow-time
+    // unit equals sqrt(2)*rs/c seconds of coordinate time.
+    let shutterFlowTimeSpan: Double = {
+        guard motionBlurSamplesArg > 1 else { return 0.0 }
+        let span = Double(visualSettings.cameraShutterSecondsArg)
+            * motionBlurTimeLapseArg
+            * c / (2.0.squareRoot() * rsD)
+        return span.isFinite ? max(span, 0.0) : 0.0
+    }()
     let visibleTeffR0Meters = visibleTeffR0RsArg * rsD
     let visibleRInMeters = visibleRInRsArg * rsD
     let diskInnerRadiusCompose = diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD)
     let diskHorizonRadiusCompose = diskHorizonRadiusM(metric: metricArg, spin: spinArg, rs: rsD) * (1.0 + 2.0e-5)
+    let visiblePhysicalTeffExplicit = cliArguments.contains("--bh-mass") || cliArguments.contains("--mdot")
+    let visibleTeffT0Resolved: Double = {
+        guard diskPhysicsModeID == 3,
+              visibleModeEnabled,
+              visibleTeffModelID == 3,
+              !cliArguments.contains("--teff-T0"),
+              visiblePhysicalTeffExplicit else {
+            return visibleTeffT0Arg
+        }
+        let visibleRs = 2.0 * G * visibleBhMassArg / (c * c)
+        let rInNormForCalibration = (visibleRInRsArg > 0.0) ? visibleRInRsArg : (diskInnerRadiusCompose / max(rsD, 1e-30))
+        return ParamsBuilderVisible.calibratedGRMHDHybridT0(
+            blackHoleMass: visibleBhMassArg,
+            mdot: visibleMdotArg,
+            r0Meters: visibleTeffR0RsArg * visibleRs,
+            rInMeters: rInNormForCalibration * visibleRs
+        ) ?? visibleTeffT0Arg
+    }()
 
     let camPos = SIMD3<Float>(Float(rsD * camXFactor), Float(rsD * camYFactor), Float(rsD * camZFactor))
     let z = normalize(camPos)
@@ -432,6 +576,8 @@ enum ParamsBuilder {
         config.preset = preset
         config.outPath = outPath
         config.linear32OutPath = linear32OutPath
+        config.composeHDRInputPath = composeHDRInputPath
+        config.composeExternalHDRInput = !composeHDRInputPath.isEmpty
         config.imageOutPath = imageOutPath
         config.composeGPU = composeGPU
         config.gpuFullCompose = gpuFullCompose
@@ -458,9 +604,10 @@ enum ParamsBuilder {
         config.diskAtlasVphiScaleArg = diskAtlasVphiScaleArg
         config.diskAtlasRMin = diskAtlasRMin
         config.diskAtlasRMax = diskAtlasRMax
-        config.diskAtlasRWarp = diskAtlasRWarp
+        config.diskAtlasRWarp = effectiveDiskAtlasRWarp
         config.diskAtlasData = diskAtlasData
         config.diskVolumeEnabled = diskVolumeEnabled
+        config.diskSpectralVolumeEnabled = diskSpectralVolumeEnabled
         config.diskVolumeLegacyEnabled = diskVolumeLegacyEnabled
         config.diskVolumeGRMHDEnabled = diskVolumeGRMHDEnabled
         config.diskVolumeThickEnabled = diskVolumeThickEnabled
@@ -489,6 +636,23 @@ enum ParamsBuilder {
         config.diskGrmhdEmissionScaleArg = diskGrmhdEmissionScaleArg
         config.diskGrmhdAbsorptionScaleArg = diskGrmhdAbsorptionScaleArg
         config.diskGrmhdVelScaleArg = diskGrmhdVelScaleArg
+        config.grmhdBranchIsolationName = grmhdBranchIsolationName
+        config.grmhdBranchIsolationID = grmhdBranchIsolationID
+        config.grmhdTransportAlphaScaleArg = grmhdTransportAlphaScaleArg
+        config.grmhdSmoothEmissionScaleArg = grmhdSmoothEmissionScaleArg
+        config.grmhdCloudEmissionScaleArg = grmhdCloudEmissionScaleArg
+        config.grmhdSmoothWeightName = grmhdSmoothWeightName
+        config.grmhdSmoothWeightModeID = grmhdSmoothWeightModeID
+        config.pcdDensityExpArg = pcdDensityExpArg
+        config.pcdEmissivityScaleArg = pcdEmissivityScaleArg
+        config.pcdOpacityScaleArg = pcdOpacityScaleArg
+        config.pcdSeedArg = pcdSeedArg
+        config.pcdStructureScaleArg = pcdStructureScaleArg
+        config.pcdSpiralAmpArg = pcdSpiralAmpArg
+        config.pcdSpiralPitchArg = pcdSpiralPitchArg
+        config.pcdClumpContrastArg = pcdClumpContrastArg
+        config.pcdHotCrescentArg = pcdHotCrescentArg
+        config.pcdDebugFieldID = pcdDebugFieldID
         config.useLinear32Intermediate = useLinear32Intermediate
         config.rayBundleEnabled = rayBundleEnabled
         config.rayBundleActive = rayBundleActive
@@ -513,13 +677,50 @@ enum ParamsBuilder {
         config.composeExposureBase = composeExposureBase
         config.composeExposure = composeExposure
         config.preserveHighlightColor = preserveHighlightColor
+        config.presentationModeName = presentationModeName
+        config.presentationModeID = presentationModeID
         config.cameraModelName = cameraModelName
         config.cameraModelID = cameraModelID
         config.composeCameraModelID = composeCameraModelID
+        config.cameraProfileName = cameraProfileName
+        config.cameraProfileID = cameraProfileID
+        config.realismProfileName = realismProfileName
+        config.realismProfileID = realismProfileID
+        config.cameraProfileJSONPath = cameraProfileJSONPath
+        config.cameraSceneR = visualSettings.cameraSceneR
+        config.cameraSceneG = visualSettings.cameraSceneG
+        config.cameraSceneB = visualSettings.cameraSceneB
+        config.cameraDisplayR = visualSettings.cameraDisplayR
+        config.cameraDisplayG = visualSettings.cameraDisplayG
+        config.cameraDisplayB = visualSettings.cameraDisplayB
+        config.cameraSensorParams = visualSettings.cameraSensorParams
+        config.cameraNoiseParams = visualSettings.cameraNoiseParams
+        config.cameraColorParams = visualSettings.cameraColorParams
+        let glarePixelAngleDeg = Float(max(1e-6, fovDeg / Double(max(width, 1))))
+        config.cameraGlareParams = SIMD4<Float>(glarePixelAngleDeg, 0.08, 2.0, 0.55)
+        config.cameraFlags = visualSettings.cameraFlags
         config.cameraPsfSigmaArg = cameraPsfSigmaArg
         config.cameraReadNoiseArg = cameraReadNoiseArg
         config.cameraShotNoiseArg = cameraShotNoiseArg
         config.cameraFlareStrengthArg = cameraFlareStrengthArg
+        config.cameraFNumberArg = cameraFNumberArg
+        config.cameraISOArg = cameraISOArg
+        config.cameraShutterSecondsArg = cameraShutterSecondsArg
+        config.photographicExposureScale = photographicExposureScale
+        config.photographicCalibrationName = photographicCalibrationName
+        config.cameraLuminanceScaleArg = cameraLuminanceScaleArg
+        config.photometricSaturationLuminance = photometricSaturationLuminance
+        config.motionBlurSamplesArg = motionBlurSamplesArg
+        config.motionBlurTimeLapseArg = motionBlurTimeLapseArg
+        config.shutterFlowTimeSpan = shutterFlowTimeSpan
+        config.eyePhotometricEnabled = eyePhotometricEnabled
+        config.eyeNDArg = eyeNDArg
+        config.eyeAdaptationArg = eyeAdaptationArg
+        config.eyeTargetLuminanceArg = eyeTargetLuminanceArg
+        config.eyeWhiteMultipleArg = eyeWhiteMultipleArg
+        config.cameraPhotonNoiseEnabled = cameraPhotonNoiseEnabled
+        config.cameraPhotonParams = cameraPhotonParamsResolved
+        config.cameraDiffractionParams = cameraDiffractionParamsResolved
         config.composeCameraPsfSigmaArg = composeCameraPsfSigmaArg
         config.composeCameraReadNoiseArg = composeCameraReadNoiseArg
         config.composeCameraShotNoiseArg = composeCameraShotNoiseArg
@@ -585,7 +786,7 @@ enum ParamsBuilder {
         config.diskFaradayConvScaleArg = diskFaradayConvScaleArg
         config.visibleSamplesArg = visibleSamplesArg
         config.visibleTeffModelID = visibleTeffModelID
-        config.visibleTeffT0Arg = visibleTeffT0Arg
+        config.visibleTeffT0Arg = visibleTeffT0Resolved
         config.visibleTeffR0RsArg = visibleTeffR0RsArg
         config.visibleTeffPArg = visibleTeffPArg
         config.visibleBhMassArg = visibleBhMassArg
@@ -595,7 +796,19 @@ enum ParamsBuilder {
         config.visibleExpressiveMode = visibleExpressiveMode
         config.visibleEmissionModelID = visibleEmissionModelID
         config.visibleSynchAlphaArg = visibleSynchAlphaArg
+        config.visibleSynchScaleArg = visibleSynchScaleArg
         config.visibleKappaArg = visibleKappaArg
+        config.thinPhotosphereEnabled = thinPhotosphereEnabled
+        config.thinRadialTaperEnabled = thinRadialTaperEnabled
+        config.thinHOverRBaseArg = thinHOverRBaseArg
+        config.thinHOverRInnerArg = thinHOverRInnerArg
+        config.thinHOverROuterArg = thinHOverROuterArg
+        config.thinWeightPowerEmissionArg = thinWeightPowerEmissionArg
+        config.thinWeightPowerAbsorptionArg = thinWeightPowerAbsorptionArg
+        config.coronaLayerEnabled = coronaLayerEnabled
+        config.coronaHOverRArg = coronaHOverRArg
+        config.coronaWeightPowerArg = coronaWeightPowerArg
+        config.visibleThermalTransferModeID = visibleThermalTransferModeID
         config.coolAbsorptionEnabled = coolAbsorptionEnabled
         config.coolDustToGasArg = coolDustToGasArg
         config.coolDustKappaVArg = coolDustKappaVArg
@@ -674,7 +887,7 @@ enum ParamsBuilder {
             diskAtlasVphiScaleArg: diskAtlasVphiScaleArg,
             diskAtlasRMin: diskAtlasRMin,
             diskAtlasRMax: diskAtlasRMax,
-            diskAtlasRWarp: diskAtlasRWarp,
+            diskAtlasRWarp: effectiveDiskAtlasRWarp,
             diskVolumeEnabled: diskVolumeEnabled,
             diskVolumeR: diskVolumeR,
             diskVolumePhi: diskVolumePhi,
@@ -683,12 +896,25 @@ enum ParamsBuilder {
             diskVolumeRMax: diskVolumeRMax,
             diskVolumeZMax: diskVolumeZMax,
             diskVolumeTauScaleArg: diskVolumeTauScaleArg,
+            pcdDensityExpArg: pcdDensityExpArg,
+            pcdEmissivityScaleArg: pcdEmissivityScaleArg,
+            pcdOpacityScaleArg: pcdOpacityScaleArg,
+            pcdSeedArg: pcdSeedArg,
+            pcdStructureScaleArg: pcdStructureScaleArg,
+            pcdSpiralAmpArg: pcdSpiralAmpArg,
+            pcdSpiralPitchArg: pcdSpiralPitchArg,
+            pcdClumpContrastArg: pcdClumpContrastArg,
+            pcdHotCrescentArg: pcdHotCrescentArg,
             rayBundleEnabled: rayBundleEnabled,
             rayBundleActive: rayBundleActive,
             rayBundleJacobianActive: rayBundleJacobianActive,
             rayBundleJacobianStrengthArg: rayBundleJacobianStrengthArg,
             rayBundleFootprintClampArg: rayBundleFootprintClampArg,
+            composeLook: composeLook,
+            presentationModeName: presentationModeName,
             cameraModelName: cameraModelName,
+            cameraProfileName: cameraProfileName,
+            realismProfileName: realismProfileName,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,
@@ -727,7 +953,7 @@ enum ParamsBuilder {
                 visiblePolicyName: visiblePolicyName,
                 visibleSamplesArg: visibleSamplesArg,
                 visibleTeffModelName: visibleTeffModelName,
-                visibleTeffT0Arg: visibleTeffT0Arg,
+                visibleTeffT0Arg: visibleTeffT0Resolved,
                 visibleTeffR0RsArg: visibleTeffR0RsArg,
                 visibleTeffPArg: visibleTeffPArg,
                 visibleBhMassArg: visibleBhMassArg,
@@ -736,7 +962,19 @@ enum ParamsBuilder {
                 photosphereRhoThresholdResolved: photosphereRhoThresholdResolved,
                 visibleEmissionModelName: visibleEmissionModelName,
                 visibleSynchAlphaArg: visibleSynchAlphaArg,
+                visibleSynchScaleArg: visibleSynchScaleArg,
                 visibleKappaArg: visibleKappaArg,
+                thinPhotosphereEnabled: thinPhotosphereEnabled,
+                thinRadialTaperEnabled: thinRadialTaperEnabled,
+                thinHOverRBaseArg: thinHOverRBaseArg,
+                thinHOverRInnerArg: thinHOverRInnerArg,
+                thinHOverROuterArg: thinHOverROuterArg,
+                thinWeightPowerEmissionArg: thinWeightPowerEmissionArg,
+                thinWeightPowerAbsorptionArg: thinWeightPowerAbsorptionArg,
+                coronaLayerEnabled: coronaLayerEnabled,
+                coronaHOverRArg: coronaHOverRArg,
+                coronaWeightPowerArg: coronaWeightPowerArg,
+                visibleThermalTransferModeID: visibleThermalTransferModeID,
                 coolAbsorptionEnabled: coolAbsorptionEnabled,
                 coolDustToGasArg: coolDustToGasArg,
                 coolDustKappaVArg: coolDustKappaVArg,
@@ -758,6 +996,19 @@ enum ParamsBuilder {
 
         var params = ParamsBuilder.buildPackedParams(from: config)
         accretionModel.buildPackedFields(into: &params, from: diskPolicy)
+        if diskSpectralVolumeEnabled {
+            // The accretion-model hook re-applies the precision-cloud-gated
+            // values after the generic pack. The spectral volume's
+            // clumpy-atmosphere coverage is independent of the legacy Perlin
+            // cloud system, so restore the resolved knob.
+            params.diskCloudCoverage = Float(diskCloudCoverageArg)
+        }
+        if diskPhysicsModeID == 3 && visibleModeEnabled {
+            // The accretion-model hook writes precision-mode defaults after the
+            // generic pack step. GRMHD visible uses this field as its state/flow
+            // contrast strength, so preserve the resolved visible policy value.
+            params.diskPrecisionTexture = Float(diskPrecisionTextureArg)
+        }
 
         return BuiltParams(
             rawArguments: logical.rawArguments,

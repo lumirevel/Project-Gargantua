@@ -4,6 +4,8 @@ constant int  FC_METRIC [[function_constant(0)]];
 constant uint FC_PHYSICS_MODE [[function_constant(1)]];
 constant uint FC_VISIBLE_MODE [[function_constant(2)]];
 constant uint FC_TRACE_DEBUG_OFF [[function_constant(3)]];
+constant uint FC_GRMHD_WEIGHT_MODE [[function_constant(4)]];
+constant uint FC_VISIBLE_EMISSION_MODE [[function_constant(5)]];
 
 // Hot-path helper: keep algebraically equivalent x^(3/2) while avoiding generic pow().
 static inline float pow_1p5(float x) {
@@ -73,7 +75,7 @@ struct Params {
     float  diskAtlasRNormMin;
     float  diskAtlasRNormMax;
     float  diskAtlasRNormWarp;
-    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin soft, 2=perlin ec7 legacy, 3=perlin classic (f552 style)
+    uint   diskNoiseModel; // 0=streamline cloud, 1=perlin soft, 2=legacy ec7, 3=legacy f552, 4=legacy periodic thin, 5=legacy feb24 raw perlin
     float  diskMdotEdd;    // mdot / mdot_edd
     float  diskRadiativeEfficiency; // thin-disk eta
     uint   diskPhysicsMode; // 0=thin, 1=thick/plasma, 2=precision-nt, 3=grmhd-scalar-rt
@@ -111,14 +113,14 @@ struct Params {
     float  diskGrmhdEmissionScale;
     float  diskGrmhdAbsorptionScale;
     float  diskGrmhdVelScale;
-    uint   diskGrmhdDebugView; // 0=off, 1=max_rho, 2=max_b2, 3=max_jnu, 4=max_inu
+    uint   diskGrmhdDebugView; // 0=off, 1..9=legacy maps, 10..19/23..25=state/transfer proxies
     uint   diskPolarizedRT; // 0=off, 1=approx Stokes transport
     float  diskPolarizationFrac; // intrinsic linear pol fraction at emission
     float  diskFaradayRotScale; // Q/U rotation scale
     float  diskFaradayConvScale; // U/V conversion scale
     uint   visibleMode; // 0=off, 1=visible-spectrum rendering
     uint   visibleSamples; // wavelength sample count for CIE integration
-    uint   visibleTeffModel; // 0=parametric, 1=thin-disk simplified
+    uint   visibleTeffModel; // 0=parametric, 1=thin-disk, 2=NT, 3=GRMHD-hybrid
     uint   visiblePad0;
     float  visibleTeffT0;
     float  visibleTeffR0;
@@ -128,7 +130,7 @@ struct Params {
     float  visibleMdot;
     float  visibleRIn;
     float  visibleKappa;
-    uint   visibleEmissionModel; // 0=blackbody, 1=synchrotron-like powerlaw
+    uint   visibleEmissionModel; // 0=blackbody, 1=synchrotron-like powerlaw, 2=thermal+thin-tail hybrid
     float  visibleEmissionAlpha; // spectral slope for powerlaw model
     uint   rayBundleSSAA; // 0=off(single ray), 1=4x sub-pixel SSAA in kernel
     uint   rayBundleJacobian; // 0=off, 1=ray-differential magnification weighting
@@ -143,7 +145,31 @@ struct Params {
     float  coolGasKappa0; // cool gas opacity normalization [cm^2/g]
     float  coolGasNuSlope; // frequency slope for cool-gas opacity
     float  coolClumpStrength; // unresolved clumpiness boost strength
-    float  coolAbsorptionPad;
+    float  visibleSynchScale; // code-unit scale for visible optically thin synchrotron diagnostic tail
+    uint   thinPhotosphereEnabled; // 1=restrict visible thermal branch to a thin layer
+    uint   thinRadialTaperEnabled; // 1=vary H/R from inner to outer value
+    float  thinHOverRBase; // fallback thermal photosphere H/R
+    float  thinHOverRInner; // inner-disk thermal photosphere H/R
+    float  thinHOverROuter; // outer-disk thermal photosphere H/R
+    float  thinWeightPowerEmission; // exponent for thermal j weighting
+    float  thinWeightPowerAbsorption; // exponent for thermal alpha weighting
+    float  _padThinPhotosphere;
+    uint   coronaLayerEnabled; // 1=limit visible thin/kappa branch to a broad corona layer
+    float  coronaHOverR; // broad coronal emitting-layer H/R
+    float  coronaWeightPower; // exponent for coronal j/a weighting
+    uint   visibleThermalTransferMode; // 0=volume RT, 1=tau-surface photosphere approximation
+    uint   grmhdBranchIsolationMode; // 0=off, 1=smooth, 2=cloud/skin, 3=body, 4=skin, 5=corona
+    float  grmhdTransportAlphaScale; // scales transport alpha only; emissivity stays fixed
+    float  grmhdSmoothEmissionScale; // smooth thermal continuum gain
+    float  grmhdCloudEmissionScale; // structured thermal cloud gain
+    uint   grmhdSmoothWeightMode; // 0=constant, 1=state, 2=body-source, 3=state+body-source, 4=plasma body+skin, 5=positive-emissive plasma, 6..9=hot-skin variants, 10..13=hybrid visible disk, 14..15=visible reference body + GRMHD skin
+    float4 pcdSourceA; // x=densityExp, y=emissivityScale, z=opacityScale, w=seed
+    float4 pcdSourceB; // x=structureScale, y=spiralAmp, z=spiralPitch, w=clumpContrast
+    float4 pcdSourceC; // x=hotCrescent, y=debugField, zw reserved
+    // x=sample count (1=off), y=shutter span in diskFlowTime units, zw reserved.
+    // Span maps physical shutter seconds through t_flow = t_phys * c / (sqrt(2) * rs),
+    // matching the Keplerian phase convention used by the heating-field advection.
+    float4 motionBlurParams;
 };
 
 struct CollisionInfo {

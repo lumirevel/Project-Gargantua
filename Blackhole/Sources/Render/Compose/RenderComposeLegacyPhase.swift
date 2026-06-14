@@ -36,6 +36,8 @@ enum RenderComposeLegacyPhase {
         let composePrecisionID = config.composePrecisionID
         let composeAnalysisMode = config.composeAnalysisMode
         let composeCameraModelID = config.composeCameraModelID
+        let cameraProfileID = (composeAnalysisMode == 0) ? config.cameraProfileID : 0
+        let realismProfileID = config.realismProfileID
         let composeCameraPsfSigmaArg = config.composeCameraPsfSigmaArg
         let composeCameraReadNoiseArg = config.composeCameraReadNoiseArg
         let composeCameraShotNoiseArg = config.composeCameraShotNoiseArg
@@ -58,8 +60,16 @@ enum RenderComposeLegacyPhase {
         let diskPlungeFloorArg = config.diskPlungeFloorArg
         let diskInnerRadiusCompose = config.diskInnerRadiusCompose
         let diskHorizonRadiusCompose = config.diskHorizonRadiusCompose
-        let composeLumLogMin: Float = (diskPhysicsModeID == 3) ? -36.0 : 8.0
-        let composeLumLogMax: Float = (diskPhysicsModeID == 3) ? 4.0 : 20.0
+        let lumRange = composeLuminanceLogRange(diskPhysicsModeID: diskPhysicsModeID)
+        let composeLumLogMin: Float = lumRange.min
+        let composeLumLogMax: Float = lumRange.max
+        let exposureSettings = composeExposureSolveSettings(
+            lookID: composeLookID,
+            presentationModeID: config.presentationModeID,
+            realismProfileID: realismProfileID,
+            diskPhysicsModeID: diskPhysicsModeID,
+            diskVolumeEnabled: diskVolumeEnabled
+        )
         let outWidth = policy.outWidth
         let outHeight = policy.outHeight
         let count = policy.count
@@ -85,6 +95,11 @@ enum RenderComposeLegacyPhase {
         var cloudQ90: Float = 1.0
         var cloudInvSpan: Float = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
         var sampledHits = 0
+        var exposureDebugP50: Float?
+        var exposureDebugPHigh: Float?
+        var exposureDebugPMid: Float?
+        var exposureDebugLumSamples: UInt32?
+        var exposureDebugCloudSamples: UInt32?
 
         let url = frameResources.outputURL
         if autoExposureEnabled && !composeGPU {
@@ -327,11 +342,15 @@ enum RenderComposeLegacyPhase {
                                 Z += b * zb * dLamM
                             }
                         } else {
+                            // dLambda in meters keeps Y in SI integrated
+                            // spectral radiance, consistent with the GPU paths
+                            // and the absolute photometric calibration.
+                            let dLamM = stepNm * 1e-9
                             var lam = 380.0
                             while lam <= 750.001 {
                                 let (xb, yb, zb) = cieXYZBar(lam)
                                 let lamM = lam * 1e-9
-                                let b = planckLambda(lamM, tObs) * colorDilution
+                                let b = planckLambda(lamM, tObs) * colorDilution * dLamM
                                 X += b * xb; Y += b * yb; Z += b * zb
                                 lam += stepNm
                             }
@@ -378,12 +397,24 @@ enum RenderComposeLegacyPhase {
             } else {
                 lumSamples.sort()
                 let p50 = percentileSorted(lumSamples, 0.50)
-                let p995 = percentileSorted(lumSamples, 0.995)
-                var targetWhite: Float = composeTargetWhite(composeLookID)
-                if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
-                let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
-                composeExposure = targetWhite / max(p995, pFloor)
-                print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
+                let p995 = percentileSorted(lumSamples, exposureSettings.highQuantile)
+                let pMid = (exposureSettings.midQuantile > 0.0)
+                    ? percentileSorted(lumSamples, exposureSettings.midQuantile)
+                    : 0.0
+                exposureDebugP50 = p50
+                exposureDebugPHigh = p995
+                exposureDebugPMid = pMid
+                exposureDebugLumSamples = UInt32(min(sampledHits, Int(UInt32.max)))
+                composeExposure = composeExposureFromLuminanceStats(
+                    pHigh: p995,
+                    pMid: pMid,
+                    settings: exposureSettings
+                )
+                if exposureSettings.midQuantile > 0.0 {
+                    print("lum p50=\(p50), p\(Int(exposureSettings.midQuantile * 100))=\(pMid), p99.5=\(p995), exposureSamples=\(sampledHits), exposureBoost<=\(exposureSettings.maxExposureBoost)")
+                } else {
+                    print("lum p50=\(p50), p99.5=\(p995), exposureSamples=\(sampledHits)")
+                }
             }
         }
         print("compose cloud normalization q10=\(cloudQ10) q90=\(cloudQ90)")
@@ -406,7 +437,13 @@ enum RenderComposeLegacyPhase {
             backgroundMode: backgroundModeID, backgroundStarDensity: backgroundStarDensityArg,
             backgroundStarStrength: backgroundStarStrengthArg, backgroundNebulaStrength: backgroundNebulaStrengthArg,
             preserveHighlightColor: preserveHighlightColor, diskNoiseModel: params.diskNoiseModel,
-            _pad0: 0, _pad1: 0, _pad2: 0
+            cameraProfile: cameraProfileID, realismProfile: realismProfileID, cameraFlags: config.cameraFlags,
+            cameraSceneR: config.cameraSceneR, cameraSceneG: config.cameraSceneG, cameraSceneB: config.cameraSceneB,
+            cameraDisplayR: config.cameraDisplayR, cameraDisplayG: config.cameraDisplayG, cameraDisplayB: config.cameraDisplayB,
+            cameraSensorParams: config.cameraSensorParams, cameraNoiseParams: config.cameraNoiseParams,
+            cameraColorParams: config.cameraColorParams, cameraGlareParams: config.cameraGlareParams,
+            cameraPhotonParams: config.cameraPhotonParams,
+            cameraDiffractionParams: config.cameraDiffractionParams
         )
         let composeBaseBuf = device.makeBuffer(bytes: &composeParamsBase, length: MemoryLayout<PackedParams>.stride, options: [])!
         let rawComposeRows = max(1, composeChunkArg / max(width, 1))
@@ -467,6 +504,9 @@ enum RenderComposeLegacyPhase {
             cloudQ10 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.08, 0.0, 1.0) }
             cloudQ90 = cloudHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.92, 0.0, 1.0) }
             cloudInvSpan = 1.0 / max(cloudQ90 - cloudQ10, 1e-6)
+            var cloudSampleTotal: UInt64 = 0
+            for count in cloudHistGlobal { cloudSampleTotal += UInt64(count) }
+            exposureDebugCloudSamples = UInt32(min(cloudSampleTotal, UInt64(UInt32.max)))
 
             try corrHandle.seek(toOffset: 0)
             pty = 0
@@ -508,14 +548,40 @@ enum RenderComposeLegacyPhase {
             }
 
             let p50Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.50, composeLumLogMin, composeLumLogMax) }
-            let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, 0.995, composeLumLogMin, composeLumLogMax) }
+            let p995Log = lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, exposureSettings.highQuantile, composeLumLogMin, composeLumLogMax) }
+            let pMidLog = (exposureSettings.midQuantile > 0.0)
+                ? lumHistGlobal.withUnsafeBufferPointer { quantileFromUniformHistogram($0, exposureSettings.midQuantile, composeLumLogMin, composeLumLogMax) }
+                : p50Log
             let p50 = Float(pow(10.0, Double(p50Log)))
             let gpuP995 = Float(pow(10.0, Double(p995Log)))
-            var targetWhite: Float = composeTargetWhite(composeLookID)
-            if diskVolumeEnabled && diskPhysicsModeID != 3 { targetWhite *= 2.2 }
-            let pFloor: Float = (diskPhysicsModeID == 3) ? 1e-30 : 1e-12
-            composeExposure = targetWhite / max(gpuP995, pFloor)
-            print("lum(hist) p50=\(p50), p99.5=\(gpuP995), mode=gpu-tiled")
+            let gpuPMid = (exposureSettings.midQuantile > 0.0) ? Float(pow(10.0, Double(pMidLog))) : 0.0
+            var lumSampleTotal: UInt64 = 0
+            for count in lumHistGlobal { lumSampleTotal += UInt64(count) }
+            exposureDebugP50 = p50
+            exposureDebugPHigh = gpuP995
+            exposureDebugPMid = gpuPMid
+            exposureDebugLumSamples = UInt32(min(lumSampleTotal, UInt64(UInt32.max)))
+            composeExposure = composeExposureFromLuminanceStats(
+                pHigh: gpuP995,
+                pMid: gpuPMid,
+                settings: exposureSettings
+            )
+            if exposureSettings.midQuantile > 0.0 {
+                print("lum(hist) p50=\(p50), p\(Int(exposureSettings.midQuantile * 100))=\(gpuPMid), p99.5=\(gpuP995), mode=gpu-tiled, exposureBoost<=\(exposureSettings.maxExposureBoost)")
+            } else {
+                print("lum(hist) p50=\(p50), p99.5=\(gpuP995), mode=gpu-tiled")
+            }
+        }
+
+        if let eye = RenderEyePhotometric.resolve(
+            config: config,
+            cameraModelID: composeCameraModelID,
+            p50: exposureDebugP50.map(Double.init),
+            p995: exposureDebugPHigh.map(Double.init)
+        ) {
+            composeExposure = Float(eye.ndLinear)
+            composeParamsTemplate.eyeParams = eye.eyeParams
+            print(eye.summary)
         }
 
         composeParamsTemplate.exposure = composeExposure
@@ -590,6 +656,23 @@ enum RenderComposeLegacyPhase {
 
         try RenderOutputs.writeImage(path: config.imageOutPath, width: outWidth, height: outHeight, rgb: rgb)
         print("Saved image at: \(config.imageOutPath)")
+        try RenderOutputs.writeExposureDiagnostics(
+            config: config,
+            width: outWidth,
+            height: outHeight,
+            solveMode: exposureModeLabel,
+            resolvedExposure: composeExposure,
+            settings: exposureSettings,
+            p50: exposureDebugP50,
+            pHigh: exposureDebugPHigh,
+            pMid: exposureDebugPMid,
+            luminanceSamples: exposureDebugLumSamples,
+            luminanceLogMin: composeLumLogMin,
+            luminanceLogMax: composeLumLogMax,
+            cloudQ10: cloudQ10,
+            cloudQ90: cloudQ90,
+            cloudSamples: exposureDebugCloudSamples
+        )
 
         return RenderComposeLegacyPhaseResult(
             composeExposure: composeExposure,

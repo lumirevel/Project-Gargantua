@@ -10,6 +10,8 @@ using namespace metal;
 
 #define M_PI 3.14159265358979323846f
 
+#include "Metal/cie_cmf.metalh"
+
 #define BH_INCLUDE_GR_MATH 1
 #include "Metal/gr_math.metal"
 #undef BH_INCLUDE_GR_MATH

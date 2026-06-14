@@ -131,7 +131,32 @@ struct PackedParams {
     var coolGasKappa0: Float
     var coolGasNuSlope: Float
     var coolClumpStrength: Float
-    var coolAbsorptionPad: Float
+    var visibleSynchScale: Float
+    var thinPhotosphereEnabled: UInt32
+    var thinRadialTaperEnabled: UInt32
+    var thinHOverRBase: Float
+    var thinHOverRInner: Float
+    var thinHOverROuter: Float
+    var thinWeightPowerEmission: Float
+    var thinWeightPowerAbsorption: Float
+    var _padThinPhotosphere: Float
+    var coronaLayerEnabled: UInt32
+    var coronaHOverR: Float
+    var coronaWeightPower: Float
+    var visibleThermalTransferMode: UInt32
+    var grmhdBranchIsolationMode: UInt32
+    var grmhdTransportAlphaScale: Float
+    var grmhdSmoothEmissionScale: Float
+    var grmhdCloudEmissionScale: Float
+    var grmhdSmoothWeightMode: UInt32
+    // Physics-constrained cinematic disk v1 source controls.
+    // A: density exponent, emissivity scale, opacity scale, deterministic seed.
+    // B: structure scale, spiral amplitude, spiral pitch, clump contrast.
+    // C: hot crescent strength, reserved, reserved, reserved.
+    var pcdSourceA: SIMD4<Float>
+    var pcdSourceB: SIMD4<Float>
+    var pcdSourceC: SIMD4<Float> // x=hotCrescent, y=profile-6 debug field selector
+    var motionBlurParams: SIMD4<Float> // x=samples (1=off), y=shutter span in flow-time units
 }
 
 struct CollisionInfo {
@@ -197,9 +222,29 @@ struct ComposeParams {
     var backgroundNebulaStrength: Float
     var preserveHighlightColor: UInt32
     var diskNoiseModel: UInt32
-    var _pad0: UInt32
-    var _pad1: UInt32
-    var _pad2: UInt32
+    var cameraProfile: UInt32
+    var realismProfile: UInt32
+    var cameraFlags: UInt32
+    var cameraSceneR: SIMD4<Float>
+    var cameraSceneG: SIMD4<Float>
+    var cameraSceneB: SIMD4<Float>
+    var cameraDisplayR: SIMD4<Float>
+    var cameraDisplayG: SIMD4<Float>
+    var cameraDisplayB: SIMD4<Float>
+    var cameraSensorParams: SIMD4<Float>
+    var cameraNoiseParams: SIMD4<Float>
+    var cameraColorParams: SIMD4<Float>
+    var cameraGlareParams: SIMD4<Float>
+    // x = adaptation luminance cd/m^2 (0 = physiological eye disabled),
+    // y = absolute luminance per CIE-Y unit after exposure, z = white anchor
+    // multiple of adaptation, w = reserved.
+    var eyeParams: SIMD4<Float> = .zero
+    // x = photoelectrons at saturation, y = read noise electrons, z = PRNU
+    // fraction, w > 0.5 = physical photon noise enabled.
+    var cameraPhotonParams: SIMD4<Float> = .zero
+    // x = spike energy fraction, y = spike count, z = rotation radians,
+    // w = core falloff scale in pixels.
+    var cameraDiffractionParams: SIMD4<Float> = .zero
 }
 
 struct ComposeSolveParams {
@@ -208,9 +253,9 @@ struct ComposeSolveParams {
     var lumQuantile: Float
     var targetWhite: Float
     var pFloor: Float
-    var _pad0: Float
-    var _pad1: Float
-    var _pad2: Float
+    var lumMidQuantile: Float
+    var targetMid: Float
+    var maxExposureBoost: Float
 }
 
 struct ComposeSolveResult {
@@ -219,7 +264,7 @@ struct ComposeSolveResult {
     var p50: Float
     var p995: Float
     var exposure: Float
-    var _pad0: Float
+    var pMid: Float
     var cloudSamples: UInt32
     var lumSamples: UInt32
 }
@@ -246,17 +291,32 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 548
-    let expectedStride = 560
+    let expectedSize = 688
+    let expectedStride = 688
     let expectedAlignment = 16
+    let expectedComposeSize = 368
+    let expectedComposeStride = 368
+    let expectedComposeAlignment = 16
     let expectedOffsets: [String: Int] = [
         "camPos": 32,
         "rs": 100,
         "metric": 140,
         "diskPhysicsMode": 276,
+        "diskPrecisionTexture": 296,
         "diskVolumeMode": 332,
         "visibleMode": 436,
+        "visibleEmissionModel": 484,
         "coolAbsorptionMode": 508,
+        "visibleSynchScale": 544,
+        "thinPhotosphereEnabled": 548,
+        "coronaLayerEnabled": 580,
+        "visibleThermalTransferMode": 592,
+        "grmhdBranchIsolationMode": 596,
+        "grmhdSmoothWeightMode": 612,
+        "pcdSourceA": 624,
+        "pcdSourceB": 640,
+        "pcdSourceC": 656,
+        "motionBlurParams": 672,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -279,6 +339,29 @@ func validatePackedParamsABIOrThrow() throws {
     guard MemoryLayout<CollisionLite32>.stride == 32 else {
         throw NSError(domain: "Blackhole", code: 106, userInfo: [NSLocalizedDescriptionKey: "CollisionLite32 stride changed: \(MemoryLayout<CollisionLite32>.stride)"])
     }
+    guard MemoryLayout<ComposeParams>.size == expectedComposeSize else {
+        throw NSError(domain: "Blackhole", code: 107, userInfo: [NSLocalizedDescriptionKey: "ComposeParams size changed: \(MemoryLayout<ComposeParams>.size) != \(expectedComposeSize)"])
+    }
+    guard MemoryLayout<ComposeParams>.stride == expectedComposeStride else {
+        throw NSError(domain: "Blackhole", code: 108, userInfo: [NSLocalizedDescriptionKey: "ComposeParams stride changed: \(MemoryLayout<ComposeParams>.stride) != \(expectedComposeStride)"])
+    }
+    guard MemoryLayout<ComposeParams>.alignment == expectedComposeAlignment else {
+        throw NSError(domain: "Blackhole", code: 109, userInfo: [NSLocalizedDescriptionKey: "ComposeParams alignment changed: \(MemoryLayout<ComposeParams>.alignment) != \(expectedComposeAlignment)"])
+    }
+    let composeOffsets = composeParamsCriticalOffsets()
+    let expectedComposeOffsets: [String: Int] = [
+        "cameraFlags": 152,
+        "cameraSceneR": 160,
+        "cameraGlareParams": 304,
+        "eyeParams": 320,
+        "cameraPhotonParams": 336,
+        "cameraDiffractionParams": 352,
+    ]
+    for (name, expected) in expectedComposeOffsets {
+        guard composeOffsets[name] == expected else {
+            throw NSError(domain: "Blackhole", code: 110, userInfo: [NSLocalizedDescriptionKey: "ComposeParams offset \(name) changed: \(String(describing: composeOffsets[name])) != \(expected)"])
+        }
+    }
 }
 
 private func packedParamsCriticalOffsets() -> [String: Int] {
@@ -287,8 +370,31 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "rs": MemoryLayout<PackedParams>.offset(of: \PackedParams.rs) ?? -1,
         "metric": MemoryLayout<PackedParams>.offset(of: \PackedParams.metric) ?? -1,
         "diskPhysicsMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskPhysicsMode) ?? -1,
+        "diskPrecisionTexture": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskPrecisionTexture) ?? -1,
         "diskVolumeMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.diskVolumeMode) ?? -1,
         "visibleMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleMode) ?? -1,
+        "visibleEmissionModel": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleEmissionModel) ?? -1,
         "coolAbsorptionMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.coolAbsorptionMode) ?? -1,
+        "visibleSynchScale": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleSynchScale) ?? -1,
+        "thinPhotosphereEnabled": MemoryLayout<PackedParams>.offset(of: \PackedParams.thinPhotosphereEnabled) ?? -1,
+        "coronaLayerEnabled": MemoryLayout<PackedParams>.offset(of: \PackedParams.coronaLayerEnabled) ?? -1,
+        "visibleThermalTransferMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.visibleThermalTransferMode) ?? -1,
+        "grmhdBranchIsolationMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdBranchIsolationMode) ?? -1,
+        "grmhdSmoothWeightMode": MemoryLayout<PackedParams>.offset(of: \PackedParams.grmhdSmoothWeightMode) ?? -1,
+        "pcdSourceA": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceA) ?? -1,
+        "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
+        "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
+        "motionBlurParams": MemoryLayout<PackedParams>.offset(of: \PackedParams.motionBlurParams) ?? -1,
+    ]
+}
+
+private func composeParamsCriticalOffsets() -> [String: Int] {
+    [
+        "cameraFlags": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraFlags) ?? -1,
+        "cameraSceneR": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraSceneR) ?? -1,
+        "cameraGlareParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraGlareParams) ?? -1,
+        "eyeParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.eyeParams) ?? -1,
+        "cameraPhotonParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraPhotonParams) ?? -1,
+        "cameraDiffractionParams": MemoryLayout<ComposeParams>.offset(of: \ComposeParams.cameraDiffractionParams) ?? -1,
     ]
 }

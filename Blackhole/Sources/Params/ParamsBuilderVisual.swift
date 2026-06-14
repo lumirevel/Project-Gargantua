@@ -1,13 +1,348 @@
 import Foundation
+import simd
+
+struct CameraCalibration {
+    var profileName: String
+    var profileID: UInt32
+    var jsonPath: String
+    var sceneR: SIMD4<Float>
+    var sceneG: SIMD4<Float>
+    var sceneB: SIMD4<Float>
+    var displayR: SIMD4<Float>
+    var displayG: SIMD4<Float>
+    var displayB: SIMD4<Float>
+    var sensorParams: SIMD4<Float>
+    var noiseParams: SIMD4<Float>
+    var colorParams: SIMD4<Float>
+    var lensFNumber: Float?
+    var lensFocusDepth: Float?
+    var lensDofStrength: Float?
+    var apertureBlades: UInt32?
+    var apertureRotation: Float?
+    var psfSigmaPixels: Float?
+    var readNoise: Float?
+    var shotNoise: Float?
+    var flareStrength: Float?
+    // Physical sensor data for the photon-statistics noise model. Electrons
+    // and microns; nil disables the physical model for this profile.
+    var fullWellElectrons: Double?
+    var readNoiseElectrons: Double?
+    var peakQuantumEfficiency: Double?
+    var pixelPitchMicrons: Double?
+    var dsnuElectrons: Double?
+    var darkCurrentElectronsPerSecond: Double?
+    var prnuPercent: Double?
+}
+
+private struct CameraCalibrationJSON: Decodable {
+    var name: String?
+    var sceneMatrix: [[Double]]?
+    var displayMatrix: [[Double]]?
+    var sensorGain: Double?
+    var fullWell: Double?
+    var shoulderMix: Double?
+    var blackLevel: Double?
+    var vignette: Double?
+    var chromaNoiseMix: Double?
+    var rowNoise: Double?
+    var toeStrength: Double?
+    var saturation: Double?
+    var displayShoulder: Double?
+    var fullWellElectrons: Double?
+    var readNoiseElectrons: Double?
+    var darkCurrentElectronsPerSecond: Double?
+    var exposureSeconds: Double?
+    var dsnuElectrons: Double?
+    var prnuPercent: Double?
+    var peakQuantumEfficiency: Double?
+    var pixelPitchMicrons: Double?
+    var lensFNumber: Double?
+    var lensFocusDepth: Double?
+    var lensDofStrength: Double?
+    var apertureBlades: Int?
+    var apertureRotation: Double?
+    var lensVignettingStops: Double?
+    var psfSigmaPixels: Double?
+    var flareStrength: Double?
+}
+
+private enum CameraCalibrationFactory {
+    static func identity(profileName: String, profileID: UInt32, jsonPath: String = "") -> CameraCalibration {
+        CameraCalibration(
+            profileName: profileName,
+            profileID: profileID,
+            jsonPath: jsonPath,
+            sceneR: SIMD4<Float>(1, 0, 0, 0),
+            sceneG: SIMD4<Float>(0, 1, 0, 0),
+            sceneB: SIMD4<Float>(0, 0, 1, 0),
+            displayR: SIMD4<Float>(1, 0, 0, 0),
+            displayG: SIMD4<Float>(0, 1, 0, 0),
+            displayB: SIMD4<Float>(0, 0, 1, 0),
+            sensorParams: SIMD4<Float>(1, 0, 0, 0),
+            noiseParams: .zero,
+            colorParams: SIMD4<Float>(1, 0, 0, 0),
+            lensFNumber: nil,
+            lensFocusDepth: nil,
+            lensDofStrength: nil,
+            apertureBlades: nil,
+            apertureRotation: nil,
+            psfSigmaPixels: nil,
+            readNoise: nil,
+            shotNoise: nil,
+            flareStrength: nil,
+            fullWellElectrons: nil,
+            readNoiseElectrons: nil,
+            peakQuantumEfficiency: nil,
+            pixelPitchMicrons: nil,
+            dsnuElectrons: nil,
+            darkCurrentElectronsPerSecond: nil,
+            prnuPercent: nil
+        )
+    }
+
+    static func builtin(profileName: String, profileID: UInt32) -> CameraCalibration {
+        switch profileID {
+        case 1:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(0.992, 0.006, 0.002, 0)
+            c.sceneG = SIMD4<Float>(0.006, 0.991, 0.003, 0)
+            c.sceneB = SIMD4<Float>(0.002, 0.010, 0.988, 0)
+            c.displayR = SIMD4<Float>(0.985, 0.012, 0.003, 0)
+            c.displayG = SIMD4<Float>(0.010, 0.985, 0.005, 0)
+            c.displayB = SIMD4<Float>(0.004, 0.016, 0.980, 0)
+            c.noiseParams = SIMD4<Float>(0.045, 0.12, 0.08, 0.0)
+            c.colorParams = SIMD4<Float>(0.98, 0.0, 0, 0)
+            // Representative back-illuminated scientific CMOS (IMX455-class).
+            c.fullWellElectrons = 51000
+            c.readNoiseElectrons = 3.6
+            c.peakQuantumEfficiency = 0.90
+            c.pixelPitchMicrons = 3.76
+            c.dsnuElectrons = 1.2
+            c.darkCurrentElectronsPerSecond = 0.003
+            c.prnuPercent = 0.35
+            return c
+        case 2:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(1.020, 0.000, 0.000, 0)
+            c.sceneG = SIMD4<Float>(0.000, 0.995, 0.000, 0)
+            c.sceneB = SIMD4<Float>(0.000, 0.000, 0.970, 0)
+            c.displayR = SIMD4<Float>(1.035, 0.014, -0.012, 0)
+            c.displayG = SIMD4<Float>(0.012, 0.995, 0.004, 0)
+            c.displayB = SIMD4<Float>(-0.006, 0.026, 0.965, 0)
+            c.sensorParams = SIMD4<Float>(1.0, 7.0, 0.20, 0.0)
+            c.noiseParams = SIMD4<Float>(0.10, 0.24, 0.08, 0.0)
+            c.colorParams = SIMD4<Float>(1.035, 0.55, 0, 0)
+            c.lensFNumber = 2.8
+            c.lensFocusDepth = 4.35
+            c.lensDofStrength = 1.0
+            c.apertureBlades = 7
+            c.apertureRotation = 0.10
+            // Representative Super-35 cinema sensor.
+            c.fullWellElectrons = 33000
+            c.readNoiseElectrons = 4.0
+            c.peakQuantumEfficiency = 0.60
+            c.pixelPitchMicrons = 8.25
+            c.dsnuElectrons = 2.0
+            c.darkCurrentElectronsPerSecond = 0.02
+            c.prnuPercent = 0.5
+            return c
+        case 3:
+            var c = identity(profileName: profileName, profileID: profileID)
+            c.sceneR = SIMD4<Float>(1.030, 0.000, 0.000, 0)
+            c.sceneG = SIMD4<Float>(0.000, 1.005, 0.000, 0)
+            c.sceneB = SIMD4<Float>(0.000, 0.000, 0.985, 0)
+            c.displayR = SIMD4<Float>(1.055, 0.010, -0.018, 0)
+            c.displayG = SIMD4<Float>(0.006, 1.008, 0.000, 0)
+            c.displayB = SIMD4<Float>(-0.010, 0.020, 0.990, 0)
+            c.sensorParams = SIMD4<Float>(1.0, 8.5, 0.14, 0.0)
+            c.noiseParams = SIMD4<Float>(0.18, 0.42, 0.20, 0.16)
+            c.colorParams = SIMD4<Float>(1.08, 0.0, 0, 0)
+            c.lensFNumber = 4.0
+            c.lensFocusDepth = 4.35
+            c.lensDofStrength = 0.75
+            c.apertureBlades = 9
+            c.apertureRotation = 0.0
+            // Representative full-frame mirrorless sensor.
+            c.fullWellElectrons = 64000
+            c.readNoiseElectrons = 3.0
+            c.peakQuantumEfficiency = 0.60
+            c.pixelPitchMicrons = 5.94
+            c.dsnuElectrons = 1.5
+            c.darkCurrentElectronsPerSecond = 0.02
+            c.prnuPercent = 0.5
+            return c
+        default:
+            return identity(profileName: profileName, profileID: profileID)
+        }
+    }
+
+    static func loadJSON(path: String, fallback: CameraCalibration) -> CameraCalibration {
+        do {
+            let url = URL(fileURLWithPath: path)
+            let data = try Data(contentsOf: url)
+            let raw = try JSONDecoder().decode(CameraCalibrationJSON.self, from: data)
+            var c = fallback
+            c.profileName = raw.name ?? "json"
+            c.profileID = 4
+            c.jsonPath = path
+            if let m = raw.sceneMatrix {
+                (c.sceneR, c.sceneG, c.sceneB) = rows(from: m)
+            }
+            if let m = raw.displayMatrix {
+                (c.displayR, c.displayG, c.displayB) = rows(from: m)
+            }
+            c.sensorParams.x = Float(raw.sensorGain ?? Double(c.sensorParams.x))
+            c.sensorParams.y = Float(raw.fullWell ?? Double(c.sensorParams.y))
+            c.sensorParams.z = Float(raw.shoulderMix ?? Double(c.sensorParams.z))
+            c.sensorParams.w = Float(raw.blackLevel ?? Double(c.sensorParams.w))
+            c.noiseParams.x = Float(raw.vignette ?? Double(c.noiseParams.x))
+            c.noiseParams.y = Float(raw.chromaNoiseMix ?? Double(c.noiseParams.y))
+            c.noiseParams.z = Float(raw.rowNoise ?? Double(c.noiseParams.z))
+            c.noiseParams.w = Float(raw.toeStrength ?? Double(c.noiseParams.w))
+            c.colorParams.x = Float(raw.saturation ?? Double(c.colorParams.x))
+            c.colorParams.y = Float(raw.displayShoulder ?? Double(c.colorParams.y))
+            if let f = raw.lensFNumber {
+                c.lensFNumber = Float(max(f, 0.1))
+            }
+            if let focus = raw.lensFocusDepth {
+                c.lensFocusDepth = Float(max(focus, 0.0))
+            }
+            if let strength = raw.lensDofStrength {
+                c.lensDofStrength = Float(clamp(strength, 0.0, 4.0))
+            }
+            if let blades = raw.apertureBlades {
+                c.apertureBlades = UInt32(max(0, min(blades, 16)))
+            }
+            if let rotation = raw.apertureRotation {
+                c.apertureRotation = Float(rotation)
+            }
+            applyPhysicalSensorModel(raw, to: &c)
+            return c
+        } catch {
+            fail("failed to read --camera-profile-json \(path): \(error.localizedDescription)")
+        }
+    }
+
+    private static func rows(from matrix: [[Double]]) -> (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) {
+        guard matrix.count == 3, matrix.allSatisfy({ $0.count == 3 }) else {
+            fail("camera matrix must be a 3x3 array")
+        }
+        return (
+            SIMD4<Float>(Float(matrix[0][0]), Float(matrix[0][1]), Float(matrix[0][2]), 0),
+            SIMD4<Float>(Float(matrix[1][0]), Float(matrix[1][1]), Float(matrix[1][2]), 0),
+            SIMD4<Float>(Float(matrix[2][0]), Float(matrix[2][1]), Float(matrix[2][2]), 0)
+        )
+    }
+
+    private static func applyPhysicalSensorModel(_ raw: CameraCalibrationJSON, to c: inout CameraCalibration) {
+        let fullWellElectrons = raw.fullWellElectrons.map { max($0, 1.0) }
+        let readNoiseElectrons = raw.readNoiseElectrons.map { max($0, 0.0) }
+        let qePeak = raw.peakQuantumEfficiency.map { clamp($0, 0.05, 1.0) }
+
+        if raw.sensorGain == nil, let qePeak {
+            c.sensorParams.x = Float(clamp(Double(c.sensorParams.x) * qePeak / 0.68, 0.35, 1.5))
+        }
+
+        if raw.fullWell == nil, let fullWellElectrons {
+            let noiseFloor = max(readNoiseElectrons ?? 2.0, 0.25)
+            let dynamicRange = max(fullWellElectrons / noiseFloor, 1.0)
+            c.sensorParams.y = Float(clamp(log10(dynamicRange) * 2.35, 6.0, 11.0))
+        }
+
+        if raw.blackLevel == nil, let fullWellElectrons {
+            let exposure = max(raw.exposureSeconds ?? 1.0, 0.0)
+            let dark = max((raw.darkCurrentElectronsPerSecond ?? 0.0) * exposure, 0.0)
+            let dsnu = max(raw.dsnuElectrons ?? 0.0, 0.0)
+            c.sensorParams.w = Float(clamp((dark + dsnu) / fullWellElectrons * 16.0, 0.0, 0.025))
+        }
+
+        if raw.rowNoise == nil, let prnuPercent = raw.prnuPercent {
+            c.noiseParams.z = Float(clamp(prnuPercent * 0.45, 0.0, 0.45))
+        }
+
+        if raw.vignette == nil, let stops = raw.lensVignettingStops {
+            let cornerTransmission = pow(2.0, -max(stops, 0.0))
+            c.noiseParams.x = Float(clamp((1.0 - cornerTransmission) / 0.555, 0.0, 0.65))
+        }
+
+        if let fullWellElectrons {
+            let qe = max(qePeak ?? 0.68, 0.05)
+            c.shotNoise = Float(clamp(0.75 / sqrt(fullWellElectrons * qe), 0.0015, 0.014))
+            if let readNoiseElectrons {
+                let dsnu = max(raw.dsnuElectrons ?? 0.0, 0.0)
+                c.readNoise = Float(clamp((readNoiseElectrons / fullWellElectrons) * 6.0 + (dsnu / fullWellElectrons) * 1.5, 0.00005, 0.008))
+            }
+        }
+
+        if let psf = raw.psfSigmaPixels {
+            c.psfSigmaPixels = Float(max(psf, 0.0))
+        } else if let fNumber = raw.lensFNumber, let pitch = raw.pixelPitchMicrons, pitch > 0 {
+            let airyRadiusPixels = 1.22 * 0.55 * max(fNumber, 0.1) / pitch
+            c.psfSigmaPixels = Float(clamp(0.5 * airyRadiusPixels, 0.08, 1.2))
+        }
+
+        if let flare = raw.flareStrength {
+            c.flareStrength = Float(clamp(flare, 0.0, 1.0))
+        }
+
+        // Keep the electron-unit sensor data for the photon-statistics noise
+        // model (it is otherwise only folded into heuristic display scalars).
+        if let v = raw.fullWellElectrons { c.fullWellElectrons = max(v, 1.0) }
+        if let v = raw.readNoiseElectrons { c.readNoiseElectrons = max(v, 0.0) }
+        if let v = raw.peakQuantumEfficiency { c.peakQuantumEfficiency = clamp(v, 0.05, 1.0) }
+        if let v = raw.pixelPitchMicrons { c.pixelPitchMicrons = max(v, 0.1) }
+        if let v = raw.dsnuElectrons { c.dsnuElectrons = max(v, 0.0) }
+        if let v = raw.darkCurrentElectronsPerSecond { c.darkCurrentElectronsPerSecond = max(v, 0.0) }
+        if let v = raw.prnuPercent { c.prnuPercent = max(v, 0.0) }
+    }
+
+    private static func clamp(_ value: Double, _ lo: Double, _ hi: Double) -> Double {
+        min(max(value, lo), hi)
+    }
+}
 
 struct VisualSettings {
     let composeDitherArg: Float
+    let presentationModeName: String
+    let presentationModeID: UInt32
     let cameraModelName: String
     let cameraModelID: UInt32
+    let cameraProfileName: String
+    let cameraProfileID: UInt32
+    let realismProfileName: String
+    let realismProfileID: UInt32
+    let cameraProfileJSONPath: String
+    let cameraSceneR: SIMD4<Float>
+    let cameraSceneG: SIMD4<Float>
+    let cameraSceneB: SIMD4<Float>
+    let cameraDisplayR: SIMD4<Float>
+    let cameraDisplayG: SIMD4<Float>
+    let cameraDisplayB: SIMD4<Float>
+    let cameraSensorParams: SIMD4<Float>
+    let cameraNoiseParams: SIMD4<Float>
+    let cameraColorParams: SIMD4<Float>
+    let cameraFlags: UInt32
     let cameraPsfSigmaArg: Float
     let cameraReadNoiseArg: Float
     let cameraShotNoiseArg: Float
     let cameraFlareStrengthArg: Float
+    let cameraFNumberArg: Float
+    let cameraISOArg: Float
+    let cameraShutterSecondsArg: Float
+    let photographicExposureScale: Float
+    let photographicCalibrationName: String
+    let cameraLuminanceScaleArg: Double
+    let photometricSaturationLuminance: Double
+    let motionBlurSamplesArg: Int
+    let motionBlurTimeLapseArg: Double
+    let eyePhotometricEnabled: Bool
+    let eyeNDArg: Double
+    let eyeAdaptationArg: Double
+    let eyeTargetLuminanceArg: Double
+    let eyeWhiteMultipleArg: Double
+    let cameraPhotonNoiseEnabled: Bool
+    let cameraPhotonParamsResolved: SIMD4<Float>
+    let cameraDiffractionParamsResolved: SIMD4<Float>
     let backgroundModeName: String
     let backgroundModeID: UInt32
     let backgroundStarDensityArg: Float
@@ -37,10 +372,27 @@ struct VisualSettings {
 }
 
 enum ParamsBuilderVisual {
+    private static func positiveSecondsArg(_ name: String, default defaultValue: Double) -> Double {
+        let raw = stringArg(name, default: "")
+        guard !raw.isEmpty else { return defaultValue }
+        if raw.contains("/") {
+            let parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+            if parts.count == 2, let numerator = Double(String(parts[0])), let denominator = Double(String(parts[1])), denominator > 0 {
+                return max(1e-6, numerator / denominator)
+            }
+            fail("invalid \(name) \(raw). use seconds or a fraction like 1/60")
+        }
+        guard let seconds = Double(raw), seconds > 0 else {
+            fail("invalid \(name) \(raw). use seconds or a fraction like 1/60")
+        }
+        return seconds
+    }
+
     static func resolveVisualSettings(
         diskModelArg: String,
         diskPhysicsModeID: UInt32,
         diskPrecisionCloudsEnabled: Bool,
+        precisionVolumeEnabled: Bool,
         diskGrmhdDebugID: UInt32,
         composeLookID: UInt32,
         composeGPU: Bool,
@@ -49,7 +401,12 @@ enum ParamsBuilderVisual {
     ) -> VisualSettings {
         let composeDitherDefault: Double = {
             switch diskModelArg {
-            case "perlin", "perlin-ec7", "perlin-legacy", "perlin-classic", "perlin-f552":
+            case "perlin", "perlin-ec7", "perlin-legacy", "legacy-ec7", "ec7",
+                 "legacy-feb24", "legacy-raw", "legacy-raw-perlin", "raw-perlin",
+                 "feb24", "legacy-582", "legacy-ea08066",
+                 "perlin-classic", "perlin-f552", "legacy-f552", "flow-f552",
+                 "cloud-f552", "procedural-f552", "f552",
+                 "legacy-periodic-thin", "periodic-thin", "legacy-936", "legacy-cinema-thin":
                 return 0.0
             default:
                 break
@@ -58,7 +415,36 @@ enum ParamsBuilderVisual {
         }()
         let composeDitherArg = Float(doubleArg("--dither", default: composeDitherDefault))
 
+        let presentationModeRaw = stringArg("--presentation-mode", default: {
+            if composeLookID == 6 { return "eye" }
+            return "legacy"
+        }()).lowercased()
+        let presentationModeName: String
+        let presentationModeID: UInt32
+        switch presentationModeRaw {
+        case "legacy", "auto", "off":
+            presentationModeName = "legacy"
+            presentationModeID = 0
+        case "scientific", "science", "master":
+            presentationModeName = "scientific"
+            presentationModeID = 1
+        case "eye", "human", "experience", "observational":
+            presentationModeName = "eye"
+            presentationModeID = 2
+        case "cinema", "cinematic", "camera":
+            presentationModeName = "cinema"
+            presentationModeID = 3
+        default:
+            fail("invalid --presentation-mode \(presentationModeRaw). use one of: legacy, scientific, eye, cinema")
+        }
+
         let cameraModelName = stringArg("--camera-model", default: {
+            switch presentationModeID {
+            case 1: return "legacy"
+            case 2: return "eye"
+            case 3: return "cinematic"
+            default: break
+            }
             if composeLookID == 6 { return "scientific" }
             return (diskPhysicsModeID == 2 || diskPhysicsModeID == 3) ? "scientific" : "legacy"
         }()).lowercased()
@@ -70,35 +456,186 @@ enum ParamsBuilderVisual {
             cameraModelID = 1
         case "cinematic", "cinema":
             cameraModelID = 2
+        case "eye", "human", "vision":
+            cameraModelID = 3
         default:
-            fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic")
+            fail("invalid --camera-model \(cameraModelName). use one of: legacy, scientific, cinematic, eye")
         }
 
-        let cameraPsfSigmaArg = Float(max(0.0, doubleArg("--camera-psf-sigma", default: {
-            switch cameraModelID {
-            case 1: return (composeLookID == 6) ? 0.42 : 0.55
-            case 2: return 0.35
-            default: return 0.0
+        let cameraProfileName = stringArg("--camera-profile", default: {
+            switch presentationModeID {
+            case 1: return "ideal"
+            case 2: return "ideal"
+            case 3: return "cinema-digital"
+            default: break
             }
-        }())))
-        let cameraReadNoiseArg = Float(max(0.0, doubleArg("--camera-read-noise", default: {
+            if composeLookID == 6 { return "scientific" }
             switch cameraModelID {
-            case 1: return (composeLookID == 6) ? 0.0015 : 0.0025
-            case 2: return 0.0012
-            default: return 0.0
+            case 1: return "scientific"
+            case 2: return "cinema-digital"
+            default: return "ideal"
             }
-        }())))
-        let cameraShotNoiseArg = Float(max(0.0, doubleArg("--camera-shot-noise", default: {
-            switch cameraModelID {
-            case 1: return (composeLookID == 6) ? 0.006 : 0.010
-            case 2: return 0.006
-            default: return 0.0
-            }
-        }())))
-        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg("--camera-flare", default: (cameraModelID == 2 ? 0.20 : 0.0)))))
-        if cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
-            FileHandle.standardError.write(Data("warn: --camera-flare is only active in --camera-model cinematic\n".utf8))
+        }()).lowercased()
+        let cameraProfileID: UInt32
+        switch cameraProfileName {
+        case "ideal", "none", "off":
+            cameraProfileID = 0
+        case "scientific", "science", "linear-sensor":
+            cameraProfileID = 1
+        case "cinema", "cinematic", "cinema-digital", "arri-like":
+            cameraProfileID = 2
+        case "photo", "full-frame", "fullframe", "dslr", "mirrorless":
+            cameraProfileID = 3
+        default:
+            fail("invalid --camera-profile \(cameraProfileName). use one of: ideal, scientific, cinema-digital, full-frame")
         }
+        let cameraProfileJSONPath = stringArg("--camera-profile-json", default: "")
+        var cameraCalibration = CameraCalibrationFactory.builtin(profileName: cameraProfileName, profileID: cameraProfileID)
+        if !cameraProfileJSONPath.isEmpty {
+            cameraCalibration = CameraCalibrationFactory.loadJSON(path: cameraProfileJSONPath, fallback: cameraCalibration)
+        }
+
+        let realismProfileName = stringArg("--realism-profile", default: {
+            switch presentationModeID {
+            case 1: return "physical"
+            case 2: return "observational"
+            case 3: return "cinematic"
+            default: break
+            }
+            if composeLookID == 6 { return "physical" }
+            return "off"
+        }()).lowercased()
+        let realismProfileID: UInt32
+        switch realismProfileName {
+        case "off", "none", "legacy":
+            realismProfileID = 0
+        case "physical", "science", "scientific":
+            realismProfileID = 1
+        case "observational", "observed", "hybrid":
+            realismProfileID = 2
+        case "cinematic", "cinema":
+            realismProfileID = 3
+        case "physical-flow", "photosphere-flow", "flow-photosphere", "thin-flow":
+            realismProfileID = 4
+        case "canonical-visible-disk-v1", "canonical-visible-disk", "plausible-disk-v1", "plausible-disk", "source-plausible-disk-v1", "mri-skin":
+            realismProfileID = 5
+        case "physics-constrained-cinematic-disk-v1", "physics-constrained-cinematic-disk", "plausible-cinematic-disk-v1", "plausible-cinematic-disk", "pcd-v1":
+            realismProfileID = 6
+        default:
+            fail("invalid --realism-profile \(realismProfileName). use one of: off, physical, observational, cinematic, physical-flow, canonical-visible-disk-v1, physics-constrained-cinematic-disk-v1")
+        }
+
+        let cameraPsfSigmaDefault: Double = {
+            switch cameraProfileID {
+            case 1: return (composeLookID == 6) ? 0.42 : 0.55
+            case 2: return 0.38
+            case 3: return 0.32
+            default:
+                switch cameraModelID {
+                case 1: return (composeLookID == 6) ? 0.42 : 0.55
+                case 2: return 0.35
+                case 3: return 0.38
+                default: return 0.0
+                }
+            }
+        }()
+        let cameraPsfSigmaArg = Float(max(0.0, doubleArg(
+            "--camera-psf-sigma",
+            default: Double(cameraCalibration.psfSigmaPixels ?? Float(cameraPsfSigmaDefault))
+        )))
+        let cameraReadNoiseDefault: Double = {
+            switch cameraProfileID {
+            case 1: return (composeLookID == 6) ? 0.0013 : 0.0023
+            case 2: return 0.0011
+            case 3: return 0.0018
+            default: return 0.0
+            }
+        }()
+        let cameraReadNoiseExplicit = cliArguments.contains("--camera-read-noise")
+        var cameraReadNoiseArg = Float(max(0.0, doubleArg(
+            "--camera-read-noise",
+            default: Double(cameraCalibration.readNoise ?? Float(cameraReadNoiseDefault))
+        )))
+        let cameraShotNoiseDefault: Double = {
+            switch cameraProfileID {
+            case 1: return (composeLookID == 6) ? 0.0055 : 0.009
+            case 2: return 0.006
+            case 3: return 0.008
+            default: return 0.0
+            }
+        }()
+        let cameraShotNoiseExplicit = cliArguments.contains("--camera-shot-noise")
+        var cameraShotNoiseArg = Float(max(0.0, doubleArg(
+            "--camera-shot-noise",
+            default: Double(cameraCalibration.shotNoise ?? Float(cameraShotNoiseDefault))
+        )))
+        let cameraFlareDefault: Double = {
+            switch cameraProfileID {
+            case 2: return 0.16
+            case 3: return 0.05
+            default: return (cameraModelID == 2 ? 0.20 : 0.0)
+            }
+        }()
+        let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg(
+            "--camera-flare",
+            default: Double(cameraCalibration.flareStrength ?? Float(cameraFlareDefault))
+        ))))
+        if cameraProfileID < 2 && cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
+            FileHandle.standardError.write(Data("warn: --camera-flare is only active for cinematic/photo camera profiles\n".utf8))
+        }
+
+        let lensFNumberDefault: Double = {
+            if let f = cameraCalibration.lensFNumber { return Double(f) }
+            if cameraModelID == 2 || cameraProfileID == 2 { return 2.8 }
+            if cameraProfileID == 3 { return 4.0 }
+            return 8.0
+        }()
+        let lensFNumberArg = Float(max(0.7, doubleArg("--camera-f-number", default: lensFNumberDefault)))
+        let cameraISOArg = Float(max(1.0, min(409600.0, doubleArg("--camera-iso", default: 100.0))))
+        let cameraShutterSecondsArg = Float(max(1e-6, min(3600.0, Self.positiveSecondsArg("--camera-shutter", default: 1.0 / 60.0))))
+        // Shutter-time temporal supersampling of the time-dependent source
+        // emission (the disk-coordinate heating skin). 1 = off. Geodesics and
+        // the stationary flow field are time-independent, so subsamples share
+        // ray paths and g-factors; only the advected emission pattern moves.
+        let motionBlurSamplesArg = max(1, min(64, intArg("--motion-blur-samples", default: 1)))
+        // 1.0 = physical shutter seconds; >1 compresses simulation time into
+        // the exposure like time-lapse photography (label output accordingly).
+        let motionBlurTimeLapseArg = max(0.0, min(1.0e12, doubleArg("--motion-blur-time-lapse", default: 1.0)))
+
+        // Physically anchored human-eye observer. The disk photosphere is at
+        // solar-surface-order luminance, so direct viewing is impossible; the
+        // honest "what the eye sees" chain is a neutral-density safe-viewing
+        // filter, then retinal adaptation to the filtered scene. ND density is
+        // log10 attenuation (solar-filter territory is ~4-5 here); negative
+        // means auto-solve so the p99.5 scene luminance lands at
+        // --eye-target-luminance (default 8000 cd/m^2, bright-sky photopic).
+        let eyePhotometricName = stringArg("--eye-photometric", default: "auto").lowercased()
+        let eyePhotometricEnabled: Bool
+        switch eyePhotometricName {
+        case "auto", "on", "true", "1", "yes":
+            eyePhotometricEnabled = (cameraModelID == 3)
+        case "off", "false", "0", "no":
+            eyePhotometricEnabled = false
+        default:
+            fail("invalid --eye-photometric \(eyePhotometricName). use one of: auto, on, off")
+        }
+        let eyeNDArg = doubleArg("--eye-nd", default: -1.0)
+        let eyeAdaptationArg = doubleArg("--eye-adaptation", default: -1.0)
+        let eyeTargetLuminanceArg = max(1.0, doubleArg("--eye-target-luminance", default: 8000.0))
+        let eyeWhiteMultipleArg = max(1.5, min(64.0, doubleArg("--eye-white-multiple", default: 8.0)))
+        let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
+        let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
+        let lensDofDefault: Double = {
+            if let s = cameraCalibration.lensDofStrength { return Double(s) }
+            return (cameraModelID == 2 || cameraProfileID >= 2) ? 1.0 : 0.0
+        }()
+        var lensDofStrengthArg = Float(max(0.0, min(4.0, doubleArg("--camera-dof-strength", default: lensDofDefault))))
+        let lensDofExplicit = cliArguments.contains("--camera-dof-strength")
+        let apertureBladesArg = UInt32(max(0, min(16, intArg("--camera-aperture-blades", default: Int(cameraCalibration.apertureBlades ?? 7)))))
+        let apertureRotationTurns = Float(doubleArg("--camera-aperture-rotation", default: Double(cameraCalibration.apertureRotation ?? 0.0)))
+        var cameraColorParams = cameraCalibration.colorParams
+        cameraColorParams.z = lensFNumberArg
+        cameraColorParams.w = lensFocusDepthArg
 
         let backgroundRawArg = stringArg("--background", default: "").lowercased()
         let backgroundStarsRawArg = stringArg("--bg-stars", default: "").lowercased()
@@ -114,6 +651,11 @@ enum ParamsBuilderVisual {
                     fail("invalid --bg-stars \(backgroundStarsRawArg). use on|off")
                 }
             }
+            switch presentationModeID {
+            case 1: return "off"
+            case 2, 3: return "stars"
+            default: break
+            }
             return (cameraModelID == 2 || composeLookID == 6) ? "stars" : "off"
         }()
         let backgroundModeID: UInt32
@@ -127,14 +669,17 @@ enum ParamsBuilderVisual {
         }
         let backgroundStarDensityArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-density", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.24 }
             return (composeLookID == 6) ? 0.72 : 1.0
         }()))))
         let backgroundStarStrengthArg = Float(max(0.0, min(4.0, doubleArg("--bg-star-strength", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.22 }
             return (composeLookID == 6) ? 0.70 : 1.0
         }()))))
         let backgroundNebulaStrengthArg = Float(max(0.0, min(2.0, doubleArg("--bg-nebula-strength", default: {
             if backgroundModeID == 0 { return 0.0 }
+            if presentationModeID == 2 { return 0.18 }
             return (composeLookID == 6) ? 0.22 : 0.45
         }()))))
         if backgroundModeID == 0 && (backgroundStarDensityArg > 1e-6 || backgroundStarStrengthArg > 1e-6 || backgroundNebulaStrengthArg > 1e-6) {
@@ -153,16 +698,175 @@ enum ParamsBuilderVisual {
             exposureModeID = 0
         case "fixed":
             exposureModeID = 1
+        case "photographic", "photo", "camera", "manual-camera":
+            exposureModeID = 2
         default:
-            fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed")
+            fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed, photographic")
         }
         let exposureEVArg = doubleArg("--exposure-ev", default: 0.0)
+        let photographicCalibrationName = stringArg("--photographic-calibration", default: "photometric").lowercased()
+        switch photographicCalibrationName {
+        case "photometric", "physical", "iso", "legacy":
+            break
+        default:
+            fail("invalid --photographic-calibration \(photographicCalibrationName). use one of: photometric, legacy")
+        }
+        // Unit bridge from renderer radiance to photometric luminance. The
+        // canonical visible spectral path integrates SI spectral radiance, so
+        // its CIE Y is in W*m^-2*sr^-1 and luminance is 683.002*Y cd/m^2 at
+        // scale 1.0. Non-SI source paths can declare their scale here.
+        let cameraLuminanceScaleArg = max(1e-12, doubleArg("--camera-luminance-scale", default: 1.0))
+        // ISO 12232 saturation-based photographic exposure:
+        //   sensor-plane exposure H = q * (pi/4) * L * t / N^2  [lux*s], q = 0.65
+        //   saturation at H_sat = 78 / S  ->  relative output = H * S / 78
+        // so a real camera at the same f-number/shutter/ISO pointed at a scene
+        // of the same absolute luminance clips at the same settings.
+        let isoQLens = 0.65
+        let photometricExposurePerLuminance =
+            isoQLens * Double.pi / 4.0
+                * Double(cameraShutterSecondsArg)
+                * Double(cameraISOArg)
+                / (78.0 * max(0.49, Double(lensFNumberArg * lensFNumberArg)))
+        let photometricSaturationLuminance = 1.0 / max(photometricExposurePerLuminance, 1e-30)
+        let photographicExposureScale: Float
+        if photographicCalibrationName == "legacy" {
+            photographicExposureScale = Float(max(
+                0.0,
+                100.0
+                    * Double(cameraShutterSecondsArg)
+                    * (Double(cameraISOArg) / 100.0)
+                    / max(0.49, Double(lensFNumberArg * lensFNumberArg))
+                    * pow(2.0, exposureEVArg)
+            ))
+        } else {
+            photographicExposureScale = Float(max(
+                0.0,
+                683.002 * cameraLuminanceScaleArg
+                    * photometricExposurePerLuminance
+                    * pow(2.0, exposureEVArg)
+            ))
+        }
+        if exposureModeID == 2 {
+            let referencePhotonTerm = (1.0 / 60.0) / (2.8 * 2.8)
+            let photonTerm = Double(cameraShutterSecondsArg) / max(0.49, Double(lensFNumberArg * lensFNumberArg))
+            let photonRatio = max(1e-4, photonTerm / referencePhotonTerm)
+            let isoGain = max(0.01, Double(cameraISOArg) / 100.0)
+            if !cameraReadNoiseExplicit {
+                cameraReadNoiseArg = Float(min(Double(cameraReadNoiseArg) * sqrt(isoGain), 0.05))
+            }
+            if !cameraShotNoiseExplicit {
+                cameraShotNoiseArg = Float(min(Double(cameraShotNoiseArg) * sqrt(isoGain / photonRatio), 0.08))
+            }
+        }
+
+        // Photon-statistics sensor noise. With the ISO 12232 absolute
+        // calibration the linear value is H / H_sat, so the photoelectron
+        // count per photosite is known exactly:
+        //   N_sat = min(QE * kappa * pitch^2 * (78 / ISO), fullWell)
+        // with kappa ~ 11000 photons / (um^2 lux s): the broadband visible
+        // photon flux per lux-second weighted by a silicon QE curve (the
+        // 555 nm monochromatic value is 4090; a thermal source spread across
+        // the band carries ~2.7x more photons per lumen).
+        // Shot noise is Poisson on N, read/dark/DSNU add in quadrature, and
+        // PRNU scales with N. Grain then follows the actual settings: high
+        // ISO clips at few electrons and gets grainy, base ISO is clean.
+        let photonScaleArg = max(0.01, min(100.0, doubleArg("--camera-photon-scale", default: 1.0)))
+        let photonNoiseName = stringArg("--camera-photon-noise", default: "auto").lowercased()
+        let sensorDataAvailable = (cameraCalibration.fullWellElectrons != nil)
+            && (cameraCalibration.pixelPitchMicrons != nil)
+            && (cameraCalibration.peakQuantumEfficiency != nil)
+        let cameraPhotonNoiseEnabled: Bool
+        switch photonNoiseName {
+        case "auto":
+            cameraPhotonNoiseEnabled = (exposureModeID == 2)
+                && (photographicCalibrationName != "legacy")
+                && sensorDataAvailable
+        case "on", "true", "1", "yes":
+            if !sensorDataAvailable {
+                fail("--camera-photon-noise on requires a camera profile with fullWellElectrons, pixelPitchMicrons, and peakQuantumEfficiency")
+            }
+            if exposureModeID != 2 {
+                fail("--camera-photon-noise on requires --exposure-mode photographic (the model needs absolute exposure units)")
+            }
+            cameraPhotonNoiseEnabled = true
+        case "off", "false", "0", "no":
+            cameraPhotonNoiseEnabled = false
+        default:
+            fail("invalid --camera-photon-noise \(photonNoiseName). use one of: auto, on, off")
+        }
+        // Fraunhofer diffraction of the polygonal iris. Each straight blade
+        // edge diffracts perpendicular to itself: N odd -> 2N spikes, N even
+        // -> N doubled spikes (opposite edges parallel), 0 blades -> circular
+        // aperture, no spikes. The core/lobe scale grows with the f-number
+        // (lobe spacing ~ lambda * N / pitch).
+        let diffractionDefault: Double = {
+            guard exposureModeID == 2 || cameraModelID == 2 else { return 0.0 }
+            switch cameraProfileID {
+            case 2: return 0.020
+            case 3: return 0.028
+            case 4: return 0.024
+            case 1: return 0.010
+            default: return (cameraModelID == 2) ? 0.020 : 0.0
+            }
+        }()
+        let cameraDiffractionStrengthArg = Float(max(0.0, min(0.25, doubleArg("--camera-diffraction", default: diffractionDefault))))
+        var cameraDiffractionParamsResolved = SIMD4<Float>(0, 0, 0, 0)
+        if cameraDiffractionStrengthArg > 1e-6 && apertureBladesArg >= 3 {
+            let blades = Int(apertureBladesArg)
+            let spikeCount = (blades % 2 == 1) ? (2 * blades) : blades
+            let rotation = Double(apertureRotationTurns) * 2.0 * Double.pi + Double.pi / Double(max(blades, 1))
+            let pitch = cameraCalibration.pixelPitchMicrons ?? 5.5
+            let d0 = max(0.75, min(24.0, 3.0 * Double(lensFNumberArg) / 4.0 * (5.5 / pitch)))
+            cameraDiffractionParamsResolved = SIMD4<Float>(
+                cameraDiffractionStrengthArg,
+                Float(spikeCount),
+                Float(rotation),
+                Float(d0)
+            )
+        }
+        var cameraPhotonParamsResolved = SIMD4<Float>(0, 0, 0, 0)
+        if cameraPhotonNoiseEnabled {
+            let qe = cameraCalibration.peakQuantumEfficiency ?? 0.6
+            let pitch = cameraCalibration.pixelPitchMicrons ?? 5.0
+            let fullWell = cameraCalibration.fullWellElectrons ?? 50000.0
+            let kappa = 11000.0 * photonScaleArg
+            let hSat = 78.0 / Double(cameraISOArg)
+            let nSat = min(qe * kappa * pitch * pitch * hSat, fullWell)
+            let darkVar = (cameraCalibration.darkCurrentElectronsPerSecond ?? 0.0)
+                * Double(cameraShutterSecondsArg)
+            let dsnu = cameraCalibration.dsnuElectrons ?? 0.0
+            let readE = cameraCalibration.readNoiseElectrons ?? 2.0
+            let readEff = sqrt(readE * readE + darkVar + dsnu * dsnu)
+            let prnuFrac = (cameraCalibration.prnuPercent ?? 0.0) / 100.0
+            cameraPhotonParamsResolved = SIMD4<Float>(
+                Float(max(nSat, 1.0)), Float(readEff), Float(prnuFrac), 1.0
+            )
+            // The physical model replaces the heuristic display-domain noise.
+            cameraReadNoiseArg = 0.0
+            cameraShotNoiseArg = 0.0
+        }
+        // Depth of field is physically absent here: every scene distance
+        // (~1e9 m and beyond) is astronomically past the hyperfocal distance
+        // of any constructible lens, so a real photograph of this scene is
+        // sharp at all depths. In absolute photographic mode DoF therefore
+        // defaults off and stays available only as an explicit, labelled
+        // cinematic choice.
+        if exposureModeID == 2 && photographicCalibrationName != "legacy"
+            && !lensDofExplicit && lensDofStrengthArg > 1e-6 {
+            lensDofStrengthArg = 0.0
+            FileHandle.standardError.write(Data("note: photographic mode renders all depths sharp (scene is far beyond any hyperfocal distance); pass --camera-dof-strength to add depth of field as a cinematic choice\n".utf8))
+        }
+        let dofByte = UInt32(max(0, min(255, Int(round(Double(lensDofStrengthArg) / 4.0 * 255.0)))))
+        let rotationTurns = apertureRotationTurns - floor(apertureRotationTurns)
+        let rotationByte = UInt32(max(0, min(255, Int(round(Double(rotationTurns) * 255.0)))))
+        let cameraFlags = (apertureBladesArg & 0xff) | ((rotationByte & 0xff) << 8) | ((dofByte & 0xff) << 16)
         let composePrecisionName = stringArg("--compose-precision", default: "precise").lowercased()
         let composePrecisionID: UInt32 = (composePrecisionName == "fast") ? 0 : 1
 
         let composePolicy = ParamsBuilderPolicy.resolveComposePolicy(
             diskPhysicsModeID: diskPhysicsModeID,
             diskPrecisionCloudsEnabled: diskPrecisionCloudsEnabled,
+            precisionVolumeEnabled: precisionVolumeEnabled,
             diskGrmhdDebugID: diskGrmhdDebugID,
             cameraModelID: cameraModelID,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
@@ -177,24 +881,44 @@ enum ParamsBuilderVisual {
             realismDebugID = 0
         case "g", "gfactor", "g-factor", "redshift":
             realismDebugID = 31
-        case "emissivity", "radial", "nt":
+        case "emissivity", "emissivity-pre-transfer", "source-emissivity", "radial", "nt":
             realismDebugID = 32
         case "beaming", "asymmetry", "approach":
             realismDebugID = 33
-        case "photosphere", "surface":
+        case "photosphere", "body", "surface":
             realismDebugID = 34
-        case "atmosphere", "absorption":
+        case "atmosphere", "absorption", "skin", "hot-skin", "grmhd-skin", "perturbation-only":
             realismDebugID = 35
-        case "corona":
+        case "corona", "atlas-activity":
             realismDebugID = 36
-        case "perturbation", "turbulence", "disk-noise":
+        case "perturbation", "turbulence", "disk-noise", "perturbation-ratio", "skin-ratio", "branch-ratio", "branch-ratios":
             realismDebugID = 37
-        case "hdr", "pretonemap", "pre-tone", "pre-tone-map":
+        case "hdr", "raw-radiance", "radiance-post-transfer", "pretonemap", "pre-tone", "pre-tone-map":
+            realismDebugID = 38
+        case "temperature", "temp", "teff", "observed-temperature":
+            realismDebugID = 39
+        case "tau", "optical-depth", "opticaldepth":
+            realismDebugID = 40
+        case "density", "rho":
+            realismDebugID = 41
+        case "activity", "heating", "heating-field":
+            realismDebugID = 42
+        case "opacity", "alpha", "radial-tau", "radialtau", "opacity-baseline", "tau-baseline":
+            realismDebugID = 42
+        case "transfer-saturation", "saturation":
+            realismDebugID = 42
+        case "spiral", "spiral-wave":
+            realismDebugID = 42
+        case "clump", "clumps", "cloud", "clouds":
+            realismDebugID = 42
+        case "hot-crescent", "crescent":
+            realismDebugID = 42
+        case "final-rgb", "final":
             realismDebugID = 38
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, emissivity, beaming, photosphere, atmosphere, corona, perturbation, hdr")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, beaming, emissivity-pre-transfer, body, skin, corona, branch-ratio, raw-radiance, final-rgb, temperature, density, opacity, optical-depth, transfer-saturation, activity, spiral, clump, hot-crescent")
         }
-        if realismDebugID != 0 && composeLookID != 6 {
+        if realismDebugID != 0 && composeLookID != 6 && presentationModeID != 1 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
         }
         if realismDebugID != 0 && composePolicy.composeAnalysisMode != 0 {
@@ -208,15 +932,26 @@ enum ParamsBuilderVisual {
         let composeCameraFlareStrengthArg = (composeAnalysisMode == 0) ? composePolicy.composeCameraFlareStrengthArg : 0.0
 
         let autoExposureEnabled: Bool = {
-            if composeAnalysisMode != 0 { return false }
+            if composeAnalysisMode != 0 && composeAnalysisMode != 31 && composeAnalysisMode != 32 { return false }
             if exposureArg > 0 { return false }
             if exposureModeID == 1 { return false }
+            if exposureModeID == 2 { return false }
             return true
         }()
         let composeExposureBase: Float = {
+            // Canonical branch-isolated radiance debug modes are absolute source
+            // outputs. Honor the requested fixed/manual exposure so body/skin/corona
+            // can be compared on the same display scale as the total scientific
+            // image. Unit diagnostic maps such as ratios/activity keep exposure=1.
+            if composeAnalysisMode == 34 || composeAnalysisMode == 35 || composeAnalysisMode == 36 || composeAnalysisMode == 38 {
+                if exposureArg > 0 { return exposureArg }
+                if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
+                if exposureModeID == 2 { return photographicExposureScale }
+            }
             if composeAnalysisMode != 0 { return 1.0 }
             if exposureArg > 0 { return exposureArg }
             if exposureModeID == 1 { return Float(pow(2.0, exposureEVArg)) }
+            if exposureModeID == 2 { return photographicExposureScale }
             switch composeLookID {
             case 1: return 7.0e-18
             case 2: return 5.2e-18
@@ -228,12 +963,46 @@ enum ParamsBuilderVisual {
 
         return VisualSettings(
             composeDitherArg: composeDitherArg,
+            presentationModeName: presentationModeName,
+            presentationModeID: presentationModeID,
             cameraModelName: cameraModelName,
             cameraModelID: cameraModelID,
+            cameraProfileName: cameraCalibration.profileName,
+            cameraProfileID: cameraCalibration.profileID,
+            realismProfileName: realismProfileName,
+            realismProfileID: realismProfileID,
+            cameraProfileJSONPath: cameraProfileJSONPath,
+            cameraSceneR: cameraCalibration.sceneR,
+            cameraSceneG: cameraCalibration.sceneG,
+            cameraSceneB: cameraCalibration.sceneB,
+            cameraDisplayR: cameraCalibration.displayR,
+            cameraDisplayG: cameraCalibration.displayG,
+            cameraDisplayB: cameraCalibration.displayB,
+            cameraSensorParams: cameraCalibration.sensorParams,
+            cameraNoiseParams: cameraCalibration.noiseParams,
+            cameraColorParams: cameraColorParams,
+            cameraFlags: cameraFlags,
             cameraPsfSigmaArg: cameraPsfSigmaArg,
             cameraReadNoiseArg: cameraReadNoiseArg,
             cameraShotNoiseArg: cameraShotNoiseArg,
             cameraFlareStrengthArg: cameraFlareStrengthArg,
+            cameraFNumberArg: lensFNumberArg,
+            cameraISOArg: cameraISOArg,
+            cameraShutterSecondsArg: cameraShutterSecondsArg,
+            photographicExposureScale: photographicExposureScale,
+            photographicCalibrationName: photographicCalibrationName,
+            cameraLuminanceScaleArg: cameraLuminanceScaleArg,
+            photometricSaturationLuminance: photometricSaturationLuminance,
+            motionBlurSamplesArg: motionBlurSamplesArg,
+            motionBlurTimeLapseArg: motionBlurTimeLapseArg,
+            eyePhotometricEnabled: eyePhotometricEnabled,
+            eyeNDArg: eyeNDArg,
+            eyeAdaptationArg: eyeAdaptationArg,
+            eyeTargetLuminanceArg: eyeTargetLuminanceArg,
+            eyeWhiteMultipleArg: eyeWhiteMultipleArg,
+            cameraPhotonNoiseEnabled: cameraPhotonNoiseEnabled,
+            cameraPhotonParamsResolved: cameraPhotonParamsResolved,
+            cameraDiffractionParamsResolved: cameraDiffractionParamsResolved,
             backgroundModeName: backgroundModeName,
             backgroundModeID: backgroundModeID,
             backgroundStarDensityArg: backgroundStarDensityArg,

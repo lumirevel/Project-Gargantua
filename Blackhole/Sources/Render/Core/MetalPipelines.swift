@@ -27,17 +27,23 @@ enum MetalPipelines {
         metric: Int32,
         physicsMode: UInt32,
         visibleMode: UInt32,
-        traceDebugOff: UInt32
+        traceDebugOff: UInt32,
+        grmhdWeightMode: UInt32,
+        visibleEmissionMode: UInt32
     ) -> MTLFunctionConstantValues {
         let fc = MTLFunctionConstantValues()
         var m = metric
         var p = physicsMode
         var v = visibleMode
         var d = traceDebugOff
+        var w = grmhdWeightMode
+        var e = visibleEmissionMode
         fc.setConstantValue(&m, type: .int, index: 0)
         fc.setConstantValue(&p, type: .uint, index: 1)
         fc.setConstantValue(&v, type: .uint, index: 2)
         fc.setConstantValue(&d, type: .uint, index: 3)
+        fc.setConstantValue(&w, type: .uint, index: 4)
+        fc.setConstantValue(&e, type: .uint, index: 5)
         return fc
     }
 
@@ -49,13 +55,20 @@ enum MetalPipelines {
         metric: Int32,
         physicsMode: UInt32,
         visibleMode: UInt32,
-        traceDebugOff: UInt32
+        traceDebugOff: UInt32,
+        grmhdWeightMode: UInt32,
+        visibleEmissionMode: UInt32,
+        compileCollisionCompose: Bool = true,
+        compileCollisionFinalCompose: Bool = true,
+        compileBHLinearTileCompose: Bool = true
     ) throws -> RenderPipelines {
         let fc = makeFunctionConstants(
             metric: metric,
             physicsMode: physicsMode,
             visibleMode: visibleMode,
-            traceDebugOff: traceDebugOff
+            traceDebugOff: traceDebugOff,
+            grmhdWeightMode: grmhdWeightMode,
+            visibleEmissionMode: visibleEmissionMode
         )
 
         func specializedFunction(_ name: String) -> MTLFunction {
@@ -65,25 +78,45 @@ enum MetalPipelines {
             return fn
         }
 
-        let tracePipeline = try device.makeComputePipelineState(function: specializedFunction(traceKernelName))
+        let tracePipelines = ProcessInfo.processInfo.environment["BH_TRACE_PIPELINES"] == "1"
+        func makePipeline(_ name: String) throws -> MTLComputePipelineState {
+            if tracePipelines {
+                FileHandle.standardError.write(Data("pipeline-start \(name)\n".utf8))
+            }
+            let pipeline = try device.makeComputePipelineState(function: specializedFunction(name))
+            if tracePipelines {
+                FileHandle.standardError.write(Data("pipeline-done \(name)\n".utf8))
+            }
+            return pipeline
+        }
+
+        let tracePipeline = try makePipeline(traceKernelName)
         let traceLiteName = traceKernelName.hasSuffix("Global") ? "renderBHClassicLiteGlobal" : "renderBHClassicLite"
-        let traceLitePipeline = try device.makeComputePipelineState(function: specializedFunction(traceLiteName))
-        let traceLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("renderBHLinearGlobal"))
-        let composePipeline = try device.makeComputePipelineState(function: specializedFunction("composeBH"))
-        let composeLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLinearRGB"))
-        let composeLinearLitePipeline = try device.makeComputePipelineState(function: specializedFunction("composeLinearRGBLite"))
-        let composeLinearTilePipeline = try device.makeComputePipelineState(function: specializedFunction(composeLinearTileKernelName))
-        let composeLinearTileLitePipeline = try device.makeComputePipelineState(function: specializedFunction("composeLinearRGBTileLite"))
-        let composeBHLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeBHLinear"))
-        let composeBHLinearTilePipeline = try device.makeComputePipelineState(function: specializedFunction("composeBHLinearTile"))
-        let cloudHistPipeline = try device.makeComputePipelineState(function: specializedFunction("composeCloudHist"))
-        let cloudHistLitePipeline = try device.makeComputePipelineState(function: specializedFunction("composeCloudHistLite"))
-        let cloudHistLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeCloudHistLinear"))
-        let lumHistPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHist"))
-        let lumHistLinearPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHistLinear"))
-        let lumHistLinearTileCloudPipeline = try device.makeComputePipelineState(function: specializedFunction("composeLumHistLinearTileCloud"))
-        let solveCloudStatsPipeline = try device.makeComputePipelineState(function: specializedFunction("composeSolveCloudStats"))
-        let solveExposurePipeline = try device.makeComputePipelineState(function: specializedFunction("composeSolveExposure"))
+        let traceLitePipeline = try makePipeline(traceLiteName)
+        let traceLinearPipeline = try makePipeline("renderBHLinearGlobal")
+        let composeLinearPipeline = try makePipeline("composeLinearRGB")
+        let composeLinearLitePipeline = try makePipeline("composeLinearRGBLite")
+        let composeLinearTilePipeline = try makePipeline(composeLinearTileKernelName)
+        let composeLinearTileLitePipeline = try makePipeline("composeLinearRGBTileLite")
+        let composeBHLinearPipeline = try makePipeline("composeBHLinear")
+        let composeBHLinearTilePipeline = compileBHLinearTileCompose
+            ? try makePipeline("composeBHLinearTile")
+            : composeBHLinearPipeline
+        let cloudHistLinearPipeline = try makePipeline("composeCloudHistLinear")
+        let lumHistLinearPipeline = try makePipeline("composeLumHistLinear")
+        let lumHistLinearTileCloudPipeline = try makePipeline("composeLumHistLinearTileCloud")
+        let solveCloudStatsPipeline = try makePipeline("composeSolveCloudStats")
+        let solveExposurePipeline = try makePipeline("composeSolveExposure")
+
+        // The full collision compose kernel pulls in the entire legacy/material
+        // shader surface. Direct-linear HDR paths never call it, and compiling it
+        // with the current thin visible reference constants can dominate startup
+        // or hang Metal specialization. Use valid placeholder pipelines when the
+        // execution plan cannot reach collision-compose kernels.
+        let composePipeline = compileCollisionFinalCompose ? try makePipeline("composeBH") : composeBHLinearPipeline
+        let cloudHistPipeline = compileCollisionCompose ? try makePipeline("composeCloudHist") : cloudHistLinearPipeline
+        let cloudHistLitePipeline = compileCollisionCompose ? try makePipeline("composeCloudHistLite") : cloudHistLinearPipeline
+        let lumHistPipeline = compileCollisionCompose ? try makePipeline("composeLumHist") : lumHistLinearPipeline
 
         return RenderPipelines(
             tracePipeline: tracePipeline,

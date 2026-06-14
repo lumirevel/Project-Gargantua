@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 extension ParamsBuilder {
     static func buildPackedParams(from config: ResolvedRenderConfig) -> PackedParams {
@@ -6,6 +7,15 @@ extension ParamsBuilder {
         if config.diskPhysicsModeID == 3 && config.visibleModeEnabled && config.visibleExpressiveMode {
             visibleFlags |= 1
         }
+        let diskGrmhdTraceDebugView: UInt32 = {
+            switch config.diskGrmhdDebugID {
+            case 59: return 20 // raw-radiance-detail displays the existing raw radiance payload.
+            case 60: return 23 // source-detail displays the existing source-function payload.
+            case 61: return 39 // emissivity-detail displays the existing weighted-emissivity payload.
+            case 62: return 48 // radiance-post-transfer-detail displays the existing thermal-radiance payload.
+            default: return config.diskGrmhdDebugID
+            }
+        }()
 
         return PackedParams(
             width: UInt32(config.width),
@@ -77,7 +87,7 @@ extension ParamsBuilder {
             diskRTSteps: UInt32(config.diskRTStepsArg),
             diskScatteringAlbedo: Float(config.diskScatteringAlbedoArg),
             diskRTPad: 0,
-            diskVolumeMode: config.diskVolumeEnabled ? 1 : 0,
+            diskVolumeMode: config.diskSpectralVolumeEnabled ? 2 : (config.diskVolumeEnabled ? 1 : 0),
             diskVolumeR: UInt32(config.diskVolumeR),
             diskVolumePhi: UInt32(config.diskVolumePhi),
             diskVolumeZ: UInt32(config.diskVolumeZ),
@@ -89,16 +99,16 @@ extension ParamsBuilder {
             diskVolumeR0: UInt32(config.diskVolumeR),
             diskVolumePhi0: UInt32(config.diskVolumePhi),
             diskVolumeZ0: UInt32(config.diskVolumeZ),
-            diskVolumeR1: UInt32(config.diskVolumeR),
-            diskVolumePhi1: UInt32(config.diskVolumePhi),
-            diskVolumeZ1: UInt32(config.diskVolumeZ),
+            diskVolumeR1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumeR) : 1,
+            diskVolumePhi1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumePhi) : 1,
+            diskVolumeZ1: config.diskVolumeGRMHDEnabled ? UInt32(config.diskVolumeZ) : 1,
             diskNuObsHz: Float(config.diskNuObsHzArg),
             diskGrmhdDensityScale: Float(config.diskGrmhdDensityScaleArg),
             diskGrmhdBScale: Float(config.diskGrmhdBScaleArg),
             diskGrmhdEmissionScale: Float(config.diskGrmhdEmissionScaleArg),
             diskGrmhdAbsorptionScale: Float(config.diskGrmhdAbsorptionScaleArg),
             diskGrmhdVelScale: Float(config.diskGrmhdVelScaleArg),
-            diskGrmhdDebugView: config.diskGrmhdDebugID,
+            diskGrmhdDebugView: diskGrmhdTraceDebugView,
             diskPolarizedRT: (config.diskPhysicsModeID == 3 && config.diskPolarizedRTEnabled) ? 1 : 0,
             diskPolarizationFrac: Float(config.diskPolarizationFracArg),
             diskFaradayRotScale: Float(config.diskFaradayRotScaleArg),
@@ -130,7 +140,48 @@ extension ParamsBuilder {
             coolGasKappa0: Float(config.coolGasKappa0Arg),
             coolGasNuSlope: Float(config.coolGasNuSlopeArg),
             coolClumpStrength: Float(config.coolClumpStrengthArg),
-            coolAbsorptionPad: 0
+            visibleSynchScale: Float(config.visibleSynchScaleArg),
+            thinPhotosphereEnabled: config.thinPhotosphereEnabled ? 1 : 0,
+            thinRadialTaperEnabled: config.thinRadialTaperEnabled ? 1 : 0,
+            thinHOverRBase: Float(config.thinHOverRBaseArg),
+            thinHOverRInner: Float(config.thinHOverRInnerArg),
+            thinHOverROuter: Float(config.thinHOverROuterArg),
+            thinWeightPowerEmission: Float(config.thinWeightPowerEmissionArg),
+            thinWeightPowerAbsorption: Float(config.thinWeightPowerAbsorptionArg),
+            _padThinPhotosphere: 0.0,
+            coronaLayerEnabled: config.coronaLayerEnabled ? 1 : 0,
+            coronaHOverR: Float(config.coronaHOverRArg),
+            coronaWeightPower: Float(config.coronaWeightPowerArg),
+            visibleThermalTransferMode: config.visibleThermalTransferModeID,
+            grmhdBranchIsolationMode: config.grmhdBranchIsolationID,
+            grmhdTransportAlphaScale: Float(config.grmhdTransportAlphaScaleArg),
+            grmhdSmoothEmissionScale: Float(config.grmhdSmoothEmissionScaleArg),
+            grmhdCloudEmissionScale: Float(config.grmhdCloudEmissionScaleArg),
+            grmhdSmoothWeightMode: config.grmhdSmoothWeightModeID,
+            pcdSourceA: SIMD4<Float>(
+                Float(config.pcdDensityExpArg),
+                Float(config.pcdEmissivityScaleArg),
+                Float(config.pcdOpacityScaleArg),
+                Float(config.pcdSeedArg)
+            ),
+            pcdSourceB: SIMD4<Float>(
+                Float(config.pcdStructureScaleArg),
+                Float(config.pcdSpiralAmpArg),
+                Float(config.pcdSpiralPitchArg),
+                Float(config.pcdClumpContrastArg)
+            ),
+            pcdSourceC: SIMD4<Float>(
+                Float(config.pcdHotCrescentArg),
+                Float(config.pcdDebugFieldID),
+                0.0,
+                0.0
+            ),
+            motionBlurParams: SIMD4<Float>(
+                Float(config.motionBlurSamplesArg),
+                Float(config.shutterFlowTimeSpan),
+                0.0,
+                0.0
+            )
         )
     }
 }

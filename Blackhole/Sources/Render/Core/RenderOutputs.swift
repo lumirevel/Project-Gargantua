@@ -106,16 +106,88 @@ struct RenderMeta: Codable {
     var outputHeight: Int
     var exposure: Double
     var look: String
+    var presentationMode: String
     var cameraModel: String
+    var cameraProfile: String
+    var cameraProfileJSON: String
+    var realismProfile: String
     var cameraPsfSigmaPx: Double
     var cameraReadNoise: Double
     var cameraShotNoise: Double
     var cameraFlareStrength: Double
+    var cameraFNumber: Double
+    var cameraISO: Double
+    var cameraShutterSeconds: Double
+    var photographicExposureScale: Double
+    var photographicCalibration: String
+    var cameraLuminanceScale: Double
+    var photometricSaturationLuminance: Double
+    var motionBlurSamples: Int
+    var motionBlurTimeLapse: Double
+    var shutterFlowTimeSpan: Double
     var backgroundMode: String
     var backgroundStarDensity: Double
     var backgroundStarStrength: Double
     var backgroundNebulaStrength: Double
     var collisionStride: Int
+}
+
+struct ExposureDiagnostics: Codable {
+    var version: String
+    var layer: String
+    var imagePath: String
+    var width: Int
+    var height: Int
+    var presentationMode: String
+    var look: String
+    var cameraModel: String
+    var cameraProfile: String
+    var realismProfile: String
+    var autoExposure: Bool
+    var exposureMode: String
+    var exposureEV: Double
+    var cameraFNumber: Double
+    var cameraISO: Double
+    var cameraShutterSeconds: Double
+    var cameraReadNoise: Double
+    var cameraShotNoise: Double
+    var photographicExposureScale: Double?
+    var photographicCalibration: String?
+    var cameraLuminanceScale: Double?
+    var photometricSaturationLuminance: Double?
+    var baseExposure: Double?
+    var resolvedExposure: Double?
+    var solveMode: String
+    var targetWhite: Double?
+    var highQuantile: Double?
+    var pHigh: Double?
+    var midQuantile: Double?
+    var targetMid: Double?
+    var pMid: Double?
+    var maxExposureBoost: Double?
+    var pFloor: Double?
+    var p50: Double?
+    var highExposureCandidate: Double?
+    var midExposureCandidate: Double?
+    var resolvedExposureEV: Double?
+    var effectiveMidBoost: Double?
+    var maxMidBoost: Double?
+    var exposureDriver: String?
+    var exposedP50: Double?
+    var exposedPHigh: Double?
+    var exposedPMid: Double?
+    var pHighOverP50: Double?
+    var pHighStopsOverP50: Double?
+    var pMidOverP50: Double?
+    var pMidStopsOverP50: Double?
+    var luminanceSamples: UInt32?
+    var luminanceLogMin: Double?
+    var luminanceLogMax: Double?
+    var luminanceHistogramMin: Double?
+    var luminanceHistogramMax: Double?
+    var cloudQ10: Double?
+    var cloudQ90: Double?
+    var cloudSamples: UInt32?
 }
 
 enum RenderOutputs {
@@ -153,8 +225,12 @@ enum RenderOutputs {
             diskModelLabel = "perlin_texture_v1"
         } else if config.diskModelResolved == "perlin-ec7" {
             diskModelLabel = "perlin_texture_ec7_v1"
-        } else if config.diskModelResolved == "perlin-classic" {
-            diskModelLabel = "perlin_texture_classic_v1"
+        } else if config.diskModelResolved == "legacy-feb24" {
+            diskModelLabel = "legacy_feb24_raw_perlin_v1"
+        } else if config.diskModelResolved == "legacy-f552" {
+            diskModelLabel = "legacy_f552_cloud_v1"
+        } else if config.diskModelResolved == "legacy-periodic-thin" {
+            diskModelLabel = "legacy_periodic_thin_93615c3_v1"
         } else {
             diskModelLabel = "streamline_particles_v1"
         }
@@ -264,11 +340,25 @@ enum RenderOutputs {
             outputHeight: outHeight,
             exposure: Double(composeExposure),
             look: config.composeLook,
+            presentationMode: config.presentationModeName,
             cameraModel: config.cameraModelName,
+            cameraProfile: config.cameraProfileName,
+            cameraProfileJSON: config.cameraProfileJSONPath,
+            realismProfile: config.realismProfileName,
             cameraPsfSigmaPx: Double(config.cameraPsfSigmaArg),
             cameraReadNoise: Double(config.cameraReadNoiseArg),
             cameraShotNoise: Double(config.cameraShotNoiseArg),
             cameraFlareStrength: Double(config.cameraFlareStrengthArg),
+            cameraFNumber: Double(config.cameraFNumberArg),
+            cameraISO: Double(config.cameraISOArg),
+            cameraShutterSeconds: Double(config.cameraShutterSecondsArg),
+            photographicExposureScale: Double(config.photographicExposureScale),
+            photographicCalibration: config.photographicCalibrationName,
+            cameraLuminanceScale: config.cameraLuminanceScaleArg,
+            photometricSaturationLuminance: config.photometricSaturationLuminance,
+            motionBlurSamples: config.motionBlurSamplesArg,
+            motionBlurTimeLapse: config.motionBlurTimeLapseArg,
+            shutterFlowTimeSpan: config.shutterFlowTimeSpan,
             backgroundMode: config.backgroundModeName,
             backgroundStarDensity: Double(config.backgroundStarDensityArg),
             backgroundStarStrength: Double(config.backgroundStarStrengthArg),
@@ -296,5 +386,148 @@ enum RenderOutputs {
         } else {
             print("Collision output skipped (discard mode), hits=\(hitCount)")
         }
+    }
+
+    static func writeExposureDiagnostics(
+        config: ResolvedRenderConfig,
+        width: Int,
+        height: Int,
+        solveMode: String,
+        resolvedExposure: Float,
+        settings: ComposeExposureSolveSettings,
+        p50: Float?,
+        pHigh: Float?,
+        pMid: Float?,
+        luminanceSamples: UInt32?,
+        luminanceLogMin: Float?,
+        luminanceLogMax: Float?,
+        cloudQ10: Float?,
+        cloudQ90: Float?,
+        cloudSamples: UInt32?
+    ) throws {
+        func finite(_ value: Float?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return Double(value)
+        }
+        func finiteDouble(_ value: Double?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return value
+        }
+        func candidateExposure(target: Float, luminance: Float?) -> Double? {
+            guard target > 0.0, let luminance, luminance.isFinite, luminance > 0.0 else { return nil }
+            return Double(target / max(luminance, settings.pFloor))
+        }
+        func exposed(_ luminance: Float?) -> Double? {
+            guard let luminance, luminance.isFinite, luminance >= 0.0, resolvedExposure.isFinite else { return nil }
+            return Double(luminance * resolvedExposure)
+        }
+        func ratio(_ numerator: Float?, _ denominator: Float?) -> Double? {
+            guard
+                let numerator, numerator.isFinite,
+                let denominator, denominator.isFinite,
+                numerator > 0.0, denominator > 0.0
+            else { return nil }
+            return Double(numerator / denominator)
+        }
+        func stops(_ ratio: Double?) -> Double? {
+            guard let ratio, ratio.isFinite, ratio > 0.0 else { return nil }
+            return log2(ratio)
+        }
+        func pow10Finite(_ value: Float?) -> Double? {
+            guard let value, value.isFinite else { return nil }
+            return pow(10.0, Double(value))
+        }
+
+        let highExposure = candidateExposure(target: settings.targetWhite, luminance: pHigh)
+        let midExposure = (settings.midQuantile > 0.0 && settings.targetMid > 0.0)
+            ? candidateExposure(target: settings.targetMid, luminance: pMid)
+            : nil
+        let resolvedExposureValue = finite(resolvedExposure)
+        let effectiveMidBoost = (settings.midQuantile > 0.0)
+            ? finiteDouble(resolvedExposureValue.flatMap { resolved in
+                guard let highExposure, highExposure > 0.0 else { return nil }
+                return resolved / highExposure
+            })
+            : nil
+        let exposureDriver: String = {
+            if !config.autoExposureEnabled { return "manual_or_fixed" }
+            guard highExposure != nil else { return "auto_no_luminance_samples" }
+            guard midExposure != nil, settings.midQuantile > 0.0 else { return "high_quantile" }
+            guard let effectiveMidBoost else { return "high_quantile" }
+            if effectiveMidBoost > 1.0001 {
+                if effectiveMidBoost >= Double(settings.maxExposureBoost) * 0.999 {
+                    return "mid_quantile_capped"
+                }
+                return "mid_quantile"
+            }
+            return "high_quantile"
+        }()
+
+        let pHighRatio = ratio(pHigh, p50)
+        let pMidRatio = ratio(pMid, p50)
+
+        let diagnostics = ExposureDiagnostics(
+            version: "interpreter_exposure_v2",
+            layer: "interpreter",
+            imagePath: config.imageOutPath,
+            width: width,
+            height: height,
+            presentationMode: config.presentationModeName,
+            look: config.composeLook,
+            cameraModel: config.cameraModelName,
+            cameraProfile: config.cameraProfileName,
+            realismProfile: config.realismProfileName,
+            autoExposure: config.autoExposureEnabled,
+            exposureMode: config.exposureModeName,
+            exposureEV: config.exposureEVArg,
+            cameraFNumber: Double(config.cameraFNumberArg),
+            cameraISO: Double(config.cameraISOArg),
+            cameraShutterSeconds: Double(config.cameraShutterSecondsArg),
+            cameraReadNoise: Double(config.cameraReadNoiseArg),
+            cameraShotNoise: Double(config.cameraShotNoiseArg),
+            photographicExposureScale: config.exposureModeID == 2 ? finite(config.photographicExposureScale) : nil,
+            photographicCalibration: config.exposureModeID == 2 ? config.photographicCalibrationName : nil,
+            cameraLuminanceScale: config.exposureModeID == 2 ? finiteDouble(config.cameraLuminanceScaleArg) : nil,
+            photometricSaturationLuminance: config.exposureModeID == 2 ? finiteDouble(config.photometricSaturationLuminance) : nil,
+            baseExposure: finite(config.composeExposureBase),
+            resolvedExposure: finite(resolvedExposure),
+            solveMode: solveMode,
+            targetWhite: finite(settings.targetWhite),
+            highQuantile: finite(settings.highQuantile),
+            pHigh: finite(pHigh),
+            midQuantile: settings.midQuantile > 0.0 ? finite(settings.midQuantile) : nil,
+            targetMid: settings.targetMid > 0.0 ? finite(settings.targetMid) : nil,
+            pMid: settings.midQuantile > 0.0 ? finite(pMid) : nil,
+            maxExposureBoost: settings.maxExposureBoost > 1.0 ? finite(settings.maxExposureBoost) : nil,
+            pFloor: finite(settings.pFloor),
+            p50: finite(p50),
+            highExposureCandidate: highExposure,
+            midExposureCandidate: midExposure,
+            resolvedExposureEV: resolvedExposure > 0.0 ? finiteDouble(log2(Double(resolvedExposure))) : nil,
+            effectiveMidBoost: effectiveMidBoost,
+            maxMidBoost: settings.maxExposureBoost > 1.0 ? finite(settings.maxExposureBoost) : nil,
+            exposureDriver: exposureDriver,
+            exposedP50: exposed(p50),
+            exposedPHigh: exposed(pHigh),
+            exposedPMid: settings.midQuantile > 0.0 ? exposed(pMid) : nil,
+            pHighOverP50: pHighRatio,
+            pHighStopsOverP50: stops(pHighRatio),
+            pMidOverP50: settings.midQuantile > 0.0 ? pMidRatio : nil,
+            pMidStopsOverP50: settings.midQuantile > 0.0 ? stops(pMidRatio) : nil,
+            luminanceSamples: luminanceSamples,
+            luminanceLogMin: finite(luminanceLogMin),
+            luminanceLogMax: finite(luminanceLogMax),
+            luminanceHistogramMin: pow10Finite(luminanceLogMin),
+            luminanceHistogramMax: pow10Finite(luminanceLogMax),
+            cloudQ10: finite(cloudQ10),
+            cloudQ90: finite(cloudQ90),
+            cloudSamples: cloudSamples
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(diagnostics)
+        let path = config.imageOutPath + ".exposure_debug.json"
+        try data.write(to: URL(fileURLWithPath: path))
+        print("Saved exposure debug at:", URL(fileURLWithPath: path).path)
     }
 }

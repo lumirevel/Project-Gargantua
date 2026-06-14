@@ -2,6 +2,101 @@ import Foundation
 import Metal
 
 enum RenderExecution {
+    static func composeHDRInput(config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime) throws {
+        let params = inputParams
+        let policy = RenderResourcePolicy(config: config, params: params, device: runtime.device)
+        let expectedBytes = policy.linearOutSize
+        let inputURL = URL(fileURLWithPath: config.composeHDRInputPath)
+        let attrs = try FileManager.default.attributesOfItem(atPath: inputURL.path)
+        let fileBytes = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        guard fileBytes == expectedBytes else {
+            throw NSError(
+                domain: "Blackhole",
+                code: 82,
+                userInfo: [NSLocalizedDescriptionKey: "--compose-hdr-in size mismatch: got \(fileBytes), expected \(expectedBytes) for \(config.width)x\(config.height) float4 linear32"]
+            )
+        }
+
+        print(config.renderConfigLine)
+        if !config.grmhdConfigLine.isEmpty { print(config.grmhdConfigLine) }
+        if !config.visibleConfigLine.isEmpty { print(config.visibleConfigLine) }
+        print("compose-only hdr input=\(inputURL.path)")
+
+        let frameResources = Resources.makeFrameResources(
+            device: runtime.device,
+            config: config,
+            params: params,
+            policy: policy,
+            useDirectLinear: false,
+            useInMemoryCollisions: false,
+            useLinear32Intermediate: true,
+            width: config.width,
+            height: config.height,
+            composeExposure: config.composeExposure,
+            composeLookID: config.composeLookID,
+            spectralEncodingID: config.spectralEncodingID,
+            composePrecisionID: config.composePrecisionID,
+            composeAnalysisMode: config.composeAnalysisMode,
+            composeCameraModelID: config.composeCameraModelID,
+            cameraProfileID: (config.composeAnalysisMode == 0) ? config.cameraProfileID : 0,
+            realismProfileID: config.realismProfileID,
+            composeCameraPsfSigmaArg: config.composeCameraPsfSigmaArg,
+            composeCameraReadNoiseArg: config.composeCameraReadNoiseArg,
+            composeCameraShotNoiseArg: config.composeCameraShotNoiseArg,
+            composeCameraFlareStrengthArg: config.composeCameraFlareStrengthArg,
+            backgroundModeID: config.backgroundModeID,
+            backgroundStarDensityArg: config.backgroundStarDensityArg,
+            backgroundStarStrengthArg: config.backgroundStarStrengthArg,
+            backgroundNebulaStrengthArg: config.backgroundNebulaStrengthArg,
+            preserveHighlightColor: config.preserveHighlightColor,
+            downsampleArg: config.downsampleArg,
+            composeDitherArg: config.composeDitherArg,
+            composeInnerEdgeArg: config.composeInnerEdgeArg,
+            composeSpectralStepArg: config.composeSpectralStepArg,
+            tileSize: config.tileSize,
+            traceInFlightOverrideArg: config.traceInFlightOverrideArg
+        )
+
+        let totalPixels = policy.count
+        let composePrepassOps = config.autoExposureEnabled ? totalPixels : 0
+        let composeOps = composePrepassOps + policy.outWidth * policy.outHeight
+        let totalOps = max(1, totalPixels + composeOps)
+        let progressStep = max(1, totalOps / 256)
+        let traceResult = RenderTracePhaseResult(
+            hitCount: totalPixels,
+            donePixels: totalPixels,
+            nextProgressMark: progressStep,
+            lastProgressPrint: Date().timeIntervalSince1970,
+            linearCloudHistGlobal: [UInt32](repeating: 0, count: 2048),
+            linearCloudSampleCount: 0
+        )
+
+        let result = try RenderComposeHDRIntermediatePhase.execute(
+            RenderComposePhaseInput(
+                config: config,
+                params: params,
+                runtime: runtime,
+                policy: policy,
+                frameResources: frameResources,
+                directLinearEnabled: false,
+                collisionLite32Enabled: false,
+                traceResult: traceResult,
+                effectiveTile: config.tileSize,
+                totalPixels: totalPixels,
+                totalOps: totalOps,
+                progressStep: progressStep,
+                effectiveGpuFullCompose: false,
+                effectiveUseLinear32Intermediate: true,
+                effectiveUseInMemoryCollisions: false
+            ),
+            composeExposure: config.composeExposure,
+            nextProgressMark: progressStep,
+            lastProgressPrint: Date().timeIntervalSince1970
+        )
+        print("compose-only exposure=\(result.composeExposure)")
+        print("compose-only image=\(config.imageOutPath)")
+    }
+
     static func execute(config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime) throws {
         let device = runtime.device
         let queue = runtime.queue
@@ -32,6 +127,8 @@ enum RenderExecution {
             composePrecisionID: config.composePrecisionID,
             composeAnalysisMode: config.composeAnalysisMode,
             composeCameraModelID: config.composeCameraModelID,
+            cameraProfileID: (config.composeAnalysisMode == 0) ? config.cameraProfileID : 0,
+            realismProfileID: config.realismProfileID,
             composeCameraPsfSigmaArg: config.composeCameraPsfSigmaArg,
             composeCameraReadNoiseArg: config.composeCameraReadNoiseArg,
             composeCameraShotNoiseArg: config.composeCameraShotNoiseArg,
@@ -112,8 +209,8 @@ enum RenderExecution {
                 linearStride: policy.linearStride,
                 linearCloudBins: 2048,
                 linearLumBins: 4096,
-                linearLumLogMin: (config.diskPhysicsModeID == 3) ? -36.0 : 8.0,
-                linearLumLogMax: (config.diskPhysicsModeID == 3) ? 4.0 : 20.0,
+                linearLumLogMin: composeLuminanceLogRange(diskPhysicsModeID: config.diskPhysicsModeID).min,
+                linearLumLogMax: composeLuminanceLogRange(diskPhysicsModeID: config.diskPhysicsModeID).max,
                 composeExposure: config.composeExposure,
                 composeDitherArg: config.composeDitherArg,
                 composeInnerEdgeArg: config.composeInnerEdgeArg,
@@ -123,6 +220,19 @@ enum RenderExecution {
                 composePrecisionID: config.composePrecisionID,
                 composeAnalysisMode: config.composeAnalysisMode,
                 composeCameraModelID: config.composeCameraModelID,
+                cameraProfileID: (config.composeAnalysisMode == 0) ? config.cameraProfileID : 0,
+                realismProfileID: config.realismProfileID,
+                cameraSceneR: config.cameraSceneR,
+                cameraSceneG: config.cameraSceneG,
+                cameraSceneB: config.cameraSceneB,
+                cameraDisplayR: config.cameraDisplayR,
+                cameraDisplayG: config.cameraDisplayG,
+                cameraDisplayB: config.cameraDisplayB,
+                cameraSensorParams: config.cameraSensorParams,
+                cameraNoiseParams: config.cameraNoiseParams,
+                cameraColorParams: config.cameraColorParams,
+                cameraGlareParams: config.cameraGlareParams,
+                cameraFlags: config.cameraFlags,
                 composeCameraPsfSigmaArg: config.composeCameraPsfSigmaArg,
                 composeCameraReadNoiseArg: config.composeCameraReadNoiseArg,
                 composeCameraShotNoiseArg: config.composeCameraShotNoiseArg,

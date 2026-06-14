@@ -183,11 +183,11 @@ def main() -> None:
         rho_key = _resolve_key(ds_map, args.rho_key, ["rho", "density", "dens", "RHO", "Density"], "density", True)
         temp_key = _resolve_key(
             ds_map,
-            args.temp_key,
-            ["temp", "temperature", "temp_scale", "Theta", "theta_e", "Te", "prs", "u", "press", "pressure"],
-            "temperature",
-            False,
-        )
+        args.temp_key,
+        ["thetae", "Thetae", "temp", "temperature", "temp_scale", "Theta", "theta_e", "Te", "prs", "u", "press", "pressure"],
+        "temperature",
+        False,
+    )
         vr_key = _resolve_key(ds_map, args.vr_key, ["vr", "v_r", "vx1", "u1", "v1", "vel1", "vr_ratio"], "vr", False)
         vphi_key = _resolve_key(
             ds_map, args.vphi_key, ["vphi", "v_phi", "vx3", "u3", "v3", "vel3", "vphi_scale"], "vphi", False

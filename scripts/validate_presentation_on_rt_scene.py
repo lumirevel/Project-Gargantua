@@ -1,0 +1,1461 @@
+#!/usr/bin/env python3
+"""Render a simple everyday HDR ray-traced scene and apply Metal presentation.
+
+The goal is to validate the observer/presentation layer with a familiar scene,
+separate from black-hole/accretion-source physics.  This script intentionally
+uses a tiny deterministic CPU ray tracer: room, ceiling area light, metal sphere,
+glass sphere, and diffuse plastic sphere. Optional bokeh targets add small
+emissive points at known depths for lens/aperture validation; optional color
+patches add familiar diffuse hues for human-vision/chroma validation. It writes
+the scene as float4 linear32 HDR and feeds that file into the renderer's actual
+Metal compose stage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+
+EPS = 1e-4
+RESAMPLE_BICUBIC = getattr(getattr(Image, "Resampling", Image), "BICUBIC")
+RESAMPLE_NEAREST = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+ROOT = Path(__file__).resolve().parents[1]
+RUN_PIPELINE = ROOT / "Blackhole" / "run_pipeline.sh"
+GPU_ROOM_RT = ROOT / "scripts" / "generate_room_rt_hdr_gpu.swift"
+
+
+@dataclass
+class Material:
+    kind: str
+    albedo: np.ndarray
+    roughness: float = 0.0
+    ior: float = 1.5
+    emission: np.ndarray = None
+
+    def __post_init__(self) -> None:
+        if self.emission is None:
+            self.emission = np.zeros(3, dtype=np.float32)
+
+
+@dataclass
+class Hit:
+    t: float
+    p: np.ndarray
+    n: np.ndarray
+    mat: Material
+
+
+@dataclass
+class Sphere:
+    center: np.ndarray
+    radius: float
+    mat: Material
+
+    def intersect(self, ro: np.ndarray, rd: np.ndarray) -> Optional[Hit]:
+        oc = ro - self.center
+        b = float(np.dot(oc, rd))
+        c = float(np.dot(oc, oc) - self.radius * self.radius)
+        h = b * b - c
+        if h < 0.0:
+            return None
+        s = math.sqrt(h)
+        t = -b - s
+        if t < EPS:
+            t = -b + s
+        if t < EPS:
+            return None
+        p = ro + rd * t
+        n = (p - self.center) / self.radius
+        return Hit(t, p, n.astype(np.float32), self.mat)
+
+
+@dataclass
+class Plane:
+    p: np.ndarray
+    n: np.ndarray
+    mat: Material
+    bounds: Tuple[Tuple[float, float], Tuple[float, float], str]
+
+    def intersect(self, ro: np.ndarray, rd: np.ndarray) -> Optional[Hit]:
+        denom = float(np.dot(self.n, rd))
+        if abs(denom) < 1e-6:
+            return None
+        t = float(np.dot(self.p - ro, self.n) / denom)
+        if t < EPS:
+            return None
+        p = ro + rd * t
+        (a0, a1), (b0, b1), axes = self.bounds
+        ia = "xyz".index(axes[0])
+        ib = "xyz".index(axes[1])
+        if p[ia] < a0 or p[ia] > a1 or p[ib] < b0 or p[ib] > b1:
+            return None
+        return Hit(t, p.astype(np.float32), self.n.astype(np.float32), self.mat)
+
+
+@dataclass
+class AreaLight:
+    center: np.ndarray
+    ux: np.ndarray
+    uz: np.ndarray
+    radiance: np.ndarray
+
+    def samples(self) -> List[np.ndarray]:
+        pts: List[np.ndarray] = []
+        for a in (-0.35, 0.35):
+            for b in (-0.35, 0.35):
+                pts.append(self.center + a * self.ux + b * self.uz)
+        pts.append(self.center)
+        return pts
+
+
+class Scene:
+    def __init__(self, bokeh_targets: bool = False, color_chart: bool = False) -> None:
+        white = Material("diffuse", np.array([0.78, 0.76, 0.70], dtype=np.float32))
+        warm = Material("diffuse", np.array([0.84, 0.72, 0.58], dtype=np.float32))
+        cool = Material("diffuse", np.array([0.55, 0.62, 0.76], dtype=np.float32))
+        plastic = Material("diffuse", np.array([0.96, 0.22, 0.10], dtype=np.float32))
+        metal = Material("metal", np.array([0.92, 0.88, 0.78], dtype=np.float32), roughness=0.035)
+        glass = Material("glass", np.array([0.94, 0.98, 1.00], dtype=np.float32), ior=1.48)
+        rear_dark = Material("diffuse", np.array([0.05, 0.055, 0.06], dtype=np.float32))
+        rear_light = Material("diffuse", np.array([0.96, 0.94, 0.82], dtype=np.float32))
+        amber_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([55.0, 34.0, 13.0], dtype=np.float32))
+        blue_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([12.0, 24.0, 60.0], dtype=np.float32))
+        white_led = Material("diffuse", np.ones(3, dtype=np.float32), emission=np.array([62.0, 58.0, 48.0], dtype=np.float32))
+        self.light = AreaLight(
+            center=np.array([0.0, 1.98, 0.0], dtype=np.float32),
+            ux=np.array([0.85, 0.0, 0.0], dtype=np.float32),
+            uz=np.array([0.0, 0.0, 0.55], dtype=np.float32),
+            radiance=np.array([18.0, 15.4, 11.8], dtype=np.float32),
+        )
+        light_mat = Material("diffuse", np.ones(3, dtype=np.float32), emission=self.light.radiance)
+        self.objects: List[object] = [
+            Plane(np.array([0, -1, 0], dtype=np.float32), np.array([0, 1, 0], dtype=np.float32), white, ((-2.2, 2.2), (-3.1, 1.4), "xz")),
+            Plane(np.array([0, 2, 0], dtype=np.float32), np.array([0, -1, 0], dtype=np.float32), white, ((-2.2, 2.2), (-3.1, 1.4), "xz")),
+            Plane(np.array([0, 0, -3], dtype=np.float32), np.array([0, 0, 1], dtype=np.float32), warm, ((-2.2, 2.2), (-1.0, 2.0), "xy")),
+            Plane(np.array([-2.2, 0, 0], dtype=np.float32), np.array([1, 0, 0], dtype=np.float32), cool, ((-3.1, 1.4), (-1.0, 2.0), "zy")),
+            Plane(np.array([2.2, 0, 0], dtype=np.float32), np.array([-1, 0, 0], dtype=np.float32), white, ((-3.1, 1.4), (-1.0, 2.0), "zy")),
+            Plane(np.array([0, 1.995, 0], dtype=np.float32), np.array([0, -1, 0], dtype=np.float32), light_mat, ((-0.85, 0.85), (-0.55, 0.55), "xz")),
+            Sphere(np.array([-0.85, -0.45, -1.75], dtype=np.float32), 0.55, metal),
+            Sphere(np.array([0.35, -0.50, -1.45], dtype=np.float32), 0.50, glass),
+            Sphere(np.array([1.05, -0.62, -2.10], dtype=np.float32), 0.38, plastic),
+            # Rear-wall contrast target behind the glass sphere. It makes
+            # back-surface refraction visible in interpreter/camera validation.
+            Plane(np.array([0.0, 0.0, -2.985], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_dark, ((-0.02, 0.38), (-0.76, -0.36), "xy")),
+            Plane(np.array([0.0, 0.0, -2.984], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_light, ((0.38, 0.78), (-0.76, -0.36), "xy")),
+            Plane(np.array([0.0, 0.0, -2.983], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_light, ((-0.02, 0.38), (-0.36, 0.04), "xy")),
+            Plane(np.array([0.0, 0.0, -2.982], dtype=np.float32), np.array([0.0, 0.0, 1.0], dtype=np.float32), rear_dark, ((0.38, 0.78), (-0.36, 0.04), "xy")),
+        ]
+        if bokeh_targets:
+            # Small self-luminous spheres at different depths. They deliberately
+            # stress the lens presentation by making aperture shape and focus
+            # depth visible; they are not source-physics content.
+            self.objects.extend([
+                Sphere(np.array([-1.25, 0.45, -2.72], dtype=np.float32), 0.045, amber_led),
+                Sphere(np.array([-0.78, 0.82, -2.88], dtype=np.float32), 0.038, white_led),
+                Sphere(np.array([0.88, 0.52, -2.66], dtype=np.float32), 0.042, blue_led),
+                Sphere(np.array([1.35, 0.95, -2.92], dtype=np.float32), 0.035, white_led),
+            ])
+        if color_chart:
+            # Diffuse color patches on the back wall. These are not a texture;
+            # they are familiar reflectance samples for validating eye-mode
+            # chroma, Purkinje shift, and highlight desaturation.
+            chart_mats = [
+                Material("diffuse", np.array([0.92, 0.18, 0.12], dtype=np.float32)),
+                Material("diffuse", np.array([0.16, 0.72, 0.24], dtype=np.float32)),
+                Material("diffuse", np.array([0.14, 0.30, 0.90], dtype=np.float32)),
+                Material("diffuse", np.array([0.94, 0.82, 0.18], dtype=np.float32)),
+                Material("diffuse", np.array([0.82, 0.20, 0.82], dtype=np.float32)),
+                Material("diffuse", np.array([0.18, 0.82, 0.86], dtype=np.float32)),
+            ]
+            x0, y0 = -1.60, 0.72
+            dx, dy = 0.36, 0.28
+            for j in range(2):
+                for i in range(3):
+                    mat = chart_mats[j * 3 + i]
+                    cx0 = x0 + i * 0.46
+                    cy0 = y0 - j * 0.40
+                    self.objects.append(
+                        Plane(
+                            np.array([0.0, 0.0, -2.985], dtype=np.float32),
+                            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+                            mat,
+                            ((cx0, cx0 + dx), (cy0, cy0 + dy), "xy"),
+                        )
+                    )
+
+    def intersect(self, ro: np.ndarray, rd: np.ndarray) -> Optional[Hit]:
+        best: Optional[Hit] = None
+        for obj in self.objects:
+            h = obj.intersect(ro, rd)
+            if h is not None and (best is None or h.t < best.t):
+                best = h
+        return best
+
+
+def normalize(v: np.ndarray) -> np.ndarray:
+    return v / max(float(np.linalg.norm(v)), 1e-12)
+
+
+def reflect(rd: np.ndarray, n: np.ndarray) -> np.ndarray:
+    return rd - 2.0 * float(np.dot(rd, n)) * n
+
+
+def refract(rd: np.ndarray, n: np.ndarray, eta: float) -> Optional[np.ndarray]:
+    cosi = -float(np.dot(n, rd))
+    sint2 = eta * eta * max(0.0, 1.0 - cosi * cosi)
+    if sint2 > 1.0:
+        return None
+    cost = math.sqrt(max(0.0, 1.0 - sint2))
+    return eta * rd + (eta * cosi - cost) * n
+
+
+def schlick(cosine: float, ior: float) -> float:
+    r0 = ((1.0 - ior) / (1.0 + ior)) ** 2
+    return r0 + (1.0 - r0) * ((1.0 - cosine) ** 5)
+
+
+def visible_sky(rd: np.ndarray) -> np.ndarray:
+    t = 0.5 * (rd[1] + 1.0)
+    return (1.0 - t) * np.array([0.015, 0.018, 0.022], dtype=np.float32) + t * np.array([0.055, 0.070, 0.095], dtype=np.float32)
+
+
+def direct_light(scene: Scene, hit: Hit) -> np.ndarray:
+    out = np.zeros(3, dtype=np.float32)
+    if np.max(hit.mat.emission) > 0.0:
+        return hit.mat.emission
+    for lp in scene.light.samples():
+        wi_vec = lp - hit.p
+        dist2 = float(np.dot(wi_vec, wi_vec))
+        wi = wi_vec / math.sqrt(max(dist2, 1e-12))
+        ndotl = max(float(np.dot(hit.n, wi)), 0.0)
+        if ndotl <= 0.0:
+            continue
+        blocker = scene.intersect(hit.p + hit.n * EPS * 8.0, wi)
+        if blocker is not None and blocker.t * blocker.t < dist2 - 2e-3:
+            continue
+        # Area-light solid-angle approximation. This is intentionally simple but
+        # radiometric: radiance * projected-area / distance^2 * Lambertian BRDF.
+        area = float(np.linalg.norm(np.cross(scene.light.ux, scene.light.uz)))
+        light_n = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+        lcos = max(float(np.dot(light_n, -wi)), 0.0)
+        omega = area * lcos / max(dist2, 1e-6)
+        out += scene.light.radiance * ndotl * omega / math.pi
+    return out * hit.mat.albedo / max(len(scene.light.samples()), 1)
+
+
+def trace(scene: Scene, ro: np.ndarray, rd: np.ndarray, depth: int = 0) -> np.ndarray:
+    if depth > 4:
+        return np.zeros(3, dtype=np.float32)
+    hit = scene.intersect(ro, rd)
+    if hit is None:
+        return visible_sky(rd)
+    mat = hit.mat
+    if np.max(mat.emission) > 0.0:
+        return mat.emission
+    base = direct_light(scene, hit)
+    if mat.kind == "diffuse":
+        return base + 0.025 * mat.albedo
+    if mat.kind == "metal":
+        rr = normalize(reflect(rd, hit.n))
+        return base * 0.20 + mat.albedo * trace(scene, hit.p + hit.n * EPS * 8.0, rr, depth + 1) * 0.86
+    if mat.kind == "glass":
+        n = hit.n.copy()
+        eta_i, eta_t = 1.0, mat.ior
+        cosi = -float(np.dot(n, rd))
+        entering = cosi > 0.0
+        if not entering:
+            n = -n
+            eta_i, eta_t = eta_t, eta_i
+            cosi = -float(np.dot(n, rd))
+        eta = eta_i / eta_t
+        refr = refract(rd, n, eta)
+        fres = schlick(max(cosi, 0.0), mat.ior)
+        refl_col = trace(scene, hit.p + n * EPS * 8.0, normalize(reflect(rd, n)), depth + 1)
+        if refr is None:
+            return refl_col
+        refr_col = trace(scene, hit.p - n * EPS * 8.0, normalize(refr), depth + 1)
+        # Weak Beer-Lambert tint for a familiar glass-object check.
+        tint = np.exp(-np.array([0.015, 0.006, 0.002], dtype=np.float32) * (depth + 1))
+        return base * 0.04 + (fres * refl_col + (1.0 - fres) * refr_col * tint) * mat.albedo
+    return base
+
+
+def transmitted_depth_for_glass(scene: Scene, hit: Hit, rd: np.ndarray, focus_fallback: float) -> float:
+    n = hit.n.copy()
+    cosi = -float(np.dot(n, rd))
+    if cosi <= 0.0:
+        return float(hit.t)
+    refr_in = refract(rd, n, 1.0 / hit.mat.ior)
+    if refr_in is None:
+        return float(hit.t)
+    exit_hit = scene.intersect(hit.p - n * EPS * 8.0, normalize(refr_in))
+    if exit_hit is None or exit_hit.mat.kind != "glass":
+        return float(hit.t)
+    refr_out = refract(normalize(refr_in), -exit_hit.n, hit.mat.ior)
+    if refr_out is None:
+        return float(hit.t + exit_hit.t)
+    seen = scene.intersect(exit_hit.p + exit_hit.n * EPS * 8.0, normalize(refr_out))
+    sky_depth = max(focus_fallback - float(hit.t + exit_hit.t), 0.0)
+    return float(hit.t + exit_hit.t + (sky_depth if seen is None else seen.t))
+
+
+def trace_front_back_layers(scene: Scene,
+                            ro: np.ndarray,
+                            rd: np.ndarray,
+                            focus_fallback: float) -> Tuple[np.ndarray, float, np.ndarray, float]:
+    """Split transparent primary hits into front and transmitted radiance layers.
+
+    This is a validation-only approximation for camera DOF. The normal render
+    still writes one HDR color, but this reference lets glass reflection focus at
+    the front surface while refracted background focuses at the transmitted hit.
+    """
+    hit = scene.intersect(ro, rd)
+    if hit is None:
+        return visible_sky(rd), focus_fallback, np.zeros(3, dtype=np.float32), focus_fallback
+    if hit.mat.kind != "glass":
+        return trace(scene, ro, rd), primary_depth(scene, ro, rd, focus_fallback), np.zeros(3, dtype=np.float32), focus_fallback
+
+    mat = hit.mat
+    n = hit.n.copy()
+    eta_i, eta_t = 1.0, mat.ior
+    cosi = -float(np.dot(n, rd))
+    entering = cosi > 0.0
+    if not entering:
+        n = -n
+        eta_i, eta_t = eta_t, eta_i
+        cosi = -float(np.dot(n, rd))
+    eta = eta_i / eta_t
+    refr = refract(rd, n, eta)
+    fres = schlick(max(cosi, 0.0), mat.ior)
+    base = direct_light(scene, hit) * 0.04
+    refl_col = trace(scene, hit.p + n * EPS * 8.0, normalize(reflect(rd, n)), 1)
+    front = base + fres * refl_col * mat.albedo
+    if refr is None:
+        return front.astype(np.float32), float(hit.t), np.zeros(3, dtype=np.float32), focus_fallback
+    refr_col = trace(scene, hit.p - n * EPS * 8.0, normalize(refr), 1)
+    tint = np.exp(-np.array([0.015, 0.006, 0.002], dtype=np.float32))
+    back = ((1.0 - fres) * refr_col * tint * mat.albedo).astype(np.float32)
+    back_depth = transmitted_depth_for_glass(scene, hit, rd, focus_fallback)
+    return front.astype(np.float32), float(hit.t), back, back_depth
+
+
+def primary_depth(scene: Scene, ro: np.ndarray, rd: np.ndarray, focus_fallback: float) -> float:
+    hit = scene.intersect(ro, rd)
+    if hit is None:
+        return focus_fallback
+    if hit.mat.kind != "glass":
+        return float(hit.t)
+
+    n = hit.n.copy()
+    cosi = -float(np.dot(n, rd))
+    if cosi <= 0.0:
+        return float(hit.t)
+    refr_in = refract(rd, n, 1.0 / hit.mat.ior)
+    if refr_in is None:
+        return float(hit.t)
+    exit_hit = scene.intersect(hit.p - n * EPS * 8.0, normalize(refr_in))
+    if exit_hit is None or exit_hit.mat.kind != "glass":
+        return float(hit.t)
+    refr_out = refract(normalize(refr_in), -exit_hit.n, hit.mat.ior)
+    if refr_out is None:
+        return float(hit.t + exit_hit.t)
+    seen = scene.intersect(exit_hit.p + exit_hit.n * EPS * 8.0, normalize(refr_out))
+    sky_depth = max(focus_fallback - float(hit.t + exit_hit.t), 0.0)
+    transmit_depth = float(hit.t + exit_hit.t + (sky_depth if seen is None else seen.t))
+    fres = schlick(max(cosi, 0.0), hit.mat.ior)
+    # One depth value cannot represent reflected and transmitted layers.
+    # Match the color model's Fresnel blend so DOF follows the dominant layer.
+    return (1.0 - fres) * transmit_depth + fres * float(hit.t)
+
+
+def camera_coc_px(depth: float,
+                  width: int,
+                  height: int,
+                  focus_depth: float,
+                  f_number: float,
+                  dof_strength: float) -> float:
+    if focus_depth <= 1e-5 or depth <= 1e-5 or dof_strength <= 1e-5:
+        return 0.0
+    frame_min = max(min(width, height), 1)
+    defocus = abs(depth - focus_depth) / max(max(depth, focus_depth), 1e-5)
+    aperture = 1.0 / max(f_number, 0.7)
+    return min(max(frame_min * 0.018 * dof_strength * aperture * defocus, 0.0), 18.0)
+
+
+def dof_depth_weight(center_depth: float, sample_depth: float) -> float:
+    if center_depth <= 1e-5 or sample_depth <= 1e-5:
+        return 1.0
+    rel = abs(sample_depth - center_depth) / max(max(center_depth, sample_depth), 1e-5)
+    sigma = 0.10
+    return math.exp(-0.5 * (rel * rel) / max(sigma * sigma, 1e-6))
+
+
+def bilinear_rgb(img: np.ndarray, x: float, y: float) -> np.ndarray:
+    h, w = img.shape[:2]
+    fx = min(max(x, 0.0), w - 1.0)
+    fy = min(max(y, 0.0), h - 1.0)
+    x0 = int(math.floor(fx))
+    y0 = int(math.floor(fy))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    tx = fx - x0
+    ty = fy - y0
+    return (1.0 - ty) * ((1.0 - tx) * img[y0, x0] + tx * img[y0, x1]) + ty * ((1.0 - tx) * img[y1, x0] + tx * img[y1, x1])
+
+
+def bilinear_depth(depth: np.ndarray, x: float, y: float) -> float:
+    h, w = depth.shape[:2]
+    fx = min(max(x, 0.0), w - 1.0)
+    fy = min(max(y, 0.0), h - 1.0)
+    x0 = int(math.floor(fx))
+    y0 = int(math.floor(fy))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    tx = fx - x0
+    ty = fy - y0
+    d0 = (1.0 - tx) * depth[y0, x0] + tx * depth[y0, x1]
+    d1 = (1.0 - tx) * depth[y1, x0] + tx * depth[y1, x1]
+    return float((1.0 - ty) * d0 + ty * d1)
+
+
+def layer_dof(hdr: np.ndarray,
+              depth: np.ndarray,
+              focus_depth: float,
+              f_number: float,
+              dof_strength: float,
+              aperture_blades: int) -> np.ndarray:
+    h, w = hdr.shape[:2]
+    out = np.zeros_like(hdr)
+    n = 12
+    for y in range(h):
+        for x in range(w):
+            center_depth = float(depth[y, x])
+            coc = camera_coc_px(center_depth, w, h, focus_depth, f_number, dof_strength)
+            if coc <= 0.35:
+                out[y, x] = hdr[y, x]
+                continue
+            acc = hdr[y, x] * 0.35
+            wsum = 0.35
+            for i in range(n):
+                ax, ay = aperture_sample(i, n, aperture_blades)
+                sx = x + ax * coc
+                sy = y + ay * coc
+                sample_depth = bilinear_depth(depth, sx, sy)
+                weight = dof_depth_weight(center_depth, sample_depth)
+                acc += weight * bilinear_rgb(hdr, sx, sy)
+                wsum += weight
+            out[y, x] = acc / max(wsum, 1e-6)
+    return np.maximum(out, 0.0)
+
+
+def render_scene_transparent_layers(width: int,
+                                    height: int,
+                                    spp: int,
+                                    focus_depth: float,
+                                    bokeh_targets: bool,
+                                    color_chart: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    scene = Scene(bokeh_targets=bokeh_targets, color_chart=color_chart)
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    front = np.zeros((height, width, 3), dtype=np.float32)
+    back = np.zeros((height, width, 3), dtype=np.float32)
+    front_depth = np.full((height, width), focus_depth, dtype=np.float32)
+    back_depth = np.full((height, width), focus_depth, dtype=np.float32)
+    grid = [(0.5, 0.5)] if spp <= 1 else [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+    for y in range(height):
+        for x in range(width):
+            fc = np.zeros(3, dtype=np.float32)
+            bc = np.zeros(3, dtype=np.float32)
+            fd: List[float] = []
+            bd: List[float] = []
+            for ox, oy in grid:
+                px = ((x + ox) / width * 2.0 - 1.0) * aspect * scale
+                py = (1.0 - (y + oy) / height * 2.0) * scale
+                rd = normalize(forward + px * right + py * up)
+                f_col, f_dep, b_col, b_dep = trace_front_back_layers(scene, cam_pos, rd, focus_depth)
+                fc += f_col
+                bc += b_col
+                fd.append(f_dep)
+                bd.append(b_dep)
+            front[y, x] = fc / len(grid)
+            back[y, x] = bc / len(grid)
+            front_depth[y, x] = min(fd)
+            back_depth[y, x] = min(bd)
+    return front, front_depth, back, back_depth
+
+
+def render_scene(width: int,
+                 height: int,
+                 spp: int,
+                 focus_depth: float,
+                 bokeh_targets: bool,
+                 color_chart: bool,
+                 depth_mode: str) -> Tuple[np.ndarray, np.ndarray]:
+    scene = Scene(bokeh_targets=bokeh_targets, color_chart=color_chart)
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    img = np.zeros((height, width, 3), dtype=np.float32)
+    depth = np.full((height, width), focus_depth, dtype=np.float32)
+    grid = [(0.5, 0.5)] if spp <= 1 else [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+    for y in range(height):
+        for x in range(width):
+            col = np.zeros(3, dtype=np.float32)
+            dep_samples: List[float] = []
+            for ox, oy in grid:
+                px = ((x + ox) / width * 2.0 - 1.0) * aspect * scale
+                py = (1.0 - (y + oy) / height * 2.0) * scale
+                rd = normalize(forward + px * right + py * up)
+                col += trace(scene, cam_pos, rd)
+                dep_samples.append(primary_depth(scene, cam_pos, rd, focus_depth))
+            img[y, x] = col / len(grid)
+            if depth_mode == "min":
+                # A single depth cannot represent mixed foreground/background
+                # radiance.  Min-depth is a foreground-aware approximation that
+                # is usually less wrong for compose-stage DOF silhouettes than
+                # averaging samples across an object edge.
+                depth[y, x] = min(dep_samples)
+            elif depth_mode == "max":
+                depth[y, x] = max(dep_samples)
+            else:
+                depth[y, x] = float(sum(dep_samples) / len(dep_samples))
+    return img, depth
+
+
+def aperture_sample(i: int, n: int, blades: int) -> Tuple[float, float]:
+    u = (i + 0.5) / max(n, 1)
+    theta = i * 2.399963229728653
+    r = math.sqrt(u)
+    if blades >= 3:
+        sector = 2.0 * math.pi / blades
+        local = ((theta + 0.5 * sector) % sector) - 0.5 * sector
+        edge = math.cos(0.5 * sector) / max(math.cos(local), 1e-4)
+        r *= min(max(edge, 0.0), 1.0)
+    return r * math.cos(theta), r * math.sin(theta)
+
+
+def render_scene_thin_lens_reference(width: int,
+                                     height: int,
+                                     lens_spp: int,
+                                     focus_depth: float,
+                                     f_number: float,
+                                     dof_strength: float,
+                                     aperture_blades: int,
+                                     bokeh_targets: bool,
+                                     color_chart: bool) -> np.ndarray:
+    """Slow CPU reference: integrate camera rays over a finite aperture.
+
+    This is not used as a source model. It is a validation target for the Metal
+    compose-stage DOF approximation: physically, a focused pixel gathers rays
+    from different points on the aperture that converge on the same focus plane.
+    """
+    scene = Scene(bokeh_targets=bokeh_targets, color_chart=color_chart)
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    img = np.zeros((height, width, 3), dtype=np.float32)
+    aperture_radius = 0.09 * max(dof_strength, 0.0) / max(f_number, 0.7)
+    samples = max(lens_spp, 1)
+    for y in range(height):
+        for x in range(width):
+            px = ((x + 0.5) / width * 2.0 - 1.0) * aspect * scale
+            py = (1.0 - (y + 0.5) / height * 2.0) * scale
+            rd_center = normalize(forward + px * right + py * up)
+            t_focus = focus_depth / max(float(np.dot(rd_center, forward)), 1e-4)
+            focus_point = cam_pos + rd_center * t_focus
+            col = np.zeros(3, dtype=np.float32)
+            for i in range(samples):
+                ax, ay = aperture_sample(i, samples, aperture_blades)
+                ro = cam_pos + aperture_radius * (ax * right + ay * up)
+                rd = normalize(focus_point - ro)
+                col += trace(scene, ro.astype(np.float32), rd.astype(np.float32))
+            img[y, x] = col / samples
+    return img
+
+
+def auto_exposure(hdr: np.ndarray, target: float = 0.82) -> float:
+    y = luminance(hdr)
+    active = y[y > 1e-6]
+    if active.size == 0:
+        return 1.0
+    p995 = float(np.percentile(active, 99.5))
+    p50 = float(np.percentile(active, 50.0))
+    exp_hi = target / max(p995, 1e-6)
+    exp_mid = 0.18 / max(p50, 1e-6)
+    return min(exp_mid, exp_hi * 4.0)
+
+
+def luminance(rgb: np.ndarray) -> np.ndarray:
+    return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+
+
+def load_linear32(path: Path, width: int, height: int) -> Tuple[np.ndarray, np.ndarray]:
+    rgba = np.fromfile(path, dtype=np.float32).reshape((height, width, 4))
+    rgba = np.flipud(rgba)
+    hdr = np.maximum(rgba[..., :3], 0.0)
+    depth = np.maximum(rgba[..., 3] - 2.0, 0.0)
+    return hdr, depth
+
+
+def tonemap(rgb: np.ndarray, exposure: float) -> np.ndarray:
+    x = np.maximum(rgb * exposure, 0.0)
+    # Smooth shoulder, close to a display-preview curve rather than a look grade.
+    return x / (1.0 + x)
+
+
+def gaussian_blur_rgb(rgb: np.ndarray, sigma: float) -> np.ndarray:
+    if sigma <= 0.0:
+        return rgb
+    radius = max(1, int(math.ceil(3.0 * sigma)))
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    k = np.exp(-0.5 * (x / sigma) ** 2)
+    k /= np.sum(k)
+    pad_x = np.pad(rgb, ((0, 0), (radius, radius), (0, 0)), mode="edge")
+    tmp = np.zeros_like(rgb)
+    for i, w in enumerate(k):
+        tmp += w * pad_x[:, i:i + rgb.shape[1], :]
+    pad_y = np.pad(tmp, ((radius, radius), (0, 0), (0, 0)), mode="edge")
+    out = np.zeros_like(rgb)
+    for i, w in enumerate(k):
+        out += w * pad_y[i:i + rgb.shape[0], :, :]
+    return out
+
+
+def bright_pass_glare(rgb: np.ndarray, threshold: float, sigma: float, strength: float) -> np.ndarray:
+    y = luminance(rgb)
+    gate = smoothstep(threshold, min(threshold + 0.18, 1.0), y)
+    bright = rgb * gate[..., None]
+    return gaussian_blur_rgb(bright, sigma) * strength
+
+
+def human_eye(rgb_tm: np.ndarray) -> np.ndarray:
+    out = np.clip(rgb_tm, 0.0, 1.0)
+    y = luminance(out)
+    n = 0.70
+    sigma = 0.30
+    y_n = np.power(np.maximum(y, 0.0), n)
+    s_n = sigma ** n
+    white_resp = 1.0 / max(1.0 + s_n, 1e-6)
+    receptor_y = (y_n / np.maximum(y_n + s_n, 1e-6)) / white_resp
+    adapt = 0.42 * smoothstep(0.004, 0.42, y) * (1.0 - 0.40 * smoothstep(0.76, 1.0, y))
+    y_adapt = (1.0 - adapt) * y + adapt * np.clip(receptor_y, 0.0, 1.0)
+    out = out * (y_adapt[..., None] / np.maximum(y[..., None], 1e-6))
+    y = luminance(out)
+    photopic = smoothstep(0.022, 0.210, y)
+    y_scotopic = out[..., 0] * 0.050 + out[..., 1] * 0.730 + out[..., 2] * 0.220
+    rod = y_scotopic[..., None] * np.array([0.72, 0.98, 1.08], dtype=np.float32)
+    rod_y = luminance(rod)
+    rod *= (y[..., None] / np.maximum(rod_y[..., None], 1e-6)) * (1.0 + 0.16 * (1.0 - photopic[..., None]))
+    out = (1.0 - photopic[..., None]) * rod + photopic[..., None] * out
+    y = luminance(out)
+    bleach = smoothstep(0.54, 0.96, y)
+    hunt = (1.0 - smoothstep(0.06, 0.42, y)) * 0.82 + smoothstep(0.06, 0.42, y) * 1.08
+    saturation = ((1.0 - photopic) * 0.08 + photopic * 1.00) * hunt * ((1.0 - bleach) + bleach * 0.42)
+    out = (1.0 - saturation[..., None]) * y[..., None] + saturation[..., None] * out
+    media = smoothstep(0.10, 0.95, y)
+    mesopic_blue = 1.0 - photopic
+    out *= (1.0 - 0.12 * mesopic_blue[..., None]) + 0.12 * mesopic_blue[..., None] * np.array([0.955, 1.010, 1.085], dtype=np.float32)
+    out *= (1.0 - 0.24 * media[..., None]) + 0.24 * media[..., None] * np.array([1.040, 1.000, 0.875], dtype=np.float32)
+    y2 = luminance(out)
+    out = (1.0 - 0.38 * bleach[..., None]) * out + (0.38 * bleach[..., None]) * y2[..., None]
+    # Ocular media scatter: broad, low-strength bright-pass veil.  This is an
+    # observer effect and does not alter scene radiance or object geometry.
+    out = out + bright_pass_glare(out, threshold=0.33, sigma=3.8, strength=0.055)
+    return np.clip(out, 0.0, 1.0)
+
+
+def smoothstep(a: float, b: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - a) / max(b - a, 1e-8), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def cinema(rgb_tm: np.ndarray) -> np.ndarray:
+    out = np.clip(rgb_tm, 0.0, 1.0)
+    y = luminance(out)
+    # Restrained camera response: finite full-well shoulder, mild toe,
+    # vignetting, PSF/glare, and deterministic sensor noise. These are sensor
+    # effects, not source morphology edits.
+    toe = smoothstep(0.00, 0.20, y)
+    out = (1.0 - toe[..., None]) * (out * 0.78) + toe[..., None] * out
+    shoulder = smoothstep(0.58, 0.98, y)
+    well = 1.15 * (1.0 - np.exp(-out / 1.15))
+    out = (1.0 - 0.55 * shoulder[..., None]) * out + (0.55 * shoulder[..., None]) * well
+    mat = np.array([[1.030, 0.012, -0.010], [0.006, 1.000, 0.004], [-0.006, 0.018, 0.975]], dtype=np.float32)
+    out = np.einsum("...c,dc->...d", out, mat)
+    y = luminance(out)
+    out = y[..., None] + 1.055 * (out - y[..., None])
+    yy, xx = np.mgrid[0:out.shape[0], 0:out.shape[1]]
+    uvx = (xx + 0.5) / out.shape[1] - 0.5
+    uvy = (yy + 0.5) / out.shape[0] - 0.5
+    uvx *= out.shape[1] / max(out.shape[0], 1)
+    r2 = uvx * uvx + uvy * uvy
+    vignette = np.clip(1.0 - 0.42 * r2 - 0.08 * r2 * r2, 0.70, 1.0)
+    out *= vignette[..., None]
+    out = out + bright_pass_glare(out, threshold=0.30, sigma=1.7, strength=0.035)
+    # Deterministic read/shot noise so repeated validation is stable.
+    rng = np.random.default_rng(12345)
+    y = luminance(out)
+    sigma = 0.0022 + 0.0065 * np.sqrt(np.maximum(y, 0.0))
+    common = rng.normal(0.0, 1.0, size=y.shape).astype(np.float32)
+    chroma = rng.normal(0.0, 1.0, size=out.shape).astype(np.float32)
+    out += sigma[..., None] * (0.65 * common[..., None] + 0.35 * chroma)
+    return np.clip(out, 0.0, 1.0)
+
+
+def save_png(path: Path, rgb: np.ndarray) -> None:
+    arr = np.clip(rgb, 0.0, 1.0)
+    Image.fromarray((arr * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(path)
+
+
+def image_stats(rgb: np.ndarray) -> Dict[str, float]:
+    y = luminance(rgb)
+    gy, gx = np.gradient(y)
+    grad = np.sqrt(gx * gx + gy * gy)
+    mx = np.max(rgb, axis=-1)
+    mn = np.min(rgb, axis=-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    blue_green_bias = rgb[..., 2] + 0.5 * rgb[..., 1] - 1.5 * rgb[..., 0]
+    return {
+        "mean_luma": float(y.mean()),
+        "p50_luma": float(np.percentile(y, 50.0)),
+        "p90_luma": float(np.percentile(y, 90.0)),
+        "p99_luma": float(np.percentile(y, 99.0)),
+        "sat_fraction": float(np.mean(np.max(rgb, axis=-1) > 0.995)),
+        "grad_p95": float(np.percentile(grad, 95.0)),
+        "local_contrast": float(np.std(y) / max(float(np.mean(y)), 1e-8)),
+        "mean_saturation": float(np.mean(sat)),
+        "p90_saturation": float(np.percentile(sat, 90.0)),
+        "mean_blue_green_bias": float(np.mean(blue_green_bias)),
+    }
+
+
+def glass_roi_mask(width: int, height: int) -> np.ndarray:
+    cam_pos = np.array([0.0, 0.40, 3.20], dtype=np.float32)
+    target = np.array([0.05, -0.08, -1.50], dtype=np.float32)
+    center = np.array([0.35, -0.50, -1.45], dtype=np.float32)
+    radius = 0.50
+    forward = normalize(target - cam_pos)
+    right = normalize(np.cross(forward, np.array([0, 1, 0], dtype=np.float32)))
+    up = normalize(np.cross(right, forward))
+    v = center - cam_pos
+    z = max(float(np.dot(v, forward)), 1e-5)
+    fov = math.radians(58.0)
+    scale = math.tan(fov * 0.5)
+    aspect = width / height
+    ndc_x = float(np.dot(v, right)) / (z * aspect * scale)
+    ndc_y = float(np.dot(v, up)) / (z * scale)
+    cx = (ndc_x * 0.5 + 0.5) * width
+    cy = (0.5 - ndc_y * 0.5) * height
+    rx = max(3.0, 0.5 * width * (radius / z) / (aspect * scale) * 1.25)
+    ry = max(3.0, 0.5 * height * (radius / z) / scale * 1.25)
+    yy, xx = np.mgrid[0:height, 0:width]
+    return (((xx + 0.5 - cx) / rx) ** 2 + ((yy + 0.5 - cy) / ry) ** 2) <= 1.0
+
+
+def center_roi_mask(width: int, height: int, radius: float) -> np.ndarray:
+    yy, xx = np.mgrid[0:height, 0:width]
+    cx = 0.5 * width
+    cy = 0.5 * height
+    r = max(min(width, height) * radius, 1.0)
+    return ((xx + 0.5 - cx) ** 2 + (yy + 0.5 - cy) ** 2) <= r * r
+
+
+def brightest_roi_mask(hdr: np.ndarray, percentile: float) -> np.ndarray:
+    y = luminance(hdr)
+    active = y[y > 1e-8]
+    if active.size == 0:
+        return np.ones(y.shape, dtype=bool)
+    t = float(np.percentile(active, percentile))
+    mask = y >= t
+    return mask if np.any(mask) else np.ones(y.shape, dtype=bool)
+
+
+def weighted_depth_percentile(depth: np.ndarray,
+                              weights: np.ndarray,
+                              percentile: float) -> Optional[float]:
+    valid = np.isfinite(depth) & np.isfinite(weights) & (depth > 1e-5) & (weights > 1e-8)
+    if not np.any(valid):
+        return None
+    d = depth[valid].astype(np.float64)
+    w = weights[valid].astype(np.float64)
+    order = np.argsort(d)
+    d = d[order]
+    w = w[order]
+    cdf = np.cumsum(w)
+    total = float(cdf[-1])
+    if total <= 1e-12:
+        return None
+    target = max(0.0, min(100.0, percentile)) / 100.0 * total
+    idx = int(np.searchsorted(cdf, target, side="left"))
+    idx = min(max(idx, 0), d.size - 1)
+    return float(d[idx])
+
+
+def resolve_autofocus_depth(hdr: np.ndarray,
+                            depth: np.ndarray,
+                            mode: str,
+                            fallback: float,
+                            center_radius: float,
+                            bright_percentile: float) -> Tuple[float, Dict[str, object]]:
+    if mode == "off":
+        return fallback, {"mode": "off", "resolved_focus_depth": fallback, "source": "manual"}
+    if mode == "center":
+        mask = center_roi_mask(depth.shape[1], depth.shape[0], center_radius)
+    elif mode == "glass":
+        mask = glass_roi_mask(depth.shape[1], depth.shape[0])
+    elif mode == "brightest":
+        mask = brightest_roi_mask(hdr, bright_percentile)
+    else:
+        raise ValueError(f"unknown autofocus mode: {mode}")
+
+    y = luminance(hdr)
+    gy, gx = np.gradient(y)
+    contrast = np.sqrt(gx * gx + gy * gy)
+    weights = np.where(mask, 0.25 + y + 2.0 * contrast, 0.0)
+    focus = weighted_depth_percentile(depth, weights, 50.0)
+    valid = mask & np.isfinite(depth) & (depth > 1e-5)
+    if focus is None:
+        return fallback, {
+            "mode": mode,
+            "resolved_focus_depth": fallback,
+            "source": "manual_fallback",
+            "reason": "no_valid_depth_in_af_window",
+            "roi_coverage": float(np.mean(mask)),
+        }
+    stats_depth = depth[valid]
+    info: Dict[str, object] = {
+        "mode": mode,
+        "resolved_focus_depth": focus,
+        "source": "depth_proxy_weighted_median",
+        "manual_focus_depth": fallback,
+        "roi_coverage": float(np.mean(mask)),
+        "valid_depth_fraction": float(np.mean(valid)),
+        "roi_depth_p10": float(np.percentile(stats_depth, 10.0)) if stats_depth.size else None,
+        "roi_depth_p50": float(np.percentile(stats_depth, 50.0)) if stats_depth.size else None,
+        "roi_depth_p90": float(np.percentile(stats_depth, 90.0)) if stats_depth.size else None,
+    }
+    return focus, info
+
+
+def masked_image_stats(rgb: np.ndarray, mask: np.ndarray) -> Dict[str, float]:
+    if not np.any(mask):
+        return {}
+    y = luminance(rgb)
+    gy, gx = np.gradient(y)
+    grad = np.sqrt(gx * gx + gy * gy)
+    roi = rgb[mask]
+    roi_y = y[mask]
+    roi_grad = grad[mask]
+    mx = np.max(roi, axis=-1)
+    mn = np.min(roi, axis=-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    return {
+        "coverage": float(np.mean(mask)),
+        "mean_luma": float(np.mean(roi_y)),
+        "p50_luma": float(np.percentile(roi_y, 50.0)),
+        "p90_luma": float(np.percentile(roi_y, 90.0)),
+        "grad_p95": float(np.percentile(roi_grad, 95.0)),
+        "local_contrast": float(np.std(roi_y) / max(float(np.mean(roi_y)), 1e-8)),
+        "mean_saturation": float(np.mean(sat)),
+    }
+
+
+def masked_mae(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(np.abs(a[mask] - b[mask])))
+
+
+def masked_luma_corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return corr(luminance(a)[mask], luminance(b)[mask])
+
+
+def mask_bbox(mask: np.ndarray, pad: int = 4) -> Tuple[int, int, int, int]:
+    ys, xs = np.where(mask)
+    if xs.size == 0 or ys.size == 0:
+        return 0, 0, mask.shape[1], mask.shape[0]
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad + 1, mask.shape[1])
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + pad + 1, mask.shape[0])
+    return x0, y0, x1, y1
+
+
+def save_roi_sheet(items: List[Tuple[str, Path]], mask: np.ndarray, out_path: Path, scale: int = 4) -> None:
+    x0, y0, x1, y1 = mask_bbox(mask)
+    crops = []
+    for label, path in items:
+        im = Image.open(path).convert("RGB").crop((x0, y0, x1, y1))
+        im = im.resize((im.width * scale, im.height * scale), RESAMPLE_BICUBIC)
+        crops.append((label, im))
+    if not crops:
+        return
+    w, h = crops[0][1].size
+    label_h = 24
+    sheet = Image.new("RGB", (len(crops) * w, h + label_h), (10, 10, 10))
+    draw = ImageDraw.Draw(sheet)
+    for i, (label, im) in enumerate(crops):
+        x = i * w
+        draw.rectangle([x, 0, x + w, label_h], fill=(18, 18, 18))
+        draw.text((x + 6, 6), label, fill=(235, 235, 235))
+        sheet.paste(im, (x, label_h))
+    sheet.save(out_path)
+
+
+def save_roi_error_heatmap(reference: np.ndarray,
+                           candidate: np.ndarray,
+                           mask: np.ndarray,
+                           out_path: Path,
+                           scale: int = 4) -> None:
+    x0, y0, x1, y1 = mask_bbox(mask)
+    err = np.mean(np.abs(reference[y0:y1, x0:x1] - candidate[y0:y1, x0:x1]), axis=-1)
+    roi_mask = mask[y0:y1, x0:x1]
+    active = err[roi_mask]
+    norm = float(np.percentile(active, 99.0)) if active.size else float(np.percentile(err, 99.0))
+    heat = np.clip(err / max(norm, 1e-6), 0.0, 1.0)
+    rgb = np.zeros((heat.shape[0], heat.shape[1], 3), dtype=np.float32)
+    rgb[..., 0] = heat
+    rgb[..., 1] = np.clip(1.4 * heat - 0.25, 0.0, 1.0)
+    rgb[..., 2] = np.clip(1.0 - 1.6 * heat, 0.0, 1.0) * 0.25
+    rgb[~roi_mask] *= 0.22
+    im = Image.fromarray((np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+    im = im.resize((im.width * scale, im.height * scale), RESAMPLE_NEAREST)
+    im.save(out_path)
+
+
+def corr(a: np.ndarray, b: np.ndarray) -> float:
+    aa = a.astype(np.float64).reshape(-1)
+    bb = b.astype(np.float64).reshape(-1)
+    aa -= aa.mean()
+    bb -= bb.mean()
+    denom = math.sqrt(float(np.dot(aa, aa) * np.dot(bb, bb)))
+    return 0.0 if denom < 1e-12 else float(np.dot(aa, bb) / denom)
+
+
+def add_validation_gate(results: List[Dict[str, object]],
+                        failures: List[str],
+                        name: str,
+                        value: Optional[float],
+                        threshold: Optional[float],
+                        mode: str) -> None:
+    if threshold is None:
+        return
+    if value is None:
+        result = {
+            "name": name,
+            "mode": mode,
+            "threshold": threshold,
+            "value": None,
+            "passed": False,
+            "reason": "metric_missing",
+        }
+        results.append(result)
+        failures.append(f"{name}: metric missing")
+        return
+    if mode == "max":
+        passed = value <= threshold
+        relation = "<="
+    elif mode == "min":
+        passed = value >= threshold
+        relation = ">="
+    else:
+        raise ValueError(f"unknown gate mode: {mode}")
+    result = {
+        "name": name,
+        "mode": mode,
+        "threshold": threshold,
+        "value": value,
+        "passed": passed,
+    }
+    results.append(result)
+    if not passed:
+        failures.append(f"{name}: {value:.6g} not {relation} {threshold:.6g}")
+
+
+def make_sheet(items: List[Tuple[str, Path]], out_path: Path) -> None:
+    imgs = [(label, Image.open(path).convert("RGB")) for label, path in items]
+    w, h = imgs[0][1].size
+    label_h = 26
+    sheet = Image.new("RGB", (len(imgs) * w, h + label_h), (10, 10, 10))
+    draw = ImageDraw.Draw(sheet)
+    for i, (label, im) in enumerate(imgs):
+        x = i * w
+        draw.rectangle([x, 0, x + w, label_h], fill=(18, 18, 18))
+        draw.text((x + 8, 6), label, fill=(235, 235, 235))
+        sheet.paste(im, (x, label_h))
+    sheet.save(out_path)
+
+
+def write_linear32(path: Path, hdr: np.ndarray, depth: np.ndarray) -> None:
+    rgba = np.zeros((hdr.shape[0], hdr.shape[1], 4), dtype=np.float32)
+    # Metal compose flips source Y because renderer intermediates are stored in
+    # trace-space order. Store bottom-up so the presentation output is upright.
+    rgba[..., :3] = np.flipud(np.maximum(hdr, 0.0))
+    # w > 1.25 is the compose sentinel for "final linear radiance". w=2+depth
+    # additionally gives cinema mode a source-depth proxy for depth of field.
+    # Existing alpha=2 files remain valid and are treated as focused/unknown.
+    rgba[..., 3] = 2.0 + np.flipud(np.maximum(depth, 0.0))
+    path.write_bytes(rgba.tobytes(order="C"))
+
+
+def run_gpu_room_rt(hdr_path: Path,
+                    width: int,
+                    height: int,
+                    spp: int,
+                    aperture_spp: int,
+                    focus_depth: float,
+                    f_number: float,
+                    dof_strength: float,
+                    aperture_blades: int,
+                    bokeh_targets: bool,
+                    color_chart: bool) -> None:
+    cmd = [
+        "swift", str(GPU_ROOM_RT),
+        "--out", str(hdr_path),
+        "--width", str(width),
+        "--height", str(height),
+        "--spp", str(spp),
+        "--aperture-spp", str(aperture_spp),
+        "--focus-depth", str(focus_depth),
+        "--f-number", str(f_number),
+        "--dof-strength", str(dof_strength),
+        "--aperture-blades", str(aperture_blades),
+    ]
+    if bokeh_targets:
+        cmd.append("--bokeh-targets")
+    if color_chart:
+        cmd.append("--color-chart")
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, cwd=str(ROOT), check=True)
+
+
+def run_metal_compose(hdr_path: Path,
+                      out_path: Path,
+                      width: int,
+                      height: int,
+                      presentation: str,
+                      focus_depth: float,
+                      f_number: float,
+                      dof_strength: float,
+                      aperture_blades: int,
+                      exposure: float,
+                      no_build: bool) -> None:
+    cmd = [
+        "bash", str(RUN_PIPELINE),
+        "--compose-hdr-in", str(hdr_path),
+        "--width", str(width),
+        "--height", str(height),
+        "--presentation", presentation,
+        "--output", str(out_path),
+    ]
+    if exposure > 0.0:
+        cmd += ["--exposure", str(exposure)]
+    if presentation == "scientific":
+        cmd += ["--look", "linear"]
+    if presentation == "cinema":
+        cmd += [
+            "--camera-focus-depth", str(focus_depth),
+            "--camera-f-number", str(f_number),
+            "--camera-dof-strength", str(dof_strength),
+            "--camera-aperture-blades", str(aperture_blades),
+        ]
+    if no_build:
+        cmd.append("--no-build")
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, cwd=str(ROOT), check=True)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out-dir", default="/private/tmp/bh_eye_rt_validation")
+    ap.add_argument("--width", type=int, default=420)
+    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--spp", type=int, default=1)
+    ap.add_argument("--exposure", type=float, default=-1.0, help="negative means auto")
+    ap.add_argument("--focus-depth", type=float, default=4.35)
+    ap.add_argument(
+        "--autofocus-mode",
+        choices=("off", "center", "glass", "brightest"),
+        default="off",
+        help="resolve focus depth from the HDR depth proxy before camera presentation",
+    )
+    ap.add_argument(
+        "--autofocus-center-radius",
+        type=float,
+        default=0.18,
+        help="center autofocus window radius as a fraction of the shorter image dimension",
+    )
+    ap.add_argument(
+        "--autofocus-bright-percentile",
+        type=float,
+        default=98.0,
+        help="luminance percentile used by --autofocus-mode brightest",
+    )
+    ap.add_argument("--f-number", type=float, default=2.4)
+    ap.add_argument("--dof-strength", type=float, default=1.35)
+    ap.add_argument("--aperture-blades", type=int, default=7)
+    ap.add_argument("--lens-reference-spp", type=int, default=0, help="optional slow CPU aperture-sampled reference")
+    ap.add_argument(
+        "--transparent-dof-reference",
+        action="store_true",
+        help="write a CPU multi-layer transparent DOF reference for the glass sphere",
+    )
+    ap.add_argument("--gpu-room-rt", action="store_true", help="generate the room HDR on the GPU instead of the Python CPU tracer")
+    ap.add_argument(
+        "--depth-mode",
+        choices=("min", "mean", "max"),
+        default="min",
+        help="single-layer depth proxy written to HDR alpha; min is foreground-aware for DOF validation",
+    )
+    ap.add_argument("--bokeh-targets", action="store_true", help="add small bright depth targets to reveal aperture bokeh shape")
+    ap.add_argument("--color-chart", action="store_true", help="add diffuse RGB/CMY wall patches for eye/chroma validation")
+    ap.add_argument("--python-presentation", action="store_true", help="use the local Python presentation approximation instead of Metal compose")
+    ap.add_argument("--rebuild-each-render", action="store_true", help="do not add --no-build after the first Metal compose")
+    ap.add_argument(
+        "--max-glass-roi-mae-vs-transparent-dof",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI RGB MAE exceeds the multi-layer transparent DOF reference",
+    )
+    ap.add_argument(
+        "--min-glass-roi-corr-vs-transparent-dof",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI luma correlation is below the multi-layer transparent DOF reference",
+    )
+    ap.add_argument(
+        "--max-glass-roi-mae-vs-thin-lens",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI RGB MAE exceeds the stochastic thin-lens reference",
+    )
+    ap.add_argument(
+        "--min-glass-roi-corr-vs-thin-lens",
+        type=float,
+        default=None,
+        help="fail if cinema glass ROI luma correlation is below the stochastic thin-lens reference",
+    )
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    hdr_path = out_dir / "rt_room.linear32f32"
+    if args.gpu_room_rt:
+        run_gpu_room_rt(
+            hdr_path,
+            args.width,
+            args.height,
+            args.spp,
+            0,
+            args.focus_depth,
+            args.f_number,
+            args.dof_strength,
+            args.aperture_blades,
+            args.bokeh_targets,
+            args.color_chart,
+        )
+        hdr, depth = load_linear32(hdr_path, args.width, args.height)
+    else:
+        hdr, depth = render_scene(
+            args.width,
+            args.height,
+            args.spp,
+            args.focus_depth,
+            args.bokeh_targets,
+            args.color_chart,
+            args.depth_mode,
+        )
+        write_linear32(hdr_path, hdr, depth)
+    resolved_focus_depth, autofocus_info = resolve_autofocus_depth(
+        hdr,
+        depth,
+        args.autofocus_mode,
+        args.focus_depth,
+        args.autofocus_center_radius,
+        args.autofocus_bright_percentile,
+    )
+    paths = {
+        "scientific": out_dir / "rt_room_scientific.png",
+        "eye": out_dir / "rt_room_eye.png",
+        "cinema": out_dir / "rt_room_cinema.png",
+    }
+    lens_reference_path: Optional[Path] = None
+    transparent_dof_path: Optional[Path] = None
+    if args.python_presentation:
+        exposure = auto_exposure(hdr) if args.exposure < 0.0 else args.exposure
+        sci = tonemap(hdr, exposure)
+        eye = human_eye(sci)
+        cine = cinema(sci)
+        save_png(paths["scientific"], sci)
+        save_png(paths["eye"], eye)
+        save_png(paths["cinema"], cine)
+        presentation_backend = "python-approx"
+    else:
+        exposure = args.exposure
+        first = True
+        for mode in ("scientific", "eye", "cinema"):
+            run_metal_compose(
+                hdr_path,
+                paths[mode],
+                args.width,
+                args.height,
+                mode,
+                resolved_focus_depth,
+                args.f_number,
+                args.dof_strength,
+                args.aperture_blades,
+                args.exposure,
+                no_build=(not first and not args.rebuild_each_render),
+            )
+            first = False
+        if args.lens_reference_spp > 0:
+            lens_hdr_path = out_dir / "rt_room_thin_lens_reference.linear32f32"
+            if args.gpu_room_rt:
+                run_gpu_room_rt(
+                    lens_hdr_path,
+                    args.width,
+                    args.height,
+                    args.spp,
+                    args.lens_reference_spp,
+                    resolved_focus_depth,
+                    args.f_number,
+                    args.dof_strength,
+                    args.aperture_blades,
+                    args.bokeh_targets,
+                    args.color_chart,
+                )
+            else:
+                lens_hdr = render_scene_thin_lens_reference(
+                    args.width,
+                    args.height,
+                    args.lens_reference_spp,
+                    resolved_focus_depth,
+                    args.f_number,
+                    args.dof_strength,
+                    args.aperture_blades,
+                    args.bokeh_targets,
+                    args.color_chart,
+                )
+                write_linear32(lens_hdr_path, lens_hdr, np.full((args.height, args.width), resolved_focus_depth, dtype=np.float32))
+            lens_reference_path = out_dir / "rt_room_thin_lens_reference_cinema.png"
+            run_metal_compose(
+                lens_hdr_path,
+                lens_reference_path,
+                args.width,
+                args.height,
+                "cinema",
+                resolved_focus_depth,
+                args.f_number,
+                0.0,
+                args.aperture_blades,
+                args.exposure,
+                no_build=True,
+            )
+        if args.transparent_dof_reference:
+            front, front_depth, back, back_depth = render_scene_transparent_layers(
+                args.width,
+                args.height,
+                args.spp,
+                resolved_focus_depth,
+                args.bokeh_targets,
+                args.color_chart,
+            )
+            front_path = out_dir / "rt_room_transparent_front_layer.linear32f32"
+            back_path = out_dir / "rt_room_transparent_back_layer.linear32f32"
+            layered_hdr_path = out_dir / "rt_room_transparent_multilayer_dof.linear32f32"
+            write_linear32(front_path, front, front_depth)
+            write_linear32(back_path, back, back_depth)
+            layered_hdr = layer_dof(front, front_depth, resolved_focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            layered_hdr += layer_dof(back, back_depth, resolved_focus_depth, args.f_number, args.dof_strength, args.aperture_blades)
+            write_linear32(layered_hdr_path, layered_hdr, np.full((args.height, args.width), resolved_focus_depth, dtype=np.float32))
+            transparent_dof_path = out_dir / "rt_room_transparent_multilayer_dof_cinema.png"
+            run_metal_compose(
+                layered_hdr_path,
+                transparent_dof_path,
+                args.width,
+                args.height,
+                "cinema",
+                resolved_focus_depth,
+                args.f_number,
+                0.0,
+                args.aperture_blades,
+                args.exposure,
+                no_build=True,
+            )
+        presentation_backend = "metal-compose"
+
+    sheet = out_dir / "rt_room_presentation_sheet.png"
+    sheet_items = [("scientific", paths["scientific"]), ("eye", paths["eye"]), ("cinema", paths["cinema"])]
+    if lens_reference_path is not None:
+        sheet_items.append(("thin-lens ref", lens_reference_path))
+    if transparent_dof_path is not None:
+        sheet_items.append(("multi-layer DOF", transparent_dof_path))
+    make_sheet(sheet_items, sheet)
+
+    sci = np.asarray(Image.open(paths["scientific"]).convert("RGB"), dtype=np.float32) / 255.0
+    eye = np.asarray(Image.open(paths["eye"]).convert("RGB"), dtype=np.float32) / 255.0
+    cine = np.asarray(Image.open(paths["cinema"]).convert("RGB"), dtype=np.float32) / 255.0
+    sci_y = luminance(sci)
+    glass_mask = glass_roi_mask(args.width, args.height)
+    roi_sheet = out_dir / "rt_room_glass_roi_sheet.png"
+    roi_items = [("scientific", paths["scientific"]), ("eye", paths["eye"]), ("cinema", paths["cinema"])]
+    if lens_reference_path is not None:
+        roi_items.append(("thin-lens ref", lens_reference_path))
+    if transparent_dof_path is not None:
+        roi_items.append(("multi-layer DOF", transparent_dof_path))
+    save_roi_sheet(roi_items, glass_mask, roi_sheet)
+    metrics = {
+        "scene": "room_area_light_metal_glass_plastic",
+        "presentation_backend": presentation_backend,
+        "room_rt_backend": "gpu-metal" if args.gpu_room_rt else "python-cpu",
+        "width": args.width,
+        "height": args.height,
+        "spp": args.spp,
+        "exposure": exposure,
+        "focus_depth": resolved_focus_depth,
+        "manual_focus_depth": args.focus_depth,
+        "autofocus": autofocus_info,
+        "depth_mode": args.depth_mode,
+        "f_number": args.f_number,
+        "dof_strength": args.dof_strength,
+        "aperture_blades": args.aperture_blades,
+        "lens_reference_spp": args.lens_reference_spp,
+        "transparent_dof_reference": args.transparent_dof_reference,
+        "bokeh_targets": args.bokeh_targets,
+        "color_chart": args.color_chart,
+        "scientific": image_stats(sci),
+        "eye": image_stats(eye),
+        "cinema": image_stats(cine),
+        "glass_roi": {
+            "scientific": masked_image_stats(sci, glass_mask),
+            "eye": masked_image_stats(eye, glass_mask),
+            "cinema": masked_image_stats(cine, glass_mask),
+            "eye_luma_corr_vs_scientific": masked_luma_corr(eye, sci, glass_mask),
+            "cinema_luma_corr_vs_scientific": masked_luma_corr(cine, sci, glass_mask),
+            "eye_rgb_mae_vs_scientific": masked_mae(eye, sci, glass_mask),
+            "cinema_rgb_mae_vs_scientific": masked_mae(cine, sci, glass_mask),
+        },
+        "eye_luma_corr_vs_scientific": corr(sci_y, luminance(eye)),
+        "cinema_luma_corr_vs_scientific": corr(sci_y, luminance(cine)),
+        "eye_rgb_mae_vs_scientific": float(np.mean(np.abs(eye - sci))),
+        "cinema_rgb_mae_vs_scientific": float(np.mean(np.abs(cine - sci))),
+        "outputs": {k: str(v) for k, v in paths.items()} | {
+            "sheet": str(sheet),
+            "glass_roi_sheet": str(roi_sheet),
+            "hdr_input": str(hdr_path),
+        },
+    }
+    if lens_reference_path is not None:
+        ref = np.asarray(Image.open(lens_reference_path).convert("RGB"), dtype=np.float32) / 255.0
+        lens_error_path = out_dir / "rt_room_glass_roi_error_vs_thin_lens.png"
+        save_roi_error_heatmap(ref, cine, glass_mask, lens_error_path)
+        ref_y = luminance(ref)
+        cine_y = luminance(cine)
+        metrics["thin_lens_reference"] = image_stats(ref)
+        metrics["cinema_luma_corr_vs_thin_lens_reference"] = corr(cine_y, ref_y)
+        metrics["cinema_mae_vs_thin_lens_reference"] = float(np.mean(np.abs(cine - ref)))
+        metrics["glass_roi"]["thin_lens_reference"] = masked_image_stats(ref, glass_mask)
+        metrics["glass_roi"]["cinema_luma_corr_vs_thin_lens_reference"] = masked_luma_corr(cine, ref, glass_mask)
+        metrics["glass_roi"]["cinema_mae_vs_thin_lens_reference"] = masked_mae(cine, ref, glass_mask)
+        metrics["outputs"]["thin_lens_reference_cinema"] = str(lens_reference_path)
+        metrics["outputs"]["glass_roi_error_vs_thin_lens_reference"] = str(lens_error_path)
+    if transparent_dof_path is not None:
+        layered = np.asarray(Image.open(transparent_dof_path).convert("RGB"), dtype=np.float32) / 255.0
+        layered_error_path = out_dir / "rt_room_glass_roi_error_vs_transparent_multilayer_dof.png"
+        save_roi_error_heatmap(layered, cine, glass_mask, layered_error_path)
+        layered_y = luminance(layered)
+        cine_y = luminance(cine)
+        metrics["transparent_multilayer_dof"] = image_stats(layered)
+        metrics["cinema_luma_corr_vs_transparent_multilayer_dof"] = corr(cine_y, layered_y)
+        metrics["cinema_mae_vs_transparent_multilayer_dof"] = float(np.mean(np.abs(cine - layered)))
+        metrics["glass_roi"]["transparent_multilayer_dof"] = masked_image_stats(layered, glass_mask)
+        metrics["glass_roi"]["cinema_luma_corr_vs_transparent_multilayer_dof"] = masked_luma_corr(cine, layered, glass_mask)
+        metrics["glass_roi"]["cinema_mae_vs_transparent_multilayer_dof"] = masked_mae(cine, layered, glass_mask)
+        metrics["outputs"]["transparent_multilayer_dof_cinema"] = str(transparent_dof_path)
+        metrics["outputs"]["glass_roi_error_vs_transparent_multilayer_dof"] = str(layered_error_path)
+    validation_gates: List[Dict[str, object]] = []
+    validation_failures: List[str] = []
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_mae_vs_transparent_multilayer_dof",
+        metrics["glass_roi"].get("cinema_mae_vs_transparent_multilayer_dof"),
+        args.max_glass_roi_mae_vs_transparent_dof,
+        "max",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_luma_corr_vs_transparent_multilayer_dof",
+        metrics["glass_roi"].get("cinema_luma_corr_vs_transparent_multilayer_dof"),
+        args.min_glass_roi_corr_vs_transparent_dof,
+        "min",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_mae_vs_thin_lens_reference",
+        metrics["glass_roi"].get("cinema_mae_vs_thin_lens_reference"),
+        args.max_glass_roi_mae_vs_thin_lens,
+        "max",
+    )
+    add_validation_gate(
+        validation_gates,
+        validation_failures,
+        "glass_roi.cinema_luma_corr_vs_thin_lens_reference",
+        metrics["glass_roi"].get("cinema_luma_corr_vs_thin_lens_reference"),
+        args.min_glass_roi_corr_vs_thin_lens,
+        "min",
+    )
+    if validation_gates:
+        metrics["validation_gates"] = validation_gates
+        metrics["validation_passed"] = not validation_failures
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    (out_dir / "summary.md").write_text(
+        "# Everyday RT Presentation Validation\n\n"
+        "Scene: simple room with ceiling area light, metal sphere, glass sphere, plastic sphere.\n"
+        "This validates presentation behavior on familiar radiance before changing black-hole source physics.\n\n"
+        f"Sheet: `{sheet}`\n\n"
+        "```json\n" + json.dumps(metrics, indent=2, sort_keys=True) + "\n```\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(metrics, indent=2, sort_keys=True))
+    print(f"sheet={sheet}")
+    if validation_failures:
+        print("validation gate failures:", file=sys.stderr)
+        for failure in validation_failures:
+            print(f"- {failure}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main()
