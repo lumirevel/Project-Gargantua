@@ -25,6 +25,7 @@ TILE_SIZE_VALUE=""
 TILE_SIZE_EXPLICIT=0
 COLLISIONS_OUT_EXPLICIT=0
 METRIC_VALUE="schwarzschild"
+METRIC_EXPLICIT=0
 MAX_STEPS_VALUE=""
 KERR_SUBSTEPS_VALUE=""
 SPECTRAL_STEP_VALUE="5.0"
@@ -177,6 +178,7 @@ PRESENTATION_MODE_VALUE=""
 PRESENTATION_MODE_EXPLICIT=0
 SCIENCE_REGIME_VALUE=""
 SCIENCE_REGIME_SET=0
+LEGACY_BH_FINISH_GRMHD=0
 SOURCE_MODEL_VALUE=""
 SOURCE_MODEL_SET=0
 SOURCE_QUALITY_VALUE=""
@@ -647,7 +649,7 @@ apply_source_model_defaults() {
 require_experimental_for_hidden_source() {
   [[ "$SCIENCE_REGIME_SET" -eq 1 ]] || return 0
   case "$SCIENCE_REGIME_VALUE" in
-    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq)
+    canonical-visible-disk-v1|slim-disk-visible-v1|volumetric-visible-disk-v1|cinematic-physical-disk-v1|physics-constrained-cinematic-disk-v1|grmhd-surrogate-disk-v1|thin-disk-visible-reference|thin-visible-reference|visible-disk-reference|disk-visible-reference|thin-disk-visible-reference-hq|thin-visible-reference-hq|visible-disk-reference-hq|disk-visible-reference-hq|grmhd-hot-flow|grmhd-structure-flow|thin-luminous-layer-candidate|grmhd-thin-luminous-layer|grmhd-photosphere-layer|grmhd-temperature-flow|grmhd-temperature-flow-scientific|grmhd-temperature-flow-human-visible|grmhd-temperature-flow-hq|legacy-bh-finish-grmhd|bh-finish-grmhd|legacy-grmhd-bh-finish)
       return 0
       ;;
     *)
@@ -976,12 +978,18 @@ apply_science_regime_defaults() {
         set_look_arg "realistic"
       fi
       ;;
-    grmhd-temperature-flow|grmhd-visible-flow|grmhd-thermal-flow|temperature-flow|grmhd-temperature-flow-hq|grmhd-visible-flow-hq|grmhd-thermal-flow-hq|temperature-flow-hq|grmhd-temperature-flow-scientific|grmhd-temperature-science|grmhd-visible-flow-scientific|grmhd-visible-science|grmhd-temperature-flow-eye|grmhd-temperature-eye|grmhd-temperature-flow-human-visible|grmhd-human-visible-flow)
+    grmhd-temperature-flow|grmhd-visible-flow|grmhd-thermal-flow|temperature-flow|grmhd-temperature-flow-hq|grmhd-visible-flow-hq|grmhd-thermal-flow-hq|temperature-flow-hq|grmhd-temperature-flow-scientific|grmhd-temperature-science|grmhd-visible-flow-scientific|grmhd-visible-science|grmhd-temperature-flow-eye|grmhd-temperature-eye|grmhd-temperature-flow-human-visible|grmhd-human-visible-flow|legacy-bh-finish-grmhd|bh-finish-grmhd|legacy-grmhd-bh-finish)
       set_default_disk_mode "grmhd"
       GRMHD_TEMPERATURE_T0_DEFAULT="6500"
       GRMHD_TEMPERATURE_P_DEFAULT="0.75"
       GRMHD_VISIBLE_DISK_SKIN_CANDIDATE=0
+      LEGACY_BH_FINISH_GRMHD=0
       case "$SCIENCE_REGIME_VALUE" in
+        legacy-bh-finish-grmhd|bh-finish-grmhd|legacy-grmhd-bh-finish)
+          LEGACY_BH_FINISH_GRMHD=1
+          set_default_presentation_mode "eye"
+          GRMHD_TEMPERATURE_T0_DEFAULT="6500"
+          ;;
         *scientific*|*science)
           set_default_presentation_mode "scientific"
           GRMHD_TEMPERATURE_T0_DEFAULT="6500"
@@ -1010,6 +1018,29 @@ apply_science_regime_defaults() {
       if [[ "$SCIENCE_REGIME_VALUE" == *-hq && "$SSAA_EXPLICIT" -eq 0 ]]; then
         SSAA=2
       fi
+      if [[ "$LEGACY_BH_FINISH_GRMHD" -eq 1 ]]; then
+        if [[ "$METRIC_EXPLICIT" -eq 0 ]]; then
+          METRIC_VALUE="kerr"
+          SWIFT_ARGS+=(--metric "kerr")
+        fi
+        if [[ -z "$DISK_HDF5_PATH" ]]; then
+          LEGACY_BH_FINISH_GRMHD_SNAPSHOT="/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
+          if [[ -f "$LEGACY_BH_FINISH_GRMHD_SNAPSHOT" ]]; then
+            DISK_HDF5_PATH="$LEGACY_BH_FINISH_GRMHD_SNAPSHOT"
+          else
+            echo "error: legacy-bh-finish-grmhd requires the Illinois SANE a0 dump 05010 HDF5 snapshot." >&2
+            echo "       expected: $LEGACY_BH_FINISH_GRMHD_SNAPSHOT" >&2
+            echo "       fetch with: Blackhole/scripts/fetch_illinois_grmhd_snapshot.py --flux SANE --spin 0 --dump 05010 --out-dir /tmp/bh_real_grmhd_sequence" >&2
+            exit 2
+          fi
+        fi
+        if ! swift_arg_present --preset; then
+          PRESET_VALUE="realistic"
+          SWIFT_ARGS+=(--preset "realistic")
+        fi
+        append_swift_default --spin "0.92"
+        append_swift_default --grmhd-smooth-weight "state"
+      fi
       set_temperature_flow_default_look
       append_swift_default --visible-mode "on"
       append_swift_default --visible-policy "physical"
@@ -1030,6 +1061,22 @@ apply_science_regime_defaults() {
       append_swift_default --disk-precision-texture "0.70"
       append_swift_default --teff-T0 "$GRMHD_TEMPERATURE_T0_DEFAULT"
       append_swift_default --teff-p "$GRMHD_TEMPERATURE_P_DEFAULT"
+      if [[ "$LEGACY_BH_FINISH_GRMHD" -eq 1 ]]; then
+        case "$(printf '%s' "$PRESENTATION_MODE_VALUE" | tr '[:upper:]' '[:lower:]')" in
+          cinema)
+            append_swift_default --camera-model "cinematic"
+            append_swift_default --realism-profile "cinematic"
+            ;;
+          scientific|science|master)
+            append_swift_default --exposure-mode "fixed"
+            append_swift_default --exposure-ev "0"
+            ;;
+          *)
+            append_swift_default --camera-model "eye"
+            append_swift_default --realism-profile "physical"
+            ;;
+        esac
+      fi
       if [[ "$GRMHD_VISIBLE_DISK_SKIN_CANDIDATE" -eq 1 ]]; then
         append_swift_default --disk-grmhd-emission-scale "1.25e-10"
       else
@@ -1139,7 +1186,7 @@ apply_science_regime_defaults() {
       echo "warn: --science-regime grmhd-photosphere is a diagnostic photosphere path; use thin-visible/experience for human-visible thin disk renders." >&2
       ;;
     *)
-      echo "error: --science-regime must be one of thin-visible, thin-disk-visible-reference, thin-disk-visible-reference-hq, plausible-disk-v1, plausible-disk-v1-hq, experience, dngr-thin, dngr-flow, dngr-volume, grmhd-temperature-flow, grmhd-temperature-flow-scientific, grmhd-temperature-flow-human-visible, grmhd-temperature-flow-hq, grmhd-hot-flow, grmhd-structure-flow, grmhd-eye-flow, grmhd-photosphere-atlas, grmhd-photosphere" >&2
+      echo "error: --science-regime must be one of thin-visible, thin-disk-visible-reference, thin-disk-visible-reference-hq, plausible-disk-v1, plausible-disk-v1-hq, experience, dngr-thin, dngr-flow, dngr-volume, grmhd-temperature-flow, grmhd-temperature-flow-scientific, grmhd-temperature-flow-human-visible, grmhd-temperature-flow-hq, legacy-bh-finish-grmhd, grmhd-hot-flow, grmhd-structure-flow, grmhd-eye-flow, grmhd-photosphere-atlas, grmhd-photosphere" >&2
       exit 2
       ;;
   esac
@@ -1524,6 +1571,12 @@ Legacy source selectors:
 
 Old experiment selector:
   --science-regime <old-name> --experimental
+  --science-regime legacy-bh-finish-grmhd
+                                Replays the recovered bh_finish GRMHD recipe:
+                                Kerr a=0.92, Illinois SANE a0 dump 05010,
+                                visible blackbody volume RT, and state smooth
+                                weighting. Presentation remains selectable with
+                                --presentation scientific|eye|cinema.
 
 Old aliases still accepted for reproduction:
   dngr-thin, interstellar-thin, gargantua-thin
@@ -2768,6 +2821,7 @@ while [[ "$#" -gt 0 ]]; do
       val="$1"
       shift
       METRIC_VALUE="$val"
+      METRIC_EXPLICIT=1
       SWIFT_ARGS+=("$arg" "$val")
       ;;
     --disk-model)
