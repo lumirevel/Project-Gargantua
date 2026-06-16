@@ -7,11 +7,14 @@ final class LauncherModel: ObservableObject {
     let sourceModels: [SourceModelOption]
     let renderIntents: [RenderIntentOption]
 
+    // MARK: Black hole / source / observer
     @Published var blackHoleMetric: BlackHoleMetric = .kerr
     @Published var spin = 0.6
     @Published var selectedSourceID = "canonical-visible-disk-v1"
     @Published var observerMode: ObserverMode = .eye
     @Published var renderIntentID = "rendered"
+
+    // MARK: Final render setup
     @Published var quality: RenderQuality = .preview
     @Published var aspect: OutputAspect = .hd
     @Published var customWidth = 1536
@@ -22,12 +25,21 @@ final class LauncherModel: ObservableObject {
     @Published var rayBundleMode: RayBundleMode = .off
     @Published var rayBundleJacobianStrength = 1.0
     @Published var rayBundleFootprintClamp = 6.0
-    @Published var useCustomCamera = false
-    @Published var camX = 0.0
-    @Published var camY = -18.0
-    @Published var camZ = 5.5
-    @Published var fov = 58.0
-    @Published var roll = 0.0
+
+    // MARK: Interactive preview camera + settings
+    let camera = OrbitCameraController()
+    let previewStats = PreviewStats()
+    @Published var linkPreviewCameraToRender = true
+    @Published var previewQuality: PreviewQuality = .medium
+    @Published var previewToneMap: PreviewToneMap = .aces
+    @Published var previewExposure = 1.0
+    @Published var previewDiskBrightness = 1.0
+    @Published var previewDiskOuter = 22.0
+    @Published var previewDiskThickness = 0.6
+    @Published var previewDiskDensity = 0.78
+    @Published var previewBackgroundStars = 1.0
+
+    // MARK: Camera interpreter
     @Published var exposureProgram: CameraExposureProgram = .manual
     @Published var exposureGranularity: ExposureControlGranularity = .stops
     @Published var exposureEV = 0.0
@@ -48,41 +60,33 @@ final class LauncherModel: ObservableObject {
     @Published var psfSigma = 0.0
     @Published var readNoise = 0.0
     @Published var shotNoise = 0.0
+
+    // MARK: Eye interpreter
     @Published var eyePhotometric: EyePhotometricMode = .auto
     @Published var useEyeND = false
     @Published var eyeND = 4.0
     @Published var useEyeAdaptation = false
     @Published var eyeAdaptation = 2000.0
+
+    // MARK: Output / execution
     @Published var diskHDF5Path = "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
     @Published var outputPath = "/private/tmp/gargantua_gui_render.png"
-    @Published var livePreviewPath = "/private/tmp/gargantua_gui_live_preview.png"
-    @Published var livePreviewWidth = 384
-    @Published var livePreviewHeight = 216
-    @Published var autoLivePreview = false
     @Published var logText = "Ready."
     @Published var progressFraction = 0.0
     @Published var progressLabel = "Ready"
     @Published var progressWorkLabel = ""
     @Published var resultImage: NSImage?
     @Published var resultStatus = "No final render loaded."
-    @Published var livePreviewImage: NSImage?
-    @Published var livePreviewStatus = "No live preview rendered."
     @Published var isRunning = false
-    @Published var isPreviewRunning = false
-    @Published var previewProgressFraction = 0.0
 
     private var runningProcess: Process?
     private var runningReadHandle: FileHandle?
-    private var previewProcess: Process?
-    private var previewReadHandle: FileHandle?
-    private var previewDebounce: Timer?
 
     init() {
         let manifest = LauncherOptionsManifest.load()
         self.sourceModels = manifest.sourceModels
         self.renderIntents = manifest.renderIntents
         refreshResult()
-        refreshLivePreview()
     }
 
     var selectedSource: SourceModelOption {
@@ -93,41 +97,53 @@ final class LauncherModel: ObservableObject {
         renderIntents.first { $0.id == renderIntentID } ?? renderIntents[1]
     }
 
-    var isCameraMode: Bool {
-        observerMode == .camera
-    }
-
-    var isRawLikeCamera: Bool {
-        isCameraMode && renderIntentID == "raw-like"
-    }
-
-    var isCameraAdjustmentEnabled: Bool {
-        isCameraMode && renderIntentID != "raw-like"
-    }
-
-    var selectedSourceRequiresDiskHDF5: Bool {
-        selectedSource.requiresDiskHDF5 ?? false
-    }
+    var isCameraMode: Bool { observerMode == .camera }
+    var isRawLikeCamera: Bool { isCameraMode && renderIntentID == "raw-like" }
+    var isCameraAdjustmentEnabled: Bool { isCameraMode && renderIntentID != "raw-like" }
+    var selectedSourceRequiresDiskHDF5: Bool { selectedSource.requiresDiskHDF5 ?? false }
 
     var outputSize: (width: Int, height: Int) {
         aspect.size(customWidth: customWidth, customHeight: customHeight)
     }
 
-    var commandPlan: RenderCommandPlan {
-        RenderCommandPlanner.plan(for: commandInputs)
+    var commandPlan: RenderCommandPlan { RenderCommandPlanner.plan(for: commandInputs) }
+    var commandPreview: String { commandPlan.commandPreview }
+
+    // MARK: - Interactive preview bindings
+
+    /// GUI option panels gathered into the renderer-facing settings struct.
+    var previewRenderSettings: PreviewRenderSettings {
+        let metric: PreviewMetric = blackHoleMetric == .kerr ? .kerr : .schwarzschild
+        let spinValue: Float = blackHoleMetric == .kerr ? Float(spin) : 0
+        let inner = PreviewPhysics.diskInnerRadius(metric: metric, spin: spinValue)
+        let outer = max(Float(previewDiskOuter), inner + 2.0)
+        return PreviewRenderSettings(
+            metric: metric,
+            spin: spinValue,
+            diskInner: inner,
+            diskOuter: outer,
+            diskThickness: Float(previewDiskThickness),
+            diskDensity: Float(previewDiskDensity),
+            diskBrightness: Float(previewDiskBrightness),
+            diskTempScale: 8200.0,
+            exposure: Float(previewExposure),
+            toneMap: previewToneMap,
+            backgroundStars: Float(previewBackgroundStars),
+            quality: previewQuality
+        )
     }
 
-    var livePreviewPlan: RenderCommandPlan {
-        RenderCommandPlanner.livePreviewPlan(for: commandInputs)
-    }
+    func setPreviewRadius(_ value: Double) { camera.setRadius(value); objectWillChange.send() }
+    func setPreviewAzimuth(_ value: Double) { camera.setAzimuthDegrees(value); objectWillChange.send() }
+    func setPreviewElevation(_ value: Double) { camera.setElevationDegrees(value); objectWillChange.send() }
+    func setPreviewFov(_ value: Double) { camera.setFov(value); objectWillChange.send() }
+    func resetPreviewCamera() { camera.reset(); objectWillChange.send() }
 
-    var commandPreview: String {
-        commandPlan.commandPreview
-    }
+    /// Called when an interactive drag/zoom finishes so dependent UI (camera
+    /// sliders, generated command) refreshes to the committed pose.
+    func previewCameraDidCommit() { objectWillChange.send() }
 
-    var livePreviewCommandPreview: String {
-        livePreviewPlan.commandPreview
-    }
+    // MARK: - Final render
 
     func runRender() {
         guard !isRunning else { return }
@@ -137,28 +153,7 @@ final class LauncherModel: ObservableObject {
         progressLabel = "Preparing final render"
         progressWorkLabel = workLabel(for: plan)
         logText = "Running final render...\n\n\(plan.commandPreview)"
-        startProcess(plan: plan, isPreview: false)
-    }
-
-    func runLivePreview() {
-        guard !isPreviewRunning else { return }
-        let plan = livePreviewPlan
-        isPreviewRunning = true
-        previewProgressFraction = 0.02
-        livePreviewStatus = "Rendering live preview..."
-        appendLog("Running live preview: \(plan.commandPreview)")
-        startProcess(plan: plan, isPreview: true)
-    }
-
-    func scheduleLivePreview() {
-        guard autoLivePreview else { return }
-        previewDebounce?.invalidate()
-        previewDebounce = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let model = self, !model.isPreviewRunning else { return }
-                model.runLivePreview()
-            }
-        }
+        startProcess(plan: plan)
     }
 
     func stopRender() {
@@ -167,20 +162,9 @@ final class LauncherModel: ObservableObject {
         runningProcess?.terminate()
     }
 
-    func stopLivePreview() {
-        guard isPreviewRunning else { return }
-        appendLog("Stopping live preview...")
-        previewProcess?.terminate()
-    }
-
     func copyCommandToPasteboard() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(commandPreview, forType: .string)
-    }
-
-    func copyLivePreviewCommandToPasteboard() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(livePreviewCommandPreview, forType: .string)
     }
 
     func chooseDiskHDF5() {
@@ -192,16 +176,11 @@ final class LauncherModel: ObservableObject {
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
             diskHDF5Path = url.path
-            scheduleLivePreview()
         }
     }
 
     func revealOutput() {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: outputPath)])
-    }
-
-    func revealLivePreview() {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: livePreviewPath)])
     }
 
     func refreshResult() {
@@ -217,54 +196,25 @@ final class LauncherModel: ObservableObject {
         }
     }
 
-    func refreshLivePreview() {
-        let url = URL(fileURLWithPath: livePreviewPath)
-        if let image = NSImage(contentsOf: url) {
-            livePreviewImage = image
-            livePreviewStatus = url.lastPathComponent
-        } else {
-            livePreviewImage = nil
-            livePreviewStatus = FileManager.default.fileExists(atPath: livePreviewPath)
-                ? "Live preview exists but could not be decoded."
-                : "No live preview rendered."
-        }
-    }
-
-    func orbitCamera(deltaX: CGFloat, deltaY: CGFloat) {
-        let radius = max(2.0, sqrt(camX * camX + camY * camY))
-        let angle = atan2(camY, camX) + Double(deltaX) * 0.008
-        camX = cos(angle) * radius
-        camY = sin(angle) * radius
-        camZ = min(max(camZ - Double(deltaY) * 0.035, -20.0), 20.0)
-        useCustomCamera = true
-        scheduleLivePreview()
-    }
-
-    func markCameraEdited() {
-        useCustomCamera = true
-        scheduleLivePreview()
-    }
-
     func setFNumberStop(index: Double) {
         let idx = min(max(Int(index.rounded()), 0), CameraStopTables.fNumbers.count - 1)
         fNumber = CameraStopTables.fNumbers[idx]
-        scheduleLivePreview()
     }
 
     func setISOStop(index: Double) {
         let idx = min(max(Int(index.rounded()), 0), CameraStopTables.isoValues.count - 1)
         iso = CameraStopTables.isoValues[idx]
-        scheduleLivePreview()
     }
 
     func setShutterStop(index: Double) {
         let idx = min(max(Int(index.rounded()), 0), CameraStopTables.shutters.count - 1)
         shutter = CameraStopTables.shutters[idx]
-        scheduleLivePreview()
     }
 
     private var commandInputs: RenderCommandInputs {
-        RenderCommandInputs(
+        let eye = camera.state.eye
+        let rollDegrees = Double(camera.state.roll) * 180.0 / .pi
+        return RenderCommandInputs(
             source: selectedSource,
             blackHoleMetric: blackHoleMetric,
             spin: spin,
@@ -281,12 +231,12 @@ final class LauncherModel: ObservableObject {
             rayBundleMode: showAdvancedPhysics ? rayBundleMode : .off,
             rayBundleJacobianStrength: rayBundleJacobianStrength,
             rayBundleFootprintClamp: rayBundleFootprintClamp,
-            useCustomCamera: useCustomCamera,
-            camX: camX,
-            camY: camY,
-            camZ: camZ,
-            fov: fov,
-            roll: roll,
+            useCustomCamera: linkPreviewCameraToRender,
+            camX: Double(eye.x),
+            camY: Double(eye.y),
+            camZ: Double(eye.z),
+            fov: Double(camera.state.fov),
+            roll: rollDegrees,
             exposureProgram: exposureProgram,
             exposureEV: exposureEV,
             enableColorGrade: enableColorGrade,
@@ -312,14 +262,11 @@ final class LauncherModel: ObservableObject {
             useEyeAdaptation: useEyeAdaptation,
             eyeAdaptation: eyeAdaptation,
             diskHDF5Path: diskHDF5Path,
-            outputPath: outputPath,
-            previewOutputPath: livePreviewPath,
-            previewWidth: livePreviewWidth,
-            previewHeight: livePreviewHeight
+            outputPath: outputPath
         )
     }
 
-    private func startProcess(plan: RenderCommandPlan, isPreview: Bool) {
+    private func startProcess(plan: RenderCommandPlan) {
         let process = Process()
         let pipe = Pipe()
         let readHandle = pipe.fileHandleForReading
@@ -343,20 +290,15 @@ final class LauncherModel: ObservableObject {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        if isPreview {
-            previewProcess = process
-            previewReadHandle = readHandle
-        } else {
-            runningProcess = process
-            runningReadHandle = readHandle
-        }
+        runningProcess = process
+        runningReadHandle = readHandle
 
         readHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             DispatchQueue.main.async {
                 self?.appendLog(text)
-                self?.updateProgress(from: text, plan: plan, isPreview: isPreview)
+                self?.updateProgress(from: text, plan: plan)
             }
         }
 
@@ -365,32 +307,21 @@ final class LauncherModel: ObservableObject {
             let data = readHandle.readDataToEndOfFile()
             let text = String(data: data, encoding: .utf8) ?? ""
             DispatchQueue.main.async {
-                self?.finishProcess(plan: plan, isPreview: isPreview, status: proc.terminationStatus, trailingText: text)
+                self?.finishProcess(plan: plan, status: proc.terminationStatus, trailingText: text)
             }
         }
 
         do {
             try process.run()
-            if isPreview {
-                previewProgressFraction = max(previewProgressFraction, 0.05)
-            } else {
-                progressFraction = max(progressFraction, 0.05)
-                progressLabel = "Process started"
-            }
+            progressFraction = max(progressFraction, 0.05)
+            progressLabel = "Process started"
         } catch {
-            if isPreview {
-                isPreviewRunning = false
-                previewProcess = nil
-                previewReadHandle = nil
-                livePreviewStatus = "Failed to start live preview: \(error.localizedDescription)"
-            } else {
-                isRunning = false
-                runningProcess = nil
-                runningReadHandle = nil
-                progressFraction = 0
-                progressLabel = "Failed to start"
-                logText = "Failed to start render: \(error.localizedDescription)"
-            }
+            isRunning = false
+            runningProcess = nil
+            runningReadHandle = nil
+            progressFraction = 0
+            progressLabel = "Failed to start"
+            logText = "Failed to start render: \(error.localizedDescription)"
         }
     }
 
@@ -398,34 +329,25 @@ final class LauncherModel: ObservableObject {
         logText += "\n" + text
     }
 
-    private func finishProcess(plan: RenderCommandPlan, isPreview: Bool, status: Int32, trailingText: String) {
+    private func finishProcess(plan: RenderCommandPlan, status: Int32, trailingText: String) {
         if !trailingText.isEmpty {
             appendLog(trailingText)
-            updateProgress(from: trailingText, plan: plan, isPreview: isPreview)
+            updateProgress(from: trailingText, plan: plan)
         }
-        if isPreview {
-            isPreviewRunning = false
-            previewProcess = nil
-            previewReadHandle = nil
-            previewProgressFraction = status == 0 ? 1.0 : previewProgressFraction
-            livePreviewStatus = status == 0 ? "Live preview finished." : "Live preview exited with status \(status)."
-            refreshLivePreview()
+        isRunning = false
+        runningProcess = nil
+        runningReadHandle = nil
+        if status == 0 {
+            progressFraction = 1.0
+            progressLabel = "Finished"
         } else {
-            isRunning = false
-            runningProcess = nil
-            runningReadHandle = nil
-            if status == 0 {
-                progressFraction = 1.0
-                progressLabel = "Finished"
-            } else {
-                progressLabel = "Exited with status \(status)"
-            }
-            logText += "\nFinal render finished with status \(status)."
-            refreshResult()
+            progressLabel = "Exited with status \(status)"
         }
+        logText += "\nFinal render finished with status \(status)."
+        refreshResult()
     }
 
-    private func updateProgress(from text: String, plan: RenderCommandPlan, isPreview: Bool) {
+    private func updateProgress(from text: String, plan: RenderCommandPlan) {
         let lower = text.lowercased()
         let estimate = plan.progressEstimate
         let staged: [(String, Double, String)] = [
@@ -439,9 +361,7 @@ final class LauncherModel: ObservableObject {
             ("wrote", min(0.98, estimate.outputEnd), "Writing output")
         ]
         for (needle, fraction, label) in staged where lower.contains(needle) {
-            if isPreview {
-                previewProgressFraction = max(previewProgressFraction, fraction)
-            } else if fraction > progressFraction {
+            if fraction > progressFraction {
                 progressFraction = fraction
                 progressLabel = label
             }

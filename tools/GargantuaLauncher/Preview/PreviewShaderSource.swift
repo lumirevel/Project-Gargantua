@@ -1,0 +1,304 @@
+import Foundation
+
+/// Metal source for the interactive progressive black-hole preview.
+///
+/// Compiled at runtime (`device.makeLibrary(source:options:)`) so the launcher
+/// app needs no `.metal` build rule. The physics is a reduced-cost
+/// reimplementation of the offline pipeline's model:
+///
+///   * Schwarzschild null geodesics integrated with RK4 in Cartesian
+///     coordinates (units M = 1, rs = 2): a = -3 M h^2 * r / |r|^5.
+///   * Kerr is approximated by shifting the ISCO/horizon and adding a modest
+///     Lense-Thirring frame-dragging term — enough to show photon-ring and
+///     Doppler asymmetry in a preview, not a full Kerr geodesic solver.
+///   * A thin equatorial accretion disk with a Novikov-Thorne-like temperature
+///     profile, relativistic Doppler beaming and gravitational redshift.
+///   * A procedural background star field so lensing is visible while orbiting.
+///
+/// Progressive refinement comes from per-frame sub-pixel jitter accumulated
+/// into a float buffer; the image starts noisy and converges when idle.
+enum PreviewShaderSource {
+    static let metal = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct Uniforms {
+    float4 camPos;
+    float4 camForward;
+    float4 camRight;
+    float4 camUp;
+    float4 resFov;   // x=resX, y=resY, z=tanHalfFov, w=aspect
+    float4 disk0;    // x=spin, y=inner, z=outer, w=thickness
+    float4 disk1;    // x=brightness, y=density, z=bgStars, w=stepScale
+    float4 disk2;    // x=escapeR, y=horizon, z=photonR, w=tempScale
+    uint4  u0;       // x=sampleIndex, y=frameSeed, z=maxSteps, w=metric
+    uint4  u1;       // x=samplesPerFrame, y=flags, z=reserved, w=reserved
+};
+
+struct PresentParams {
+    float exposure;
+    float gamma;
+    uint  toneMode;
+    uint  pad;
+};
+
+// ---------- hashing / RNG ----------------------------------------------------
+
+inline uint hashU(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
+
+inline float rnd(thread uint& s) {
+    s = hashU(s);
+    return float(s) * (1.0 / 4294967296.0);
+}
+
+// ---------- color helpers ----------------------------------------------------
+
+// Tanner Helland style color-temperature -> linear-ish RGB approximation.
+inline float3 colorTempToRGB(float kelvin) {
+    float t = clamp(kelvin, 1000.0, 40000.0) / 100.0;
+    float3 c;
+    if (t <= 66.0) {
+        c.r = 1.0;
+        c.g = clamp(0.3900815788 * log(max(t, 1.0)) - 0.6318414438, 0.0, 1.0);
+    } else {
+        float tt = t - 60.0;
+        c.r = clamp(1.2929361861 * pow(tt, -0.1332047592), 0.0, 1.0);
+        c.g = clamp(1.1298908609 * pow(tt, -0.0755148492), 0.0, 1.0);
+    }
+    if (t >= 66.0) {
+        c.b = 1.0;
+    } else if (t <= 19.0) {
+        c.b = 0.0;
+    } else {
+        c.b = clamp(0.5432067891 * log(max(t - 10.0, 1.0)) - 1.1962540891, 0.0, 1.0);
+    }
+    return c;
+}
+
+// ---------- background star field -------------------------------------------
+
+inline float3 starfield(float3 dir) {
+    float3 d = normalize(dir);
+    // Two-axis angular hash to avoid obvious axis streaks.
+    float u = atan2(d.y, d.x) * 0.1591549431 + 0.5; // [0,1)
+    float v = acos(clamp(d.z, -1.0, 1.0)) * 0.3183098862; // [0,1]
+    float2 uv = float2(u, v) * float2(900.0, 450.0);
+    float2 cell = floor(uv);
+    float h = fract(sin(dot(cell, float2(127.1, 311.7))) * 43758.5453);
+    float star = smoothstep(0.9965, 1.0, h);
+    float twinkle = 0.55 + 0.45 * fract(h * 41.0);
+    float3 starColor = mix(float3(0.7, 0.8, 1.0), float3(1.0, 0.92, 0.78), fract(h * 13.0));
+    float3 col = starColor * star * twinkle * 2.2;
+    // Very faint cool nebular gradient so empty space is not pure black.
+    float neb = pow(clamp(d.z * 0.5 + 0.5, 0.0, 1.0), 3.0);
+    col += float3(0.015, 0.02, 0.038) * neb;
+    return col;
+}
+
+// ---------- geodesic integration --------------------------------------------
+
+// Central Schwarzschild acceleration (M = 1, rs = 2): a = -3 h^2 r / |r|^5.
+inline float3 accel(float3 p, float h2) {
+    float r2 = dot(p, p);
+    float r = sqrt(r2);
+    float invR5 = 1.0 / (r2 * r2 * r + 1e-6);
+    return -3.0 * h2 * p * invR5;
+}
+
+inline void rk4Step(thread float3& p, thread float3& v, float h, float h2) {
+    float3 k1p = v;                float3 k1v = accel(p, h2);
+    float3 k2p = v + 0.5 * h * k1v; float3 k2v = accel(p + 0.5 * h * k1p, h2);
+    float3 k3p = v + 0.5 * h * k2v; float3 k3v = accel(p + 0.5 * h * k2p, h2);
+    float3 k4p = v + h * k3v;        float3 k4v = accel(p + h * k3p, h2);
+    p += (h / 6.0) * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
+    v += (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
+}
+
+// Emission from a thin equatorial disk crossing at world point `hit`.
+inline float3 diskEmission(float3 hit, float3 rayDir, float rHit, constant Uniforms& u) {
+    const float rs = 2.0;
+    float spin = u.disk0.x;
+    float inner = u.disk0.y;
+    float outer = u.disk0.z;
+    float3 axis = float3(0.0, 0.0, 1.0);
+
+    // Prograde Keplerian orbital velocity (M = 1), capped sub-luminal.
+    float3 phiHat = normalize(cross(axis, hit));
+    float sgn = (spin >= 0.0) ? 1.0 : -1.0;
+    float speed = clamp(1.0 / sqrt(max(rHit, 1.0)), 0.0, 0.92);
+    float3 beta = sgn * speed * phiHat;
+    float b2 = clamp(dot(beta, beta), 0.0, 0.985);
+    float gamma = 1.0 / sqrt(1.0 - b2);
+
+    // Direction from emitter toward observer.
+    float3 n = normalize(-rayDir);
+    float doppler = 1.0 / (gamma * (1.0 - dot(beta, n)));
+    float gGrav = sqrt(max(1.0 - rs / rHit, 1e-3));
+    float g = doppler * gGrav;
+
+    // Novikov-Thorne-like radial profile (relative units).
+    float x = clamp(inner / max(rHit, inner), 0.0, 1.0);
+    float profile = pow(x, 0.75) * pow(max(1.0 - sqrt(x), 0.0), 0.25);
+    float tLocal = u.disk2.w * pow(x, 0.6);
+    float tObs = clamp(tLocal * g, 700.0, 42000.0);
+    float3 color = colorTempToRGB(tObs);
+
+    // Relativistic beaming (bolometric ~ g^4), clamped to keep preview stable.
+    float beaming = clamp(pow(g, 4.0), 0.02, 24.0);
+    float edge = smoothstep(outer, outer * 0.72, rHit);
+    float brightness = profile * beaming * edge * u.disk1.x;
+    return color * brightness;
+}
+
+// Trace one primary ray and return observed radiance.
+inline float3 traceRay(float3 pos, float3 dir, constant Uniforms& u) {
+    float escapeR = u.disk2.x;
+    float horizon = u.disk2.y;
+    float spin = u.disk0.x;
+    float inner = u.disk0.y;
+    float outer = u.disk0.z;
+    uint metric = u.u0.w;
+    uint maxSteps = u.u0.z;
+    float3 axis = float3(0.0, 0.0, 1.0);
+
+    float h2 = dot(cross(pos, dir), cross(pos, dir));
+    float3 p = pos;
+    float3 v = dir;
+    float3 radiance = float3(0.0);
+    float3 trans = float3(1.0);
+    int crossings = 0;
+
+    for (uint i = 0; i < maxSteps; i++) {
+        float r = length(p);
+        if (r < horizon) {
+            return radiance; // captured: background blocked, keep disk in front
+        }
+        if (r > escapeR) {
+            radiance += trans * starfield(v) * u.disk1.z;
+            return radiance;
+        }
+
+        float h = clamp(r * 0.10, 0.02, 1.1) * u.disk1.w;
+        float3 pNew = p;
+        float3 vNew = v;
+        rk4Step(pNew, vNew, h, h2);
+
+        // Kerr frame-dragging approximation (Lense-Thirring ~ 2a/r^3).
+        if (metric == 1u && abs(spin) > 1e-4) {
+            float rr = max(length(pNew), 1e-3);
+            float omega = 2.0 * spin / (rr * rr * rr);
+            vNew += cross(axis * omega, pNew) * h * 0.5;
+            vNew = normalize(vNew) * length(v);
+        }
+
+        // Equatorial disk crossing (plane z = 0).
+        if (p.z * pNew.z < 0.0 && crossings < 4) {
+            float t = p.z / (p.z - pNew.z);
+            float3 hit = mix(p, pNew, t);
+            float rHit = length(hit);
+            if (rHit >= inner && rHit <= outer) {
+                float3 e = diskEmission(hit, normalize(vNew), rHit, u);
+                float alpha = clamp(u.disk1.y, 0.0, 1.0);
+                radiance += trans * e;
+                trans *= (1.0 - alpha);
+                crossings++;
+            }
+        }
+
+        p = pNew;
+        v = vNew;
+        if (trans.r < 0.01 && trans.g < 0.01 && trans.b < 0.01) {
+            return radiance;
+        }
+    }
+    return radiance;
+}
+
+// ---------- accumulation kernel ---------------------------------------------
+
+kernel void accumulateKernel(texture2d<float, access::read>  prevTex [[texture(0)]],
+                             texture2d<float, access::write> outTex  [[texture(1)]],
+                             constant Uniforms& u                    [[buffer(0)]],
+                             uint2 gid                                [[thread_position_in_grid]]) {
+    uint w = outTex.get_width();
+    uint h = outTex.get_height();
+    if (gid.x >= w || gid.y >= h) { return; }
+
+    float2 res = u.resFov.xy;
+    float tanHalf = u.resFov.z;
+    float aspect = u.resFov.w;
+    uint spf = max(u.u1.x, 1u);
+
+    uint seed = hashU(gid.x * 1973u + gid.y * 9277u + u.u0.y * 26699u + 1u);
+
+    float3 sum = float3(0.0);
+    for (uint s = 0; s < spf; s++) {
+        float jx = rnd(seed);
+        float jy = rnd(seed);
+        float2 uv = (float2(gid) + float2(jx, jy)) / res;
+        float2 ndc = uv * 2.0 - 1.0;
+        ndc.y = -ndc.y;
+        float3 dir = normalize(u.camForward.xyz
+            + tanHalf * (ndc.x * aspect * u.camRight.xyz + ndc.y * u.camUp.xyz));
+        sum += traceRay(u.camPos.xyz, dir, u);
+    }
+
+    float4 prev = (u.u0.x == 0u) ? float4(0.0) : prevTex.read(gid);
+    outTex.write(prev + float4(sum, float(spf)), gid);
+}
+
+// ---------- present pass -----------------------------------------------------
+
+struct VOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex VOut presentVert(uint vid [[vertex_id]]) {
+    float2 pos[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    VOut o;
+    o.position = float4(pos[vid], 0.0, 1.0);
+    float2 uv = pos[vid] * 0.5 + 0.5;
+    uv.y = 1.0 - uv.y;
+    o.uv = uv;
+    return o;
+}
+
+inline float3 toneReinhard(float3 c) { return c / (1.0 + c); }
+
+inline float3 toneACES(float3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+fragment float4 presentFrag(VOut in [[stage_in]],
+                            texture2d<float, access::read> accum [[texture(0)]],
+                            constant PresentParams& p           [[buffer(0)]]) {
+    uint w = accum.get_width();
+    uint h = accum.get_height();
+    uint2 sz = uint2(w, h);
+    float2 fp = clamp(in.uv * float2(sz), float2(0.0), float2(sz) - 1.0);
+    uint2 px = uint2(fp);
+    float4 s = accum.read(px);
+    float3 col = s.rgb / max(s.w, 1.0);
+    col *= p.exposure;
+
+    if (p.toneMode == 0u) {
+        col = toneReinhard(col);
+    } else if (p.toneMode == 1u) {
+        col = toneACES(col);
+    } else {
+        col = clamp(col, 0.0, 1.0);
+    }
+    col = pow(max(col, 0.0), float3(1.0 / max(p.gamma, 0.1)));
+    return float4(col, 1.0);
+}
+"""
+}

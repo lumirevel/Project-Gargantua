@@ -12,6 +12,11 @@
 		D1A00000000000000000000E /* LauncherModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A00000000000000000000F /* LauncherModels.swift */; };
 		D1A000000000000000000010 /* RenderCommandPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000011 /* RenderCommandPlanner.swift */; };
 		D1A000000000000000000012 /* LauncherExecution.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000013 /* LauncherExecution.swift */; };
+		D1A000000000000000000021 /* PreviewCameraState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000020 /* PreviewCameraState.swift */; };
+		D1A000000000000000000023 /* PreviewRenderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000022 /* PreviewRenderSettings.swift */; };
+		D1A000000000000000000025 /* PreviewShaderSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000024 /* PreviewShaderSource.swift */; };
+		D1A000000000000000000027 /* BlackHolePreviewRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000026 /* BlackHolePreviewRenderer.swift */; };
+		D1A000000000000000000029 /* InteractivePreviewViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000028 /* InteractivePreviewViewport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -34,6 +39,11 @@
 		D1A00000000000000000000F /* LauncherModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/LauncherModels.swift; sourceTree = "<group>"; };
 		D1A000000000000000000011 /* RenderCommandPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/RenderCommandPlanner.swift; sourceTree = "<group>"; };
 		D1A000000000000000000013 /* LauncherExecution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/LauncherExecution.swift; sourceTree = "<group>"; };
+		D1A000000000000000000020 /* PreviewCameraState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/Preview/PreviewCameraState.swift; sourceTree = "<group>"; };
+		D1A000000000000000000022 /* PreviewRenderSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/Preview/PreviewRenderSettings.swift; sourceTree = "<group>"; };
+		D1A000000000000000000024 /* PreviewShaderSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/Preview/PreviewShaderSource.swift; sourceTree = "<group>"; };
+		D1A000000000000000000026 /* BlackHolePreviewRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/Preview/BlackHolePreviewRenderer.swift; sourceTree = "<group>"; };
+		D1A000000000000000000028 /* InteractivePreviewViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/Preview/InteractivePreviewViewport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -86,6 +96,11 @@
 				D1A00000000000000000000F /* LauncherModels.swift */,
 				D1A000000000000000000011 /* RenderCommandPlanner.swift */,
 				D1A000000000000000000013 /* LauncherExecution.swift */,
+				D1A000000000000000000020 /* PreviewCameraState.swift */,
+				D1A000000000000000000022 /* PreviewRenderSettings.swift */,
+				D1A000000000000000000024 /* PreviewShaderSource.swift */,
+				D1A000000000000000000026 /* BlackHolePreviewRenderer.swift */,
+				D1A000000000000000000028 /* InteractivePreviewViewport.swift */,
 				D1A000000000000000000002 /* GargantuaLauncher.swift */,
 				D1A000000000000000000003 /* gui_option_manifest_v1.json */,
 			);
@@ -200,6 +215,11 @@
 				D1A00000000000000000000E /* LauncherModels.swift in Sources */,
 				D1A000000000000000000010 /* RenderCommandPlanner.swift in Sources */,
 				D1A000000000000000000012 /* LauncherExecution.swift in Sources */,
+				D1A000000000000000000021 /* PreviewCameraState.swift in Sources */,
+				D1A000000000000000000023 /* PreviewRenderSettings.swift in Sources */,
+				D1A000000000000000000025 /* PreviewShaderSource.swift in Sources */,
+				D1A000000000000000000027 /* BlackHolePreviewRenderer.swift in Sources */,
+				D1A000000000000000000029 /* InteractivePreviewViewport.swift in Sources */,
 				D1A000000000000000000004 /* GargantuaLauncher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

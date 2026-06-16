@@ -49,9 +49,6 @@ struct RenderCommandInputs {
     let eyeAdaptation: Double
     let diskHDF5Path: String
     let outputPath: String
-    let previewOutputPath: String
-    let previewWidth: Int
-    let previewHeight: Int
 }
 
 struct RenderProgressEstimate {
@@ -101,18 +98,6 @@ enum RenderCommandPlanner {
             ssaa: inputs.ssaa,
             quality: inputs.quality,
             includeRawSidecars: true
-        )
-    }
-
-    static func livePreviewPlan(for inputs: RenderCommandInputs) -> RenderCommandPlan {
-        plan(
-            for: inputs,
-            outputPath: inputs.previewOutputPath,
-            width: max(64, inputs.previewWidth),
-            height: max(64, inputs.previewHeight),
-            ssaa: .one,
-            quality: .preview,
-            includeRawSidecars: false
         )
     }
 

@@ -8,47 +8,57 @@ struct GargantuaLauncherView: View {
         NavigationSplitView {
             sourceSidebar
         } detail: {
-            HStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        WorkflowHeader(model: model)
-                        BlackHolePanel(model: model)
-                        SourceSummaryPanel(model: model)
-                        SourceDataPanel(model: model)
-                        ObserverPanel(model: model)
-                        if model.observerMode == .eye {
-                            EyeInterpreterPanel(model: model)
-                        }
-                        if model.isCameraMode {
-                            CameraInterpreterPanel(model: model)
-                        }
-                        RenderSetupPanel(model: model)
-                        AdvancedPhysicsPanel(model: model)
-                        CommandPanel(model: model, isExpanded: $commandExpanded)
-                        ExecutionPanel(model: model)
-                    }
-                    .padding(24)
-                    .frame(maxWidth: 820, alignment: .leading)
-                }
+            VStack(spacing: 0) {
+                WorkflowHeader(model: model)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .padding(.bottom, 12)
                 Divider()
-                RightPreviewColumn(model: model)
-                    .frame(width: 430)
+                HStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            PreviewControlsPanel(model: model)
+                            BlackHolePanel(model: model)
+                            SourceSummaryPanel(model: model)
+                            SourceDataPanel(model: model)
+                            ObserverPanel(model: model)
+                            if model.observerMode == .eye {
+                                EyeInterpreterPanel(model: model)
+                            }
+                            if model.isCameraMode {
+                                CameraInterpreterPanel(model: model)
+                            }
+                            RenderSetupPanel(model: model)
+                            AdvancedPhysicsPanel(model: model)
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(width: 392)
+
+                    Divider()
+
+                    InteractivePreviewPanel(model: model)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(1)
+
+                    Divider()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            CommandPanel(model: model, isExpanded: $commandExpanded)
+                            ExecutionPanel(model: model)
+                            ResultPanel(model: model)
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(width: 344)
+                }
             }
             .navigationTitle("Observation Workflow")
         }
-        .frame(minWidth: 1220, minHeight: 780)
-        .onChange(of: model.blackHoleMetric) { model.scheduleLivePreview() }
-        .onChange(of: model.spin) { model.scheduleLivePreview() }
-        .onChange(of: model.selectedSourceID) { model.scheduleLivePreview() }
-        .onChange(of: model.observerMode) { model.scheduleLivePreview() }
-        .onChange(of: model.renderIntentID) { model.scheduleLivePreview() }
-        .onChange(of: model.fNumber) { model.scheduleLivePreview() }
-        .onChange(of: model.iso) { model.scheduleLivePreview() }
-        .onChange(of: model.shutter) { model.scheduleLivePreview() }
-        .onChange(of: model.exposureEV) { model.scheduleLivePreview() }
-        .onChange(of: model.enableColorGrade) { model.scheduleLivePreview() }
-        .onChange(of: model.enableCinematicEffects) { model.scheduleLivePreview() }
-        .onChange(of: model.enableDepthOfField) { model.scheduleLivePreview() }
+        .frame(minWidth: 1180, minHeight: 700)
     }
 
     private var sourceSidebar: some View {
@@ -536,106 +546,6 @@ private struct AdvancedPhysicsPanel: View {
     }
 }
 
-private struct CameraFramingControls: View {
-    @ObservedObject var model: LauncherModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            CameraOrbitPreview(model: model)
-                .frame(height: 150)
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
-                GridRow {
-                    Text("camX")
-                    Slider(value: $model.camX, in: -40...40)
-                    NumericInput(value: $model.camX, width: 72, format: .number.precision(.fractionLength(2)))
-                }
-                GridRow {
-                    Text("camY")
-                    Slider(value: $model.camY, in: -60...(-2))
-                    NumericInput(value: $model.camY, width: 72, format: .number.precision(.fractionLength(2)))
-                }
-                GridRow {
-                    Text("camZ")
-                    Slider(value: $model.camZ, in: -20...20)
-                    NumericInput(value: $model.camZ, width: 72, format: .number.precision(.fractionLength(2)))
-                }
-                GridRow {
-                    Text("FOV")
-                    Slider(value: $model.fov, in: 20...120)
-                    NumericInput(value: $model.fov, width: 72, format: .number.precision(.fractionLength(1)))
-                }
-                GridRow {
-                    Text("Roll")
-                    Slider(value: $model.roll, in: -180...180)
-                    NumericInput(value: $model.roll, width: 72, format: .number.precision(.fractionLength(1)))
-                }
-            }
-            .onChange(of: model.camX) { model.markCameraEdited() }
-            .onChange(of: model.camY) { model.markCameraEdited() }
-            .onChange(of: model.camZ) { model.markCameraEdited() }
-            .onChange(of: model.fov) { model.markCameraEdited() }
-            .onChange(of: model.roll) { model.markCameraEdited() }
-        }
-    }
-}
-
-private struct CameraOrbitPreview: View {
-    @ObservedObject var model: LauncherModel
-    @State private var lastTranslation: CGSize = .zero
-
-    var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            let center = CGPoint(x: size.width * 0.50, y: size.height * 0.52)
-            let radius = min(size.width, size.height) * 0.32
-            let angle = atan2(model.camY, model.camX)
-            let camera = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * radius,
-                y: center.y + CGFloat(sin(angle)) * radius
-            )
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary.opacity(0.28))
-                Circle()
-                    .stroke(.secondary.opacity(0.45), lineWidth: 1)
-                    .frame(width: radius * 2, height: radius * 2)
-                    .position(center)
-                Circle()
-                    .fill(.black)
-                    .frame(width: 28, height: 28)
-                    .position(center)
-                Path { path in
-                    path.move(to: camera)
-                    path.addLine(to: center)
-                }
-                .stroke(.secondary, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                Image(systemName: "camera.viewfinder")
-                    .font(.title2)
-                    .position(camera)
-                Text("drag to orbit / height")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .position(x: size.width * 0.5, y: size.height - 16)
-            }
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        let delta = CGSize(
-                            width: value.translation.width - lastTranslation.width,
-                            height: value.translation.height - lastTranslation.height
-                        )
-                        model.orbitCamera(deltaX: delta.width, deltaY: delta.height)
-                        lastTranslation = value.translation
-                    }
-                    .onEnded { _ in
-                        lastTranslation = .zero
-                    }
-            )
-        }
-    }
-}
-
 private struct CommandPanel: View {
     @ObservedObject var model: LauncherModel
     @Binding var isExpanded: Bool
@@ -714,104 +624,190 @@ private struct ExecutionPanel: View {
     }
 }
 
-private struct RightPreviewColumn: View {
+private struct InteractivePreviewPanel: View {
     @ObservedObject var model: LauncherModel
+    @ObservedObject private var stats: PreviewStats
+
+    init(model: LauncherModel) {
+        self.model = model
+        self.stats = model.previewStats
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            LivePreviewPanel(model: model)
-            Divider()
-            ResultPanel(model: model)
-            Spacer()
+        ZStack(alignment: .topLeading) {
+            Color.black
+            InteractivePreviewViewport(model: model)
+
+            if let failure = stats.failureMessage {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                    Text("Preview unavailable")
+                        .font(.headline)
+                    Text(failure)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            previewHUD
+                .padding(12)
+
+            VStack {
+                Spacer()
+                Text("Drag to orbit · Scroll or pinch to zoom")
+                    .font(.caption2)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.42), in: Capsule())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.bottom, 14)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .padding(18)
+    }
+
+    private var previewHUD: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(statusLine)
+                .font(.caption.weight(.semibold))
+            Text("Samples \(stats.sampleCount) / \(stats.maxSamples)")
+                .font(.caption2)
+            ProgressView(value: progressValue)
+                .frame(width: 150)
+                .tint(.white)
+            Text("\(stats.width)x\(stats.height) · \(Int(stats.fps.rounded())) fps")
+                .font(.caption2)
+        }
+        .monospacedDigit()
+        .foregroundStyle(.white.opacity(0.92))
+        .padding(10)
+        .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var progressValue: Double {
+        guard stats.maxSamples > 0 else { return 0 }
+        return min(1.0, Double(stats.sampleCount) / Double(stats.maxSamples))
+    }
+
+    private var statusLine: String {
+        if stats.interacting { return "Interacting · fast preview" }
+        if stats.converged { return "Converged" }
+        return "Accumulating…"
     }
 }
 
-private struct LivePreviewPanel: View {
+private struct PreviewControlsPanel: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Live Preview")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    model.revealLivePreview()
-                } label: {
-                    Image(systemName: "arrow.up.right.square")
-                }
-                .help("Reveal live preview in Finder")
-            }
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.black)
-                if let image = model.livePreviewImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(10)
-                } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                        Text(model.livePreviewStatus)
-                            .font(.caption)
+        GroupBox("Interactive Preview Viewport") {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Quality", selection: $model.previewQuality) {
+                    ForEach(PreviewQuality.allCases) { quality in
+                        Text(quality.title).tag(quality)
                     }
-                    .foregroundStyle(.secondary)
                 }
-            }
-            .frame(maxWidth: .infinity, minHeight: 210)
+                .pickerStyle(.segmented)
 
-            HStack {
-                ProgressView(value: model.previewProgressFraction)
-                Text(model.isPreviewRunning ? "Rendering" : model.livePreviewStatus)
+                Picker("Tone map", selection: $model.previewToneMap) {
+                    ForEach(PreviewToneMap.allCases) { tone in
+                        Text(tone.title).tag(tone)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                LabeledInputSlider(label: "Exposure", value: $model.previewExposure, range: 0.1...8, format: "%.2f")
+                LabeledInputSlider(label: "Disk glow", value: $model.previewDiskBrightness, range: 0...4, format: "%.2f")
+                LabeledInputSlider(label: "Disk outer", value: $model.previewDiskOuter, range: 8...40, format: "%.1f")
+                LabeledInputSlider(label: "Disk density", value: $model.previewDiskDensity, range: 0...1, format: "%.2f")
+                LabeledInputSlider(label: "Stars", value: $model.previewBackgroundStars, range: 0...3, format: "%.2f")
+
+                Divider()
+                cameraControls
+                Toggle("Apply preview camera to final render", isOn: $model.linkPreviewCameraToRender)
+
+                Text("The viewport runs a fast progressive GPU ray-trace of the current options. It is a reduced-cost preview — use Final Render for full quality.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .padding(4)
+        }
+    }
 
+    private var cameraControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Toggle("Auto", isOn: $model.autoLivePreview)
-                    .toggleStyle(.checkbox)
+                Text("Orbit camera")
+                    .font(.caption.weight(.semibold))
+                Spacer()
                 Button {
-                    model.runLivePreview()
+                    model.resetPreviewCamera()
                 } label: {
-                    Label("Preview", systemImage: "bolt.fill")
+                    Label("Reset", systemImage: "arrow.counterclockwise")
                 }
-                .disabled(model.isPreviewRunning)
-                Button {
-                    model.stopLivePreview()
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .disabled(!model.isPreviewRunning)
-                Button {
-                    model.copyLivePreviewCommandToPasteboard()
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
+                .controlSize(.small)
             }
+            PreviewSlider(
+                label: "Distance",
+                value: Binding(
+                    get: { Double(model.camera.state.radius) },
+                    set: { model.setPreviewRadius($0) }
+                ),
+                range: Double(model.camera.minRadius)...Double(model.camera.maxRadius),
+                format: "%.1f"
+            )
+            PreviewSlider(
+                label: "Azimuth",
+                value: Binding(
+                    get: {
+                        let d = model.camera.state.azimuthDegrees
+                        return d - 360.0 * (d / 360.0).rounded()
+                    },
+                    set: { model.setPreviewAzimuth($0) }
+                ),
+                range: -180...180,
+                format: "%.0f"
+            )
+            PreviewSlider(
+                label: "Elevation",
+                value: Binding(
+                    get: { model.camera.state.elevationDegrees },
+                    set: { model.setPreviewElevation($0) }
+                ),
+                range: -86...86,
+                format: "%.0f"
+            )
+            PreviewSlider(
+                label: "FOV",
+                value: Binding(
+                    get: { Double(model.camera.state.fov) },
+                    set: { model.setPreviewFov($0) }
+                ),
+                range: 14...110,
+                format: "%.0f"
+            )
+        }
+    }
+}
 
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Text("Preview size")
-                    TextField("Width", value: $model.livePreviewWidth, format: .number)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 76)
-                    TextField("Height", value: $model.livePreviewHeight, format: .number)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 76)
-                }
-            }
+private struct PreviewSlider: View {
+    let label: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let format: String
 
-            Toggle("Use custom camera/framing", isOn: $model.useCustomCamera)
-            CameraFramingControls(model: model)
-                .disabled(!model.useCustomCamera)
-
-            Text("This panel renders a separate low-resolution, SSAA 1 preview to improve framing and interpreter tuning. It is not the final output.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    var body: some View {
+        HStack {
+            Text(label)
+                .frame(width: 72, alignment: .leading)
+            Slider(value: $value, in: range)
+            Text(String(format: format, value))
+                .monospacedDigit()
+                .frame(width: 52, alignment: .trailing)
         }
     }
 }
@@ -878,19 +874,6 @@ private struct LabeledInputSlider: View {
                 .frame(width: 72)
             NumericText(value: value, width: 64, format: format)
         }
-    }
-}
-
-private struct NumericInput<F: ParseableFormatStyle>: View where F.FormatInput == Double, F.FormatOutput == String {
-    @Binding var value: Double
-    let width: CGFloat
-    let format: F
-
-    var body: some View {
-        TextField("", value: $value, format: format)
-            .textFieldStyle(.roundedBorder)
-            .monospacedDigit()
-            .frame(width: width)
     }
 }
 
