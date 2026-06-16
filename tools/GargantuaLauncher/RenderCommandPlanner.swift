@@ -2,17 +2,18 @@ import Foundation
 
 struct RenderCommandInputs {
     let source: SourceModelOption
+    let blackHoleMetric: BlackHoleMetric
+    let spin: Double
     let observerMode: ObserverMode
     let renderIntentID: String
     let quality: RenderQuality
     let aspect: OutputAspect
     let customWidth: Int
     let customHeight: Int
+    let outputWidth: Int
+    let outputHeight: Int
     let ssaa: RenderSampling
     let noBuild: Bool
-    let showAdvancedPhysics: Bool
-    let metricKerr: Bool
-    let spin: Double
     let rayBundleMode: RayBundleMode
     let rayBundleJacobianStrength: Double
     let rayBundleFootprintClamp: Double
@@ -48,6 +49,18 @@ struct RenderCommandInputs {
     let eyeAdaptation: Double
     let diskHDF5Path: String
     let outputPath: String
+    let previewOutputPath: String
+    let previewWidth: Int
+    let previewHeight: Int
+}
+
+struct RenderProgressEstimate {
+    let workUnits: Double
+    let buildEnd: Double
+    let configEnd: Double
+    let traceEnd: Double
+    let composeEnd: Double
+    let outputEnd: Double
 }
 
 struct RenderCommandPlan {
@@ -55,6 +68,7 @@ struct RenderCommandPlan {
     let repositoryRoot: URL
     let arguments: [String]
     let outputPath: String
+    let progressEstimate: RenderProgressEstimate
 
     var rawBufferPath: String {
         outputPath + ".raw.linear32f32"
@@ -78,24 +92,56 @@ struct RenderCommandPlan {
 
 enum RenderCommandPlanner {
     static func plan(for inputs: RenderCommandInputs) -> RenderCommandPlan {
-        let outputPath = inputs.outputPath
+        let size = inputs.aspect.size(customWidth: inputs.customWidth, customHeight: inputs.customHeight)
+        return plan(
+            for: inputs,
+            outputPath: inputs.outputPath,
+            width: size.width,
+            height: size.height,
+            ssaa: inputs.ssaa,
+            quality: inputs.quality,
+            includeRawSidecars: true
+        )
+    }
+
+    static func livePreviewPlan(for inputs: RenderCommandInputs) -> RenderCommandPlan {
+        plan(
+            for: inputs,
+            outputPath: inputs.previewOutputPath,
+            width: max(64, inputs.previewWidth),
+            height: max(64, inputs.previewHeight),
+            ssaa: .one,
+            quality: .preview,
+            includeRawSidecars: false
+        )
+    }
+
+    private static func plan(
+        for inputs: RenderCommandInputs,
+        outputPath: String,
+        width: Int,
+        height: Int,
+        ssaa: RenderSampling,
+        quality: RenderQuality,
+        includeRawSidecars: Bool
+    ) -> RenderCommandPlan {
         var args: [String] = []
         args.append(contentsOf: inputs.source.args)
         if inputs.source.requiresDiskHDF5 ?? false {
             args.append(contentsOf: ["--disk-hdf5", effectiveDiskHDF5Path(inputs)])
         }
-        args.append(contentsOf: ["--quality", inputs.quality.rawValue])
+        args.append(contentsOf: ["--quality", quality.rawValue])
 
-        let size = inputs.aspect.size(customWidth: inputs.customWidth, customHeight: inputs.customHeight)
-        args.append(contentsOf: ["--width", "\(size.width)", "--height", "\(size.height)"])
-        args.append(contentsOf: ["--ssaa", inputs.ssaa.rawValue])
+        args.append(contentsOf: ["--width", "\(width)", "--height", "\(height)"])
+        args.append(contentsOf: ["--ssaa", ssaa.rawValue])
 
-        if inputs.showAdvancedPhysics && inputs.metricKerr {
+        switch inputs.blackHoleMetric {
+        case .schwarzschild:
+            args.append(contentsOf: ["--metric", "schwarzschild", "--spin", "0"])
+        case .kerr:
             args.append(contentsOf: ["--metric", "kerr", "--spin", formatted(inputs.spin)])
         }
-        if inputs.showAdvancedPhysics {
-            appendRayBundleArguments(inputs, to: &args)
-        }
+        appendRayBundleArguments(inputs, to: &args)
         if inputs.useCustomCamera {
             args.append(contentsOf: [
                 "--camX", formatted(inputs.camX),
@@ -110,7 +156,7 @@ enum RenderCommandPlanner {
         case .eye:
             args.append(contentsOf: eyeArguments(inputs))
         case .camera:
-            args.append(contentsOf: cameraArguments(inputs, outputPath: outputPath))
+            args.append(contentsOf: cameraArguments(inputs, outputPath: outputPath, includeRawSidecars: includeRawSidecars))
         }
 
         if inputs.noBuild {
@@ -121,7 +167,51 @@ enum RenderCommandPlanner {
             executablePath: ProjectPaths.runPipelineURL.path,
             repositoryRoot: ProjectPaths.repositoryRoot,
             arguments: args,
-            outputPath: outputPath
+            outputPath: outputPath,
+            progressEstimate: progressEstimate(
+                width: width,
+                height: height,
+                ssaa: ssaa,
+                quality: quality,
+                rayBundleMode: inputs.rayBundleMode,
+                noBuild: inputs.noBuild
+            )
+        )
+    }
+
+    private static func progressEstimate(
+        width: Int,
+        height: Int,
+        ssaa: RenderSampling,
+        quality: RenderQuality,
+        rayBundleMode: RayBundleMode,
+        noBuild: Bool
+    ) -> RenderProgressEstimate {
+        let ssaaFactor = Double(Int(ssaa.rawValue) ?? 1)
+        let qualityFactor = quality == .hq ? 1.8 : 1.0
+        let bundleFactor: Double
+        switch rayBundleMode {
+        case .off: bundleFactor = 1.0
+        case .on: bundleFactor = 4.0
+        case .jacobian: bundleFactor = 5.5
+        }
+        let traceWork = Double(max(width, 1) * max(height, 1)) * ssaaFactor * ssaaFactor * qualityFactor * bundleFactor
+        let composeWork = Double(max(width, 1) * max(height, 1)) * ssaaFactor * ssaaFactor * 0.28
+        let outputWork = Double(max(width, 1) * max(height, 1)) * 0.04
+        let buildWork = noBuild ? traceWork * 0.015 : max(traceWork * 0.18, 800_000)
+        let configWork = max(traceWork * 0.025, 60_000)
+        let total = max(buildWork + configWork + traceWork + composeWork + outputWork, 1)
+        let buildEnd = buildWork / total
+        let configEnd = (buildWork + configWork) / total
+        let traceEnd = (buildWork + configWork + traceWork) / total
+        let composeEnd = (buildWork + configWork + traceWork + composeWork) / total
+        return RenderProgressEstimate(
+            workUnits: total,
+            buildEnd: buildEnd,
+            configEnd: configEnd,
+            traceEnd: traceEnd,
+            composeEnd: composeEnd,
+            outputEnd: 1.0
         )
     }
 
@@ -161,9 +251,9 @@ enum RenderCommandPlanner {
         return args
     }
 
-    private static func cameraArguments(_ inputs: RenderCommandInputs, outputPath: String) -> [String] {
+    private static func cameraArguments(_ inputs: RenderCommandInputs, outputPath: String, includeRawSidecars: Bool) -> [String] {
         if inputs.renderIntentID == "raw-like" {
-            return rawLikeCameraArguments(outputPath: outputPath)
+            return rawLikeCameraArguments(outputPath: outputPath, includeSidecars: includeRawSidecars)
         }
 
         var args: [String] = [
@@ -253,8 +343,8 @@ enum RenderCommandPlanner {
         return args
     }
 
-    private static func rawLikeCameraArguments(outputPath: String) -> [String] {
-        [
+    private static func rawLikeCameraArguments(outputPath: String, includeSidecars: Bool) -> [String] {
+        var args = [
             "--presentation", "camera-raw",
             "--camera-model", "legacy",
             "--camera-profile", "ideal",
@@ -266,11 +356,16 @@ enum RenderCommandPlanner {
             "--camera-shot-noise", "0",
             "--camera-flare", "0",
             "--camera-dof-strength", "0",
-            "--background", "off",
-            "--hdr-intermediate",
-            "--hdr-out", outputPath + ".raw.linear32f32",
-            "--camera-raw-out", outputPath + ".bayer-rggb-f32.raw"
+            "--background", "off"
         ]
+        if includeSidecars {
+            args.append(contentsOf: [
+                "--hdr-intermediate",
+                "--hdr-out", outputPath + ".raw.linear32f32",
+                "--camera-raw-out", outputPath + ".bayer-rggb-f32.raw"
+            ])
+        }
+        return args
     }
 
     private static func formatted(_ value: Double) -> String {

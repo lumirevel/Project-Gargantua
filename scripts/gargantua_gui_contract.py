@@ -37,6 +37,10 @@ VALID_STATUS = {"recommended", "production-candidate", "surrogate", "diagnostic"
 COMMAND_MATRIX_MODES = ["eye", "raw-like", "rendered", "cinematic"]
 
 BASE_PREFIX_ARGS = [
+    "--metric",
+    "kerr",
+    "--spin",
+    "0.6",
     "--quality",
     "preview",
     "--width",

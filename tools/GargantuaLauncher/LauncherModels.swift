@@ -204,11 +204,39 @@ enum ObserverMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum BlackHoleMetric: String, CaseIterable, Identifiable {
+    case schwarzschild
+    case kerr
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .schwarzschild: return "Schwarzschild"
+        case .kerr: return "Kerr"
+        }
+    }
+}
+
 enum RenderQuality: String, CaseIterable, Identifiable {
     case preview
     case hq
 
     var id: String { rawValue }
+}
+
+enum ExposureControlGranularity: String, CaseIterable, Identifiable {
+    case stops
+    case fine
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .stops: return "Stops"
+        case .fine: return "Fine"
+        }
+    }
 }
 
 enum RenderSampling: String, CaseIterable, Identifiable {
@@ -323,4 +351,24 @@ enum CameraPhotonNoiseMode: String, CaseIterable, Identifiable {
     case off
 
     var id: String { rawValue }
+}
+
+enum CameraStopTables {
+    static let fNumbers = [1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0]
+    static let isoValues = [100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0, 12800.0]
+    static let shutters = ["1/1000", "1/500", "1/250", "1/125", "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1"]
+
+    static func nearestIndex(_ value: Double, in values: [Double]) -> Double {
+        guard let best = values.enumerated().min(by: { abs($0.element - value) < abs($1.element - value) }) else {
+            return 0
+        }
+        return Double(best.offset)
+    }
+
+    static func shutterIndex(_ value: String) -> Double {
+        if let exact = shutters.firstIndex(of: value) {
+            return Double(exact)
+        }
+        return Double(shutters.firstIndex(of: "1/60") ?? 4)
+    }
 }
