@@ -2,241 +2,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-struct SourceModelOption: Identifiable, Hashable, Codable {
-    let id: String
-    let title: String
-    let layer: String
-    let status: String
-    let summary: String
-    let requiresDiskHDF5: Bool?
-    let defaultDiskHDF5: String?
-    let args: [String]
-}
-
-struct RenderIntentOption: Identifiable, Hashable, Codable {
-    let id: String
-    let title: String
-    let summary: String
-}
-
-struct LauncherOptionsManifest: Codable {
-    let schemaVersion: Int
-    let sourceModels: [SourceModelOption]
-    let renderIntents: [RenderIntentOption]
-
-    static func load() -> LauncherOptionsManifest {
-        let decoder = JSONDecoder()
-        for path in manifestSearchPaths() {
-            let url = URL(fileURLWithPath: path)
-            guard let data = try? Data(contentsOf: url),
-                  let manifest = try? decoder.decode(LauncherOptionsManifest.self, from: data),
-                  manifest.schemaVersion == 1,
-                  !manifest.sourceModels.isEmpty,
-                  !manifest.renderIntents.isEmpty else {
-                continue
-            }
-            return manifest
-        }
-        return fallback
-    }
-
-    private static func manifestSearchPaths() -> [String] {
-        ProjectPaths.manifestSearchPaths()
-    }
-
-    private static let fallback = LauncherOptionsManifest(
-        schemaVersion: 1,
-        sourceModels: [
-            SourceModelOption(
-                id: "canonical-visible-disk-v1",
-                title: "Canonical Visible Disk",
-                layer: "SourceModels / ThinDisk",
-                status: "recommended",
-                summary: "Recommended scientific visible-disk baseline.",
-                requiresDiskHDF5: nil,
-                defaultDiskHDF5: nil,
-                args: ["--source-model", "canonical-visible-disk-v1"]
-            ),
-            SourceModelOption(
-                id: "legacy-perlin",
-                title: "Legacy Perlin",
-                layer: "Legacy",
-                status: "legacy",
-                summary: "Historic soft Perlin disk reproduction path.",
-                requiresDiskHDF5: nil,
-                defaultDiskHDF5: nil,
-                args: ["--disk-mode", "thin", "--disk-model", "perlin"]
-            ),
-            SourceModelOption(
-                id: "legacy-perlin-classic",
-                title: "Legacy Perlin F552 Classic",
-                layer: "Legacy",
-                status: "legacy",
-                summary: "Historic F552/classic stripe-like disk reproduction path.",
-                requiresDiskHDF5: nil,
-                defaultDiskHDF5: nil,
-                args: ["--disk-mode", "thin", "--disk-model", "perlin-classic"]
-            ),
-            SourceModelOption(
-                id: "legacy-perlin-ec7",
-                title: "Legacy Perlin EC7 Crisp",
-                layer: "Legacy",
-                status: "legacy",
-                summary: "Historic crisp EC7 Perlin reproduction path.",
-                requiresDiskHDF5: nil,
-                defaultDiskHDF5: nil,
-                args: ["--disk-mode", "thin", "--disk-model", "perlin-ec7"]
-            ),
-            SourceModelOption(
-                id: "legacy-bh-finish-grmhd",
-                title: "Legacy bh_finish GRMHD",
-                layer: "Legacy / GRMHD",
-                status: "legacy",
-                summary: "Recovered bh_finish_cinema_1536.png family.",
-                requiresDiskHDF5: true,
-                defaultDiskHDF5: "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
-                args: ["--science-regime", "legacy-bh-finish-grmhd"]
-            ),
-            SourceModelOption(
-                id: "legacy-thin-disk-preset-default",
-                title: "Legacy Thin Disk Preset Default",
-                layer: "Legacy / DNGR Volume",
-                status: "legacy",
-                summary: "Recovered thin_disk_preset_default.png family.",
-                requiresDiskHDF5: nil,
-                defaultDiskHDF5: nil,
-                args: ["--science-regime", "legacy-thin-disk-preset-default"]
-            )
-        ],
-        renderIntents: [
-            RenderIntentOption(
-                id: "raw-like",
-                title: "Scientific RAW / Linear Audit",
-                summary: "Identity linear preview plus ideal RGGB float32 CFA RAW sidecar."
-            ),
-            RenderIntentOption(
-                id: "rendered",
-                title: "Camera Rendered",
-                summary: "Full-frame photographic exposure with restrained tone mapping."
-            ),
-            RenderIntentOption(
-                id: "cinematic",
-                title: "Cinematic Grade",
-                summary: "Cinema profile, filmic look, flare, and optional depth of field."
-            )
-        ]
-    )
-}
-
-enum ProjectPaths {
-    static let sourceFilePath = String(#filePath)
-
-    static var repositoryRoot: URL {
-        if let envRoot = ProcessInfo.processInfo.environment["BH_PROJECT_ROOT"],
-           let root = validateRepositoryRoot(URL(fileURLWithPath: envRoot)) {
-            return root
-        }
-
-        let candidates = [
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
-            URL(fileURLWithPath: sourceFilePath).deletingLastPathComponent(),
-            Bundle.main.resourceURL
-        ].compactMap { $0 }
-
-        for candidate in candidates {
-            if let root = findRepositoryRoot(startingAt: candidate) {
-                return root
-            }
-        }
-
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    }
-
-    static var runPipelineURL: URL {
-        repositoryRoot.appendingPathComponent("Blackhole/run_pipeline.sh")
-    }
-
-    static func manifestSearchPaths() -> [String] {
-        var paths = [
-            repositoryRoot.appendingPathComponent("docs/realism/gui_option_manifest_v1.json").path
-        ]
-        if let bundleResource = Bundle.main.resourceURL {
-            paths.append(bundleResource.appendingPathComponent("gui_option_manifest_v1.json").path)
-        }
-        return paths
-    }
-
-    private static func findRepositoryRoot(startingAt start: URL) -> URL? {
-        var current = start.hasDirectoryPath ? start : start.deletingLastPathComponent()
-        for _ in 0..<12 {
-            if let root = validateRepositoryRoot(current) {
-                return root
-            }
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path {
-                break
-            }
-            current = parent
-        }
-        return nil
-    }
-
-    private static func validateRepositoryRoot(_ url: URL) -> URL? {
-        let script = url.appendingPathComponent("Blackhole/run_pipeline.sh").path
-        let manifest = url.appendingPathComponent("docs/realism/gui_option_manifest_v1.json").path
-        guard FileManager.default.isExecutableFile(atPath: script),
-              FileManager.default.fileExists(atPath: manifest) else {
-            return nil
-        }
-        return url
-    }
-}
-
-enum ObserverMode: String, CaseIterable, Identifiable {
-    case eye
-    case camera
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .eye: return "Human Eye"
-        case .camera: return "Camera"
-        }
-    }
-}
-
-enum RenderQuality: String, CaseIterable, Identifiable {
-    case preview
-    case hq
-
-    var id: String { rawValue }
-}
-
-enum OutputAspect: String, CaseIterable, Identifiable {
-    case hd
-    case square
-    case small
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .hd: return "1536 x 864"
-        case .square: return "1024 x 1024"
-        case .small: return "768 x 432"
-        }
-    }
-
-    var size: (width: Int, height: Int) {
-        switch self {
-        case .hd: return (1536, 864)
-        case .square: return (1024, 1024)
-        case .small: return (768, 432)
-        }
-    }
-}
-
 @MainActor
 final class LauncherModel: ObservableObject {
     let sourceModels: [SourceModelOption]
@@ -292,73 +57,26 @@ final class LauncherModel: ObservableObject {
         selectedSource.requiresDiskHDF5 ?? false
     }
 
-    var effectiveDiskHDF5Path: String {
-        let explicit = diskHDF5Path.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !explicit.isEmpty {
-            return explicit
-        }
-        return selectedSource.defaultDiskHDF5 ?? ""
-    }
-
-    var rawBufferPath: String {
-        outputPath + ".raw.linear32f32"
-    }
-
-    var sensorRawBufferPath: String {
-        outputPath + ".bayer-rggb-f32.raw"
-    }
-
-    var builtArguments: [String] {
-        var args: [String] = []
-        args.append(contentsOf: selectedSource.args)
-        if selectedSourceRequiresDiskHDF5 {
-            args.append(contentsOf: ["--disk-hdf5", effectiveDiskHDF5Path])
-        }
-        args.append(contentsOf: ["--quality", quality.rawValue])
-
-        let size = aspect.size
-        args.append(contentsOf: ["--width", "\(size.width)", "--height", "\(size.height)"])
-
-        if showAdvancedPhysics && metricKerr {
-            args.append(contentsOf: ["--metric", "kerr", "--spin", formatted(spin)])
-        }
-
-        switch observerMode {
-        case .eye:
-            args.append(contentsOf: [
-                "--presentation", "eye",
-                "--camera-model", "eye",
-                "--realism-profile", "physical",
-                "--look", "realistic"
-            ])
-        case .camera:
-            args.append(contentsOf: cameraArguments())
-        }
-
-        if noBuild {
-            args.append("--no-build")
-        }
-        args.append(contentsOf: ["--output", outputPath])
-        return args
+    var commandPlan: RenderCommandPlan {
+        RenderCommandPlanner.plan(for: commandInputs)
     }
 
     var commandPreview: String {
-        ([ProjectPaths.runPipelineURL.path] + builtArguments).map(shellQuoted).joined(separator: " ")
+        commandPlan.commandPreview
     }
 
     func runRender() {
         guard !isRunning else { return }
         isRunning = true
-        logText = "Running...\n\n\(commandPreview)"
+        let plan = commandPlan
+        logText = "Running...\n\n\(plan.commandPreview)"
 
-        let args = builtArguments
-        let output = outputPath
         let process = Process()
         let pipe = Pipe()
         let readHandle = pipe.fileHandleForReading
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [ProjectPaths.runPipelineURL.path] + args
-        process.currentDirectoryURL = ProjectPaths.repositoryRoot
+        process.arguments = [plan.executablePath] + plan.arguments
+        process.currentDirectoryURL = plan.repositoryRoot
         var environment = ProcessInfo.processInfo.environment
         let guiPath = [
             environment["PATH"],
@@ -371,7 +89,7 @@ final class LauncherModel: ObservableObject {
             "/Applications/Xcode.app/Contents/Developer/usr/bin"
         ].compactMap { $0 }.joined(separator: ":")
         environment["PATH"] = guiPath
-        environment["BH_PROJECT_ROOT"] = ProjectPaths.repositoryRoot.path
+        environment["BH_PROJECT_ROOT"] = plan.repositoryRoot.path
         process.environment = environment
         process.standardOutput = pipe
         process.standardError = pipe
@@ -399,7 +117,7 @@ final class LauncherModel: ObservableObject {
                 }
                 self?.logText += "\nRender finished with status \(proc.terminationStatus)."
                 if proc.terminationStatus == 0 {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: output)])
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: plan.outputPath)])
                 }
             }
         }
@@ -437,66 +155,28 @@ final class LauncherModel: ObservableObject {
         }
     }
 
-    private func cameraArguments() -> [String] {
-        if renderIntentID == "raw-like" {
-            return [
-                "--presentation", "camera-raw",
-                "--camera-model", "legacy",
-                "--camera-profile", "ideal",
-                "--look", "linear",
-                "--exposure-mode", "fixed",
-                "--exposure-ev", "0",
-                "--camera-psf-sigma", "0",
-                "--camera-read-noise", "0",
-                "--camera-shot-noise", "0",
-                "--camera-flare", "0",
-                "--camera-dof-strength", "0",
-                "--background", "off",
-                "--hdr-intermediate",
-                "--hdr-out", rawBufferPath,
-                "--camera-raw-out", sensorRawBufferPath
-            ]
-        }
-
-        var args: [String] = [
-            "--presentation", renderIntentID == "cinematic" ? "cinema" : "camera-rendered",
-            "--camera-model", "cinematic",
-            "--exposure-mode", "photographic",
-            "--camera-f-number", formatted(fNumber),
-            "--camera-iso", formatted(iso),
-            "--camera-shutter", shutter
-        ]
-
-        if renderIntentID == "cinematic" {
-            args.append(contentsOf: [
-                "--camera-profile", "cinema-digital",
-                "--look", enableColorGrade ? "sensor-filmic" : "linear",
-                "--realism-profile", "cinematic",
-                "--camera-flare", formatted((allowExperimentalCinematicControls && enableCinematicEffects) ? flareStrength : 0.0),
-                "--camera-dof-strength", formatted((allowExperimentalCinematicControls && enableDepthOfField) ? 1.0 : 0.0),
-                "--camera-aperture-blades", "7"
-            ])
-        } else {
-            args.append(contentsOf: [
-                "--camera-profile", "full-frame",
-                "--look", enableColorGrade ? "agx" : "linear",
-                "--realism-profile", "observational",
-                "--camera-flare", formatted((allowExperimentalCinematicControls && enableCinematicEffects) ? flareStrength : 0.0),
-                "--camera-dof-strength", formatted((allowExperimentalCinematicControls && enableDepthOfField) ? 0.6 : 0.0)
-            ])
-        }
-        return args
-    }
-
-    private func shellQuoted(_ value: String) -> String {
-        if value.range(of: #"[^A-Za-z0-9_@%+=:,./-]"#, options: .regularExpression) == nil {
-            return value
-        }
-        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func formatted(_ value: Double) -> String {
-        String(format: "%.4g", value)
+    private var commandInputs: RenderCommandInputs {
+        RenderCommandInputs(
+            source: selectedSource,
+            observerMode: observerMode,
+            renderIntentID: renderIntentID,
+            quality: quality,
+            aspect: aspect,
+            noBuild: noBuild,
+            showAdvancedPhysics: showAdvancedPhysics,
+            metricKerr: metricKerr,
+            spin: spin,
+            enableColorGrade: enableColorGrade,
+            allowExperimentalCinematicControls: allowExperimentalCinematicControls,
+            enableCinematicEffects: enableCinematicEffects,
+            enableDepthOfField: enableDepthOfField,
+            flareStrength: flareStrength,
+            fNumber: fNumber,
+            iso: iso,
+            shutter: shutter,
+            diskHDF5Path: diskHDF5Path,
+            outputPath: outputPath
+        )
     }
 }
 

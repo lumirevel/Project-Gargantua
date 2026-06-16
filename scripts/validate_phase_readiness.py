@@ -6,6 +6,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from gargantua_gui_contract import launcher_sources_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -64,7 +66,10 @@ FILES = {
         "docs/realism/gui_option_surface_v1.md",
         "docs/realism/gui_option_manifest_v1.json",
         "tools/GargantuaLauncher/GargantuaLauncher.swift",
+        "tools/GargantuaLauncher/LauncherModels.swift",
+        "tools/GargantuaLauncher/RenderCommandPlanner.swift",
         "tools/GargantuaLauncher/run_gui.sh",
+        "scripts/gargantua_gui_contract.py",
         "scripts/validate_gui_option_manifest.py",
         "scripts/validate_gui_command_matrix.py",
     ],
@@ -220,7 +225,7 @@ TOKENS = {
         "defaultDiskHDF5",
         "legacy-perlin",
     ],
-    "tools/GargantuaLauncher/GargantuaLauncher.swift": [
+    "tools/GargantuaLauncher/*.swift": [
         "gui_option_manifest_v1.json",
         "JSONDecoder",
         "manifestSearchPaths",
@@ -229,6 +234,12 @@ TOKENS = {
         "--disk-hdf5",
         "rawBufferPath",
         "sensorRawBufferPath",
+    ],
+    "scripts/gargantua_gui_contract.py": [
+        "COMMAND_MATRIX_MODES",
+        "RAW_LIKE_ARGS",
+        "command_for",
+        "launcher_sources_text",
     ],
     "scripts/validate_gui_command_matrix.py": [
         "raw-like",
@@ -249,6 +260,8 @@ TOKENS = {
 
 
 def read(rel: str) -> str:
+    if rel == "tools/GargantuaLauncher/*.swift":
+        return launcher_sources_text()
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
@@ -266,7 +279,7 @@ def main() -> None:
                 failures.append(f"{phase}: missing {rel}")
 
     for rel, tokens in TOKENS.items():
-        text = read(rel) if (ROOT / rel).exists() else ""
+        text = read(rel) if rel == "tools/GargantuaLauncher/*.swift" or (ROOT / rel).exists() else ""
         for token in tokens:
             if token not in text:
                 failures.append(f"{rel}: missing {token!r}")

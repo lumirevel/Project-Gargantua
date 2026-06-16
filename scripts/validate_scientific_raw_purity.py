@@ -12,12 +12,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from gargantua_gui_contract import launcher_sources_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path("/private/tmp/bh_scientific_raw_purity.json")
 
 
 def read(rel: str) -> str:
+    if rel == "tools/GargantuaLauncher/*.swift":
+        return launcher_sources_text()
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
@@ -108,7 +112,7 @@ def main() -> None:
         ),
         "gui_raw_like_command": group(
             "gui_raw_like_command",
-            "tools/GargantuaLauncher/GargantuaLauncher.swift",
+            "tools/GargantuaLauncher/*.swift",
             [
                 '"--presentation", "camera-raw"',
                 '"--camera-model", "legacy"',
@@ -122,7 +126,7 @@ def main() -> None:
                 '"--camera-dof-strength", "0"',
                 '"--background", "off"',
                 '"--hdr-intermediate"',
-                '"--hdr-out", rawBufferPath',
+                '"--hdr-out", outputPath + ".raw.linear32f32"',
             ],
         ),
         "gui_matrix_raw_like_gate": group(

@@ -7,6 +7,8 @@ import json
 import re
 from pathlib import Path
 
+from gargantua_gui_contract import launcher_sources_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "Blackhole.xcodeproj" / "project.pbxproj"
@@ -21,7 +23,7 @@ def find_block(text: str, object_id: str) -> str:
 
 def main() -> None:
     text = PROJECT.read_text(encoding="utf-8")
-    launcher_text = (ROOT / "tools" / "GargantuaLauncher" / "GargantuaLauncher.swift").read_text(encoding="utf-8")
+    launcher_text = launcher_sources_text()
     target_id = "D1A000000000000000000009"
     sources_id = "D1A000000000000000000007"
     resources_id = "D1A000000000000000000008"
@@ -33,16 +35,20 @@ def main() -> None:
         "app_target_exists": "D1A000000000000000000009 /* GargantuaLauncher */" in text,
         "product_type_application": 'productType = "com.apple.product-type.application";' in target_block,
         "source_file_referenced": "tools/GargantuaLauncher/GargantuaLauncher.swift" in text,
+        "launcher_model_file_referenced": "tools/GargantuaLauncher/LauncherModels.swift" in text,
+        "command_planner_file_referenced": "tools/GargantuaLauncher/RenderCommandPlanner.swift" in text,
         "manifest_file_referenced": "docs/realism/gui_option_manifest_v1.json" in text,
         "launcher_in_sources": "GargantuaLauncher.swift in Sources" in sources_block,
+        "launcher_models_in_sources": "LauncherModels.swift in Sources" in sources_block,
+        "command_planner_in_sources": "RenderCommandPlanner.swift in Sources" in sources_block,
         "manifest_in_resources": "gui_option_manifest_v1.json in Resources" in resources_block,
         "generated_infoplist": "GENERATE_INFOPLIST_FILE = YES;" in text,
         "bundle_identifier": "local.project-gargantua.GargantuaLauncher" in text,
         "cli_target_still_tool": 'C0152EA82F47E42B00DEB017 /* Blackhole */' in text
         and 'productType = "com.apple.product-type.tool";' in text,
         "render_uses_absolute_pipeline_path": "ProjectPaths.runPipelineURL.path" in launcher_text,
-        "render_cwd_is_repository_root": "process.currentDirectoryURL = ProjectPaths.repositoryRoot" in launcher_text,
-        "render_exports_project_root": 'environment["BH_PROJECT_ROOT"] = ProjectPaths.repositoryRoot.path' in launcher_text,
+        "render_cwd_is_repository_root": "process.currentDirectoryURL = plan.repositoryRoot" in launcher_text,
+        "render_exports_project_root": 'environment["BH_PROJECT_ROOT"] = plan.repositoryRoot.path' in launcher_text,
         "render_has_gui_path_fallback": 'environment["PATH"] = guiPath' in launcher_text
         and "/Applications/Xcode.app/Contents/Developer/usr/bin" in launcher_text,
         "render_process_is_retained": "private var runningProcess: Process?" in launcher_text

@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		D1A000000000000000000004 /* GargantuaLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000002 /* GargantuaLauncher.swift */; };
 		D1A000000000000000000005 /* gui_option_manifest_v1.json in Resources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000003 /* gui_option_manifest_v1.json */; };
+		D1A00000000000000000000E /* LauncherModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A00000000000000000000F /* LauncherModels.swift */; };
+		D1A000000000000000000010 /* RenderCommandPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A000000000000000000011 /* RenderCommandPlanner.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -28,6 +30,8 @@
 		D1A000000000000000000001 /* GargantuaLauncher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GargantuaLauncher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1A000000000000000000002 /* GargantuaLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/GargantuaLauncher.swift; sourceTree = "<group>"; };
 		D1A000000000000000000003 /* gui_option_manifest_v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = docs/realism/gui_option_manifest_v1.json; sourceTree = "<group>"; };
+		D1A00000000000000000000F /* LauncherModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/LauncherModels.swift; sourceTree = "<group>"; };
+		D1A000000000000000000011 /* RenderCommandPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tools/GargantuaLauncher/RenderCommandPlanner.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -77,6 +81,8 @@
 		D1A00000000000000000000D /* GargantuaLauncher */ = {
 			isa = PBXGroup;
 			children = (
+				D1A00000000000000000000F /* LauncherModels.swift */,
+				D1A000000000000000000011 /* RenderCommandPlanner.swift */,
 				D1A000000000000000000002 /* GargantuaLauncher.swift */,
 				D1A000000000000000000003 /* gui_option_manifest_v1.json */,
 			);
@@ -188,6 +194,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D1A00000000000000000000E /* LauncherModels.swift in Sources */,
+				D1A000000000000000000010 /* RenderCommandPlanner.swift in Sources */,
 				D1A000000000000000000004 /* GargantuaLauncher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

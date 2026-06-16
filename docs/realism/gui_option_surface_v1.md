@@ -91,6 +91,9 @@ development entry point. The launcher:
   legacy sections so reproduction paths do not look like default science choices
 - loads source models and camera intents from
   `docs/realism/gui_option_manifest_v1.json`
+- keeps manifest/path models in `tools/GargantuaLauncher/LauncherModels.swift`
+- builds CLI arguments through the side-effect-free
+  `tools/GargantuaLauncher/RenderCommandPlanner.swift`
 - exposes a GRMHD HDF5 snapshot field for data-backed diagnostic sources
 - groups observer and camera controls by contract layer
 - disables camera/cinematic adjustment controls for the scientific RAW audit
@@ -120,6 +123,8 @@ python3 scripts/validate_gui_primary_target.py
 python3 scripts/validate_gui_option_manifest.py
 python3 scripts/validate_gui_command_matrix.py
 ```
+
+Shared GUI validation helpers live in `scripts/gargantua_gui_contract.py`.
 
 Current status:
 
