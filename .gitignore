@@ -13,8 +13,15 @@ __pycache__/
 /*.ppm
 /*.bin
 /*.bin.json
+/*.exposure_debug.json
 /*.h5
 /pipeline_eta_history.json
+/--disk-mode
+/out/
+/legacy origin/
+
+# Local assistant/worktree state
+/.claude/
 
 # Local render outputs under the app wrapper directory
 /Blackhole/*.png

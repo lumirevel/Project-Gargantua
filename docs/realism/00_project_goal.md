@@ -43,3 +43,16 @@ This layer defines how already-formed physical light is perceived, measured, or 
 ## Realism Rule
 
 Avoid beauty-only realism. A beautiful image is not enough. Realism must remain explainable through diagnostics such as raw radiance, optical depth, redshift, hit masks, source-location proxies, and presentation-stage debug outputs.
+
+## Operating Model
+
+The project follows a contract-first AI workflow:
+
+```text
+Science Architect -> Implementation Agent -> Verification Agent -> Integrator
+```
+
+The Science Architect defines physical law and validation. Implementation agents
+execute narrow tickets. Verification agents audit diffs and diagnostics. The
+Integrator accepts only validated work. Aesthetic direction happens after the
+physical and observer contracts remain intact.

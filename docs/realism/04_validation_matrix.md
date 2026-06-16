@@ -29,6 +29,18 @@ Use a small matrix rather than one beauty render:
 - bloom/glare stress test
 - black background / high contrast stress test
 
+## Model-Level Gates
+
+| Level | Required gate before promotion |
+| --- | --- |
+| L0 Vacuum Geodesic Baseline | Null condition, Schwarzschild/Kerr limiting cases, conserved-quantity drift, horizon/escape classification. |
+| L1 Thin Disk Reference | Source-radius diagnostics, known thin-disk morphology, explicit assumptions and limitations. |
+| L2 Relativistic Transfer | Redshift/g-factor maps, Doppler asymmetry, invariant `I_nu / nu^3` checks, absorption/emission diagnostics. |
+| L3 GRMHD Snapshot Postprocess | Named snapshot, variable mapping, unit assumptions, scalar diagnostics, and clear postprocess labeling. |
+| L4 Polarized GRRT | Stokes diagnostics, parallel-transport checks, Faraday-term assumptions, comparison against reference cases. |
+| L5 Observer Interpreter | Same radiance through scientific/eye/camera-raw/camera-rendered paths and exposure/adaptation diagnostics. |
+| L6 Cinematic Layer | Proof that scientific and RAW-like diagnostics remain unchanged by cinematic effects. |
+
 ## Physics Branch Validation
 
 Physics changes should provide at least:

@@ -7,6 +7,8 @@
 - Interpreter branches must not change disk density, emissivity, opacity, geodesic integration, hit logic, redshift, optical depth, or physical transfer.
 - Always preserve or improve debug visibility.
 - Beauty image alone is not enough.
+- Follow `06_ai_role_protocol.md`: implementation work must cite a contract or
+  ticket, and verification work must audit the diff instead of rewriting scope.
 
 ## Engineering Rules
 
