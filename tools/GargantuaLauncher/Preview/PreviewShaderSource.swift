@@ -173,7 +173,6 @@ inline float3 traceRay(float3 pos, float3 dir, constant Uniforms& u) {
     float3 v = dir;
     float3 radiance = float3(0.0);
     float3 trans = float3(1.0);
-    int crossings = 0;
 
     for (uint i = 0; i < maxSteps; i++) {
         float r = length(p);
@@ -198,17 +197,22 @@ inline float3 traceRay(float3 pos, float3 dir, constant Uniforms& u) {
             vNew = normalize(vNew) * length(v);
         }
 
-        // Equatorial disk crossing (plane z = 0).
-        if (p.z * pNew.z < 0.0 && crossings < 4) {
-            float t = p.z / (p.z - pNew.z);
-            float3 hit = mix(p, pNew, t);
-            float rHit = length(hit);
-            if (rHit >= inner && rHit <= outer) {
-                float3 e = diskEmission(hit, normalize(vNew), rHit, u);
-                float alpha = clamp(u.disk1.y, 0.0, 1.0);
-                radiance += trans * e;
-                trans *= (1.0 - alpha);
-                crossings++;
+        // Finite-thickness accretion disk: integrate emission and absorption
+        // over the portion of this ray segment inside the disk's vertical
+        // extent. Works face-on (quick crossing) and edge-on (long grazing),
+        // so a razor-thin plane no longer reads as black when viewed edge-on.
+        float3 mid = 0.5 * (p + pNew);
+        float rc = length(mid);
+        if (rc >= inner && rc <= outer) {
+            float halfH = max(u.disk0.w, 0.05) * (0.6 + 0.05 * rc);
+            if (abs(mid.z) < halfH) {
+                float vert = exp(-2.0 * mid.z * mid.z / (halfH * halfH));
+                float pathInBand = min(length(pNew - p), 2.0 * halfH);
+                float dens = clamp(u.disk1.y, 0.0, 1.0);
+                float a = 1.0 - exp(-dens * vert * pathInBand * 1.6);
+                float3 e = diskEmission(mid, normalize(vNew), rc, u);
+                radiance += trans * e * a;
+                trans *= (1.0 - a);
             }
         }
 
@@ -247,7 +251,9 @@ kernel void accumulateKernel(texture2d<float, access::read>  prevTex [[texture(0
         ndc.y = -ndc.y;
         float3 dir = normalize(u.camForward.xyz
             + tanHalf * (ndc.x * aspect * u.camRight.xyz + ndc.y * u.camUp.xyz));
-        sum += traceRay(u.camPos.xyz, dir, u);
+        // clamp sanitizes any NaN -> 0 / Inf -> ceiling and tames fireflies so a
+        // single pathological sample can never poison the accumulation buffer.
+        sum += clamp(traceRay(u.camPos.xyz, dir, u), 0.0, 256.0);
     }
 
     float4 prev = (u.u0.x == 0u) ? float4(0.0) : prevTex.read(gid);

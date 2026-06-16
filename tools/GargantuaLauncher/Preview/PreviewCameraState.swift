@@ -81,7 +81,10 @@ final class OrbitCameraController {
     // Interaction tuning.
     var orbitSpeed: Float = 0.0075
     var zoomSpeed: Float = 0.0016
-    var minRadius: Float = 3.5
+    // Closest approach. Below ~8 M a head-on Schwarzschild view (disk inner at
+    // 6 M, the largest shadow) fills the frame entirely and reads as black, so
+    // clamp the zoom to keep every metric/angle non-degenerate.
+    var minRadius: Float = 8.0
     var maxRadius: Float = 240.0
     var minPhi: Float = -1.50   // ~ -86 degrees
     var maxPhi: Float = 1.50    // ~ +86 degrees
