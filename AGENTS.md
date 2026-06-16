@@ -10,6 +10,14 @@ Before realism work, read:
 - `docs/realism/03_render_contract_requirements.md`
 - `docs/realism/04_validation_matrix.md`
 - `docs/realism/05_debug_outputs.md`
+- `docs/realism/06_ai_role_protocol.md`
+- `docs/realism/07_physics_contract.md`
+- `docs/realism/08_observation_pipeline_contract.md`
+- `docs/realism/09_render_modes.md`
+- `docs/realism/10_reference_validation_protocol.md`
+- `docs/realism/11_target_architecture_and_performance.md`
+- `docs/realism/12_contract_implementation_roadmap.md`
+- `docs/realism/13_phase0_to_phase6_execution_state.md`
 
 ## Core Rule
 
@@ -36,6 +44,12 @@ Every realism change must report:
 2. why it changed
 3. how it was validated
 4. what risks remain
+
+AI work must follow the authority model in
+`docs/realism/06_ai_role_protocol.md`: Science Architect defines contracts,
+Implementation Agent implements narrow tickets, Verification Agent audits diffs,
+Integrator merges only validated work, and Aesthetic Director may choose looks
+only after physical and observer contracts remain intact.
 
 Beauty images alone are insufficient. Prefer raw radiance, optical depth, redshift/g-factor, hit mask, source-location, tone-mapped-no-bloom, bloom-only, and exposure diagnostics when relevant.
 

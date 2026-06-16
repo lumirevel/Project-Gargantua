@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--width", type=int, default=384)
     p.add_argument("--height", type=int, default=216)
     p.add_argument("--quality", default="preview", choices=["preview", "hq"])
-    p.add_argument("--presentation", default="cinema", choices=["scientific", "eye", "cinema"])
+    p.add_argument("--presentation", default="cinema", choices=["scientific", "eye", "camera-raw", "camera-rendered", "cinema"])
     p.add_argument("--look", default="", help="optional look override for tone_mapped_no_bloom and final_rgb")
     p.add_argument("--bloom-scale", type=float, default=4.0, help="display gain for bloom_only proxy")
     p.add_argument("--no-render", action="store_true", help="reuse existing stage PNGs")

@@ -47,7 +47,7 @@ struct RenderResourcePolicy {
             (config.diskPhysicsModeID == 0 &&
              config.visibleTeffModelID == 3 &&
              config.composeAnalysisMode >= 31 &&
-             config.composeAnalysisMode <= 42)
+             config.composeAnalysisMode <= 44)
         let thinVisibleReferenceRayBundleDirectSafe =
             (config.diskPhysicsModeID == 0 &&
              config.visibleTeffModelID == 3 &&

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "sourceModels": [
+    {
+      "id": "canonical-visible-disk-v1",
+      "title": "Canonical Visible Disk",
+      "layer": "SourceModels / ThinDisk",
+      "status": "recommended",
+      "summary": "Recommended scientific visible-disk baseline.",
+      "args": ["--source-model", "canonical-visible-disk-v1"]
+    },
+    {
+      "id": "cinematic-physical-disk-v1",
+      "title": "Cinematic Physical Disk",
+      "layer": "SourceModels / ThinDisk + Corona",
+      "status": "production-candidate",
+      "summary": "Production source with stronger disk-coordinate structure.",
+      "args": ["--source-model", "cinematic-physical-disk-v1"]
+    },
+    {
+      "id": "physics-constrained-cinematic-disk-v1",
+      "title": "Physics-Constrained Cinematic Disk",
+      "layer": "SourceModels / ThinDisk + Hot Skin",
+      "status": "production-candidate",
+      "summary": "Science-gated cinematic source candidate.",
+      "args": ["--source-model", "physics-constrained-cinematic-disk-v1"]
+    },
+    {
+      "id": "thin-disk-visible-reference",
+      "title": "Thin Disk Reference",
+      "layer": "SourceModels / ThinDisk",
+      "status": "recommended",
+      "summary": "Clean analytic reference without texture or GRMHD perturbation.",
+      "args": ["--source-model", "thin-disk-visible-reference"]
+    },
+    {
+      "id": "static-transfer-reference-v1",
+      "title": "Static Transfer Reference",
+      "layer": "Diagnostics / RelativisticTransfer",
+      "status": "diagnostic",
+      "summary": "Motionless Schwarzschild transfer fixture. Useful for g/beaming audits, not beauty output.",
+      "args": ["--source-model", "static-transfer-reference-v1"]
+    },
+    {
+      "id": "grmhd-surrogate-disk-v1",
+      "title": "GRMHD Surrogate",
+      "layer": "SourceModels / GRMHDAdapter",
+      "status": "surrogate",
+      "summary": "Synthetic GRMHD-like preview. Not real GRMHD data.",
+      "args": ["--source-model", "grmhd-surrogate-disk-v1"]
+    },
+    {
+      "id": "grmhd-temperature-flow-diagnostic",
+      "title": "GRMHD Temperature Flow",
+      "layer": "SourceModels / GRMHDAdapter",
+      "status": "diagnostic",
+      "summary": "3D GRMHD thermal visible-volume diagnostic.",
+      "requiresDiskHDF5": true,
+      "defaultDiskHDF5": "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
+      "args": ["--source-model", "grmhd-temperature-flow-diagnostic"]
+    },
+    {
+      "id": "legacy-perlin",
+      "title": "Legacy Perlin",
+      "layer": "Legacy",
+      "status": "legacy",
+      "summary": "Historic soft Perlin disk reproduction path.",
+      "args": ["--disk-mode", "thin", "--disk-model", "perlin"]
+    },
+    {
+      "id": "legacy-perlin-classic",
+      "title": "Legacy Perlin F552 Classic",
+      "layer": "Legacy",
+      "status": "legacy",
+      "summary": "Historic F552/classic stripe-like disk reproduction path.",
+      "args": ["--disk-mode", "thin", "--disk-model", "perlin-classic"]
+    },
+    {
+      "id": "legacy-perlin-ec7",
+      "title": "Legacy Perlin EC7 Crisp",
+      "layer": "Legacy",
+      "status": "legacy",
+      "summary": "Historic crisp EC7 Perlin reproduction path.",
+      "args": ["--disk-mode", "thin", "--disk-model", "perlin-ec7"]
+    },
+    {
+      "id": "legacy-bh-finish-grmhd",
+      "title": "Legacy bh_finish GRMHD",
+      "layer": "Legacy / GRMHD",
+      "status": "legacy",
+      "summary": "Recovered bh_finish_cinema_1536.png family: Kerr a=0.92, SANE a0 dump 05010, state-smoothed GRMHD visible volume recipe.",
+      "requiresDiskHDF5": true,
+      "defaultDiskHDF5": "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
+      "args": ["--science-regime", "legacy-bh-finish-grmhd"]
+    },
+    {
+      "id": "legacy-thin-disk-preset-default",
+      "title": "Legacy Thin Disk Preset Default",
+      "layer": "Legacy / DNGR Volume",
+      "status": "legacy",
+      "summary": "Recovered thin_disk_preset_default.png family: dngr-volume thin-disk preset, Kerr a=0.92, eye presentation.",
+      "args": ["--science-regime", "legacy-thin-disk-preset-default"]
+    }
+  ],
+  "renderIntents": [
+    {
+      "id": "raw-like",
+      "title": "Scientific RAW / Linear Audit",
+      "summary": "Identity linear preview plus ideal RGGB float32 CFA RAW sidecar."
+    },
+    {
+      "id": "rendered",
+      "title": "Camera Rendered",
+      "summary": "Full-frame photographic exposure with restrained tone mapping."
+    },
+    {
+      "id": "cinematic",
+      "title": "Cinematic Grade",
+      "summary": "Cinema profile, filmic look, flare, and optional depth of field."
+    }
+  ]
+}
