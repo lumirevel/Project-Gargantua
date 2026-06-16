@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from gargantua_gui_contract import launcher_sources_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path("/private/tmp/bh_phase_completion_audit.json")
@@ -61,7 +63,7 @@ def main() -> None:
     source_docs = text("docs/source_models.md")
     render_modes = text("docs/realism/09_render_modes.md")
     gui_manifest = text("docs/realism/gui_option_manifest_v1.json")
-    gui_launcher = text("tools/GargantuaLauncher/GargantuaLauncher.swift")
+    gui_launcher = launcher_sources_text()
 
     commands = {
         "phase_readiness": run(["python3", "scripts/validate_phase_readiness.py"]),

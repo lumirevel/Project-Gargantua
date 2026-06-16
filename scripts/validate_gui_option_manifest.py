@@ -6,34 +6,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from gargantua_gui_contract import (
+    MANIFEST,
+    REQUIRED_INTENTS,
+    REQUIRED_SOURCE_IDS,
+    VALID_STATUS,
+    launcher_sources_text,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "docs" / "realism" / "gui_option_manifest_v1.json"
-
-REQUIRED_SOURCE_IDS = [
-    "canonical-visible-disk-v1",
-    "cinematic-physical-disk-v1",
-    "physics-constrained-cinematic-disk-v1",
-    "thin-disk-visible-reference",
-    "static-transfer-reference-v1",
-    "grmhd-surrogate-disk-v1",
-    "grmhd-temperature-flow-diagnostic",
-    "legacy-perlin",
-    "legacy-perlin-classic",
-    "legacy-perlin-ec7",
-    "legacy-bh-finish-grmhd",
-    "legacy-thin-disk-preset-default",
-]
-
-REQUIRED_INTENTS = ["raw-like", "rendered", "cinematic"]
-VALID_STATUS = {"recommended", "production-candidate", "surrogate", "diagnostic", "legacy"}
 
 
 def main() -> None:
     failures: list[str] = []
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     docs = (ROOT / "docs" / "source_models.md").read_text(encoding="utf-8")
-    launcher = (ROOT / "tools" / "GargantuaLauncher" / "GargantuaLauncher.swift").read_text(encoding="utf-8")
+    launcher = launcher_sources_text()
     run_pipeline = (ROOT / "Blackhole" / "run_pipeline.sh").read_text(encoding="utf-8")
 
     if manifest.get("schemaVersion") != 1:
