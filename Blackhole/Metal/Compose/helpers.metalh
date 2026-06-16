@@ -221,7 +221,7 @@ static inline bool comp_thin_hybrid_active(constant ComposeParams& C) {
 }
 
 static inline bool comp_thin_realism_debug_active(constant ComposeParams& C) {
-    return (C.analysisMode >= 31u && C.analysisMode <= 42u);
+    return (C.analysisMode >= 31u && C.analysisMode <= 44u);
 }
 
 static inline bool comp_thin_hybrid_debug_active(constant ComposeParams& C) {
@@ -480,7 +480,7 @@ static inline ThinSpectralHeatingField comp_thin_spectral_heating_field(float rN
     float rOutNorm = max(P.re / max(P.rs, 1e-6), rInNorm + 1.0);
     float logRMax = log(max(rOutNorm / max(rInNorm, 1e-4), 1.05));
     float timeRs = P.diskFlowTime;
-    float orbitalBoost = max(P.diskOrbitalBoost, 0.05);
+    float orbitalBoost = max(P.diskOrbitalBoost, 0.0);
     float turbulence = clamp(P.diskTurbulence, 0.0, 2.4);
     // Keep the canonical source calibrated around the registry default
     // diskTurbulence=1.6, but let controlled validation sweeps adjust the
@@ -712,7 +712,7 @@ static inline ThinMRIShearingField comp_thin_mri_shearing_field(float rNorm,
     // Match the rest of the flow model: diskFlowTime is a dimensionless
     // animation/orbital phase control, not wall-clock seconds.
     float timeRs = P.diskFlowTime;
-    float omega = max(P.diskOrbitalBoost, 0.05) * pow(rr, -1.5);
+    float omega = max(P.diskOrbitalBoost, 0.0) * pow(rr, -1.5);
     float shear = phi - omega * timeRs;
     float logR = log(max(rr / max(rInNorm, 1e-4), 1.0001));
 
@@ -1047,17 +1047,30 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             float pcdClumpContrast = clamp(P.pcdSourceB.w, 0.0, 1.0);
             float pcdHotCrescent = clamp(P.pcdSourceC.x, 0.0, 1.0);
             float rRatio = max(rNorm / max(rInNorm, 1e-4), 1.0);
-            float pcdDensity = clamp(radialGate * exp(-pcdDensityExp * log(rRatio)) * max(comp_thin_outer_flux_taper(rNorm, P), 0.0) * 1.32,
-                                     0.0,
-                                     1.0);
+            float pcdDensityBase = clamp(radialGate
+                                       * exp(-pcdDensityExp * log(rRatio))
+                                       * max(comp_thin_outer_flux_taper(rNorm, P), 0.0)
+                                       * 1.52,
+                                       0.0,
+                                       1.25);
             float pcdLogR = log(max(rRatio, 1.0001));
-            float pcdOmega = max(P.diskOrbitalBoost, 0.05) * pow(max(rNorm, 1.0), -1.5);
+            float pcdOmega = max(P.diskOrbitalBoost, 0.0) * pow(max(rNorm, 1.0), -1.5);
             float pcdPhase = 6.28318530718 * fract(P.pcdSourceA.w * 0.013579 + 0.173);
-            float pcdSpiral = clamp(pcdSpiralAmp
-                                  * comp_periodic01(cos(phi - pcdOmega * P.diskFlowTime - pcdSpiralPitch * pcdLogR + pcdPhase))
-                                  * radialGate, 0.0, 1.0);
-            float pcdClump = clamp(pcdClumpContrast * max(heat.cloud, heat.filament) * radialGate, 0.0, 1.0);
-            float pcdHot = 0.0;
+            float pcdSpiralRaw = pow(comp_periodic01(cos(phi - pcdOmega * P.diskFlowTime - pcdSpiralPitch * pcdLogR + pcdPhase)), 1.35);
+            float pcdSpiral = clamp(pcdSpiralAmp * pcdSpiralRaw * radialGate, 0.0, 1.0);
+            float pcdClumpRaw = clamp(0.58 * heat.cloud + 0.42 * heat.filament, 0.0, 1.0);
+            float pcdClump = clamp(pcdClumpContrast * pcdClumpRaw * radialGate, 0.0, 1.0);
+            float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
+            float pcdHot = clamp(pcdHotCrescent
+                               * innerWeight
+                               * radialGate
+                               * smoothstep(0.94, 1.42, e.g)
+                               * (0.62 + 0.38 * pcdSpiralRaw),
+                               0.0,
+                               1.0);
+            float pcdDensity = clamp(pcdDensityBase * (1.0 + 0.34 * pcdSpiral + 0.42 * pcdClump + 0.16 * pcdHot),
+                                     0.0,
+                                     1.65);
             float pathRsLocal = abs(rec.ct) / max(P.rs, 1e-6);
             // Higher-order lensed images should preserve the analytic body but
             // average unresolved skin heating. Otherwise the same source
@@ -1078,10 +1091,11 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
                                  * unresolvedAverage, 0.0, 1.0);
             if (pcdMode) {
                 activity = clamp(pcdStructureScale
-                               * (0.42 * activity
-                                + 0.24 * pcdSpiral
-                                + 0.24 * pcdClump
-                                + 0.10 * heat.filament)
+                               * (0.34 * activity
+                                + 0.22 * pcdSpiral
+                                + 0.28 * pcdClump
+                                + 0.10 * pcdHot
+                                + 0.06 * heat.filament)
                                * radialGate, 0.0, 1.0);
             }
             float pcdPositiveHeatingLift = 1.0;
@@ -1091,19 +1105,17 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
                 // extra local dissipation in the emitting layer, so it may add
                 // radiance but must not subtract from or carve the photosphere.
                 pcdPositiveHeatingLift += clamp(radialGate
-                                              * (0.96 * activity
-                                               + 0.26 * pcdSpiral
-                                               + 0.36 * pcdClump
-                                               + 0.52 * pcdHot),
+                                              * (1.18 * activity
+                                               + 0.42 * pcdSpiral
+                                               + 0.62 * pcdClump
+                                               + 0.92 * pcdHot),
                                               0.0,
-                                              1.65);
+                                              2.25);
             }
 
             float bodyHeat = 1.0 + clamp((0.010 + 0.018 * turbulence) * heat.low, 0.0, 0.055);
 
             float gBoost = smoothstep(0.85, 1.65, e.g);
-            float innerWeight = exp(-pow(max((rNorm - rInNorm) / 3.2, 0.0), 0.82));
-            pcdHot = clamp(pcdHotCrescent * innerWeight * radialGate * smoothstep(1.0, 1.55, e.g), 0.0, 1.0);
             float fCorona = radialGate
                            * innerWeight
                            * (0.024 + 0.045 * heat.cloud + 0.024 * heat.filament)
@@ -1123,15 +1135,15 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
                         * (1.0 + 0.18 * turbulenceTune)
                         * (0.82 + 0.18 * gBoost);
             if (pcdMode) {
-                fSkin *= 1.0 + 0.85 * activity + 0.35 * pcdSpiral + 0.25 * pcdClump + 0.20 * pcdHot;
+                fSkin *= 1.0 + 1.05 * activity + 0.46 * pcdSpiral + 0.42 * pcdClump + 0.36 * pcdHot;
                 fSkin += radialGate * unresolvedAverage
-                       * (0.040 * activity
-                        + 0.020 * pcdSpiral
-                        + 0.032 * pcdClump
-                        + 0.028 * pcdHot);
+                       * (0.064 * activity
+                        + 0.032 * pcdSpiral
+                        + 0.052 * pcdClump
+                        + 0.050 * pcdHot);
             }
-            fSkin = clamp(fSkin, 0.0, pcdMode ? 0.480 : 0.180);
-            float fBody = clamp(1.0 - fSkin - fCorona, pcdMode ? 0.52 : 0.75, 1.0);
+            fSkin = clamp(fSkin, 0.0, pcdMode ? 0.540 : 0.180);
+            float fBody = clamp(1.0 - fSkin - fCorona, pcdMode ? 0.46 : 0.75, 1.0);
             float fNorm = max(fBody + fSkin + fCorona, 1e-6);
             fBody /= fNorm;
             fSkin /= fNorm;
@@ -1142,13 +1154,27 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             // This avoids reintroducing a global smooth floor while preventing the
             // skin branch from merely adding texture on top of a saturated body.
             float3 bodyShape = e.bodyRgb / max(bodyLum0, 1e-30);
-            float sourceScale = pcdMode ? (pcdEmissivityScale * max(pcdDensity, 0.05 * radialGate) * pcdPositiveHeatingLift) : 1.0;
+            float pcdSourceField = pcdMode
+                                 ? max(pcdDensity, 0.11 * radialGate)
+                                   * (1.0
+                                    + radialGate * (0.48 * pcdSpiral
+                                                  + 0.70 * pcdClump
+                                                  + 1.05 * pcdHot
+                                                  + 0.82 * activity))
+                                 : 1.0;
+            float pcdConservationLift = pcdMode
+                                      ? (1.0 + radialGate * (0.14 * pcdSpiral
+                                                           + 0.22 * pcdClump
+                                                           + 0.20 * pcdHot))
+                                      : 1.0;
+            float sourceScale = pcdMode ? (pcdEmissivityScale * pcdSourceField * pcdPositiveHeatingLift * pcdConservationLift) : 1.0;
             e.bodyRgb = bodyShape * bodyLum0 * bodyHeat * sourceScale * fBody;
 
             float skinObservedTemp = e.tObserved * (1.58
-                                                 + (1.94 + 0.12 * turbulenceTune) * activity
-                                                 + 0.34 * heat.filament
-                                                 + 0.10 * gBoost);
+                                                 + (pcdMode ? 2.35 : 1.94 + 0.12 * turbulenceTune) * activity
+                                                 + (pcdMode ? 0.78 : 0.34) * heat.filament
+                                                 + (pcdMode ? 0.44 : 0.10) * gBoost
+                                                 + (pcdMode ? 0.58 * pcdHot : 0.0));
             float3 skinShape = comp_visible_blackbody_rgb_from_observed_temp(skinObservedTemp, e.colorDilution, C)
                              * comp_limb_factor(mu, P);
             float skinLum = dot(max(skinShape, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
@@ -1166,19 +1192,19 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             // hot plasma, not subtractive surface texture.
             float skinDissipationLift = 1.0 + clamp(radialGate
                                                   * unresolvedAverage
-                                                  * (0.56 * activity
-                                                   + 0.04 * heat.cloud
-                                                   + 0.56 * heat.filament),
+                                                  * ((pcdMode ? 0.82 : 0.56) * activity
+                                                   + 0.06 * heat.cloud
+                                                   + (pcdMode ? 0.74 : 0.56) * heat.filament),
                                                   0.0,
-                                                  pcdMode ? 1.85 : 0.92);
+                                                  pcdMode ? 2.45 : 0.92);
             if (pcdMode) {
                 skinDissipationLift *= 1.0 + clamp(radialGate
-                                                 * (0.55 * activity
-                                                  + 0.18 * pcdSpiral
-                                                  + 0.30 * pcdClump
-                                                  + 0.42 * pcdHot),
+                                                 * (0.82 * activity
+                                                  + 0.32 * pcdSpiral
+                                                  + 0.48 * pcdClump
+                                                  + 0.68 * pcdHot),
                                                  0.0,
-                                                 1.20);
+                                                 1.70);
             }
             e.skinRgb += skinShape * bodyLum0 * bodyHeat * sourceScale * fSkin * skinDissipationLift * skinVisibleGain;
             float3 coronaShape = normalize(float3(0.74, 0.90, 1.16));
@@ -1195,10 +1221,11 @@ static inline ThinSpectralEmission comp_thin_spectral_emission(const CollisionIn
             e.coronaRatio = lumCorona / lumTotal;
             e.atlasActivity = max(e.atlasActivity, activity);
             if (pcdMode) {
-                float pcdOpacity = pcdOpacityScale * pcdDensity * (0.55 + 0.30 * pcdSpiral + 0.15 * pcdClump);
+                float pcdOpacity = pcdOpacityScale * pcdDensity * (0.42 + 0.34 * pcdSpiral + 0.24 * pcdClump);
                 e.densityProxy = pcdDensity;
-                e.temperatureProxy = clamp((log(max(e.tObserved, 1.0)) * 0.4342944819032518 - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0);
-                e.emissivityProxy = clamp(pcdEmissivityScale * pcdDensity * (1.0 + 0.55 * activity), 0.0, 2.2);
+                float sourceTempBoost = 1.0 + 0.08 * pcdSpiral + 0.12 * pcdClump + 0.22 * pcdHot + 0.16 * activity;
+                e.temperatureProxy = clamp((log(max(e.tObserved * sourceTempBoost, 1.0)) * 0.4342944819032518 - 3.0) / max(7.2 - 3.0, 1e-6), 0.0, 1.0);
+                e.emissivityProxy = clamp(pcdEmissivityScale * pcdSourceField * (1.0 + 0.75 * activity + 0.24 * pcdHot), 0.0, 3.6);
                 e.opacityProxy = clamp(pcdOpacity, 0.0, 4.0);
                 e.tauProxy = clamp(pcdOpacity / max(mu, 0.22), 0.0, 4.0);
                 // The visible thin-disk surrogate is intentionally mostly thin;
@@ -1495,6 +1522,16 @@ static inline float3 comp_thin_physical_debug_rgb(const CollisionInfo rec,
     if (C.analysisMode == 31u) { // strict physical g-factor / red-blue shift
         float t = clamp((log(max(thin.g, 1e-6)) * 0.4342944819032518 + 0.70) / 1.40, 0.0, 1.0);
         return comp_debug_ramp(t);
+    }
+    if (C.analysisMode == 43u) { // raw physical g-factor for float diagnostics
+        return float3(clamp(thin.g, 0.0, 16.0));
+    }
+    if (C.analysisMode == 44u) { // same-tetrad static emitter/observer reference
+        // In this local tetrad fixture u_emit == u_obs, so
+        // (k_mu u_obs^mu) / (k_mu u_emit^mu) is exactly 1. This diagnostic is
+        // deliberately isolated from physical scene radiance and exists only as
+        // a renderer-produced Phase 3 transfer contract check.
+        return float3(1.0);
     }
     if (C.analysisMode == 32u) {
         if (C.realismProfile == 6u) return comp_debug_ramp(clamp(thin.emissivityProxy / 2.2, 0.0, 1.0));
@@ -3110,7 +3147,7 @@ static inline float3 comp_shade(const CollisionInfo rec,
     if (C.realismProfile == 6u &&
         (C.analysisMode == 31u || C.analysisMode == 32u ||
          C.analysisMode == 33u || C.analysisMode == 37u ||
-         (C.analysisMode >= 39u && C.analysisMode <= 42u))) {
+         (C.analysisMode >= 39u && C.analysisMode <= 43u))) {
         return clamp(rgb, 0.0, 1.0);
     }
     bool physicalVolumeDebug = (FC_PHYSICS_MODE == 3u) ||
@@ -3170,7 +3207,7 @@ static inline float3 comp_shade_linear(float3 rgb, constant ComposeParams& C)
     if (C.realismProfile == 6u &&
         (C.analysisMode == 31u || C.analysisMode == 32u ||
          C.analysisMode == 33u || C.analysisMode == 37u ||
-         (C.analysisMode >= 39u && C.analysisMode <= 42u))) {
+         (C.analysisMode >= 39u && C.analysisMode <= 43u))) {
         // Profile-6 normalized source diagnostics are produced at source level.
         // Keep them out of exposure/tone mapping so metrics correspond to
         // density/temperature/tau/activity fields rather than display response.

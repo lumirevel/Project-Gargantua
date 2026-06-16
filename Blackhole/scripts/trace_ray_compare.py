@@ -274,7 +274,9 @@ def kerr_carter_q(theta: float, a: float, E: float, Lz: float, p_theta: float) -
     th = min(max(theta, 1e-5), M_PI - 1e-5)
     c = math.cos(th)
     s = max(math.sin(th), 1e-6)
-    return p_theta * p_theta + c * c * (a * a * (1.0 - E * E) + (Lz * Lz) / (s * s))
+    # Photon Carter constant in Boyer-Lindquist coordinates:
+    # Q = p_theta^2 + cos^2(theta) * (Lz^2 / sin^2(theta) - a^2 E^2).
+    return p_theta * p_theta + c * c * ((Lz * Lz) / (s * s) - a * a * E * E)
 
 
 def kerr_init_hamiltonian(

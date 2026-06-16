@@ -337,6 +337,7 @@ enum ParamsBuilderVisual {
         linear32Intermediate: Bool
     ) -> VisualSettings {
         let composeDitherDefault: Double = {
+            if composeLookID == 4 { return 0.0 }
             switch diskModelArg {
             case "perlin", "perlin-ec7", "perlin-legacy", "perlin-classic", "perlin-f552":
                 return 0.0
@@ -366,8 +367,14 @@ enum ParamsBuilderVisual {
         case "cinema", "cinematic", "camera":
             presentationModeName = "cinema"
             presentationModeID = 3
+        case "camera-raw", "camera_raw", "raw", "raw-like", "rawlike":
+            presentationModeName = "camera-raw"
+            presentationModeID = 4
+        case "camera-rendered", "camera_rendered", "rendered-camera", "rendered", "photo", "photographic":
+            presentationModeName = "camera-rendered"
+            presentationModeID = 5
         default:
-            fail("invalid --presentation-mode \(presentationModeRaw). use one of: legacy, scientific, eye, cinema")
+            fail("invalid --presentation-mode \(presentationModeRaw). use one of: legacy, scientific, eye, camera-raw, camera-rendered, cinema")
         }
 
         let cameraModelName = stringArg("--camera-model", default: {
@@ -375,6 +382,8 @@ enum ParamsBuilderVisual {
             case 1: return "legacy"
             case 2: return "eye"
             case 3: return "cinematic"
+            case 4: return "legacy"
+            case 5: return "cinematic"
             default: break
             }
             if composeLookID == 6 { return "scientific" }
@@ -399,6 +408,8 @@ enum ParamsBuilderVisual {
             case 1: return "ideal"
             case 2: return "ideal"
             case 3: return "cinema-digital"
+            case 4: return "ideal"
+            case 5: return "full-frame"
             default: break
             }
             if composeLookID == 6 { return "scientific" }
@@ -422,6 +433,9 @@ enum ParamsBuilderVisual {
             fail("invalid --camera-profile \(cameraProfileName). use one of: ideal, scientific, cinema-digital, full-frame")
         }
         let cameraProfileJSONPath = stringArg("--camera-profile-json", default: "")
+        if presentationModeID == 4 && (cameraModelID != 0 || cameraProfileID != 0 || !cameraProfileJSONPath.isEmpty) {
+            fail("camera-raw is a RAW-like identity audit route; use --camera-model legacy/none and --camera-profile ideal/none, with no --camera-profile-json")
+        }
         var cameraCalibration = CameraCalibrationFactory.builtin(profileName: cameraProfileName, profileID: cameraProfileID)
         if !cameraProfileJSONPath.isEmpty {
             cameraCalibration = CameraCalibrationFactory.loadJSON(path: cameraProfileJSONPath, fallback: cameraCalibration)
@@ -432,6 +446,8 @@ enum ParamsBuilderVisual {
             case 1: return "physical"
             case 2: return "observational"
             case 3: return "cinematic"
+            case 4: return "physical"
+            case 5: return "observational"
             default: break
             }
             if composeLookID == 6 { return "physical" }
@@ -458,6 +474,7 @@ enum ParamsBuilderVisual {
         }
 
         let cameraPsfSigmaDefault: Double = {
+            if presentationModeID == 4 { return 0.0 }
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.42 : 0.55
             case 2: return 0.38
@@ -473,9 +490,10 @@ enum ParamsBuilderVisual {
         }()
         let cameraPsfSigmaArg = Float(max(0.0, doubleArg(
             "--camera-psf-sigma",
-            default: Double(cameraCalibration.psfSigmaPixels ?? Float(cameraPsfSigmaDefault))
+            default: presentationModeID == 4 ? cameraPsfSigmaDefault : Double(cameraCalibration.psfSigmaPixels ?? Float(cameraPsfSigmaDefault))
         )))
         let cameraReadNoiseDefault: Double = {
+            if presentationModeID == 4 { return 0.0 }
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.0013 : 0.0023
             case 2: return 0.0011
@@ -486,9 +504,10 @@ enum ParamsBuilderVisual {
         let cameraReadNoiseExplicit = cliArguments.contains("--camera-read-noise")
         var cameraReadNoiseArg = Float(max(0.0, doubleArg(
             "--camera-read-noise",
-            default: Double(cameraCalibration.readNoise ?? Float(cameraReadNoiseDefault))
+            default: presentationModeID == 4 ? cameraReadNoiseDefault : Double(cameraCalibration.readNoise ?? Float(cameraReadNoiseDefault))
         )))
         let cameraShotNoiseDefault: Double = {
+            if presentationModeID == 4 { return 0.0 }
             switch cameraProfileID {
             case 1: return (composeLookID == 6) ? 0.0055 : 0.009
             case 2: return 0.006
@@ -499,9 +518,10 @@ enum ParamsBuilderVisual {
         let cameraShotNoiseExplicit = cliArguments.contains("--camera-shot-noise")
         var cameraShotNoiseArg = Float(max(0.0, doubleArg(
             "--camera-shot-noise",
-            default: Double(cameraCalibration.shotNoise ?? Float(cameraShotNoiseDefault))
+            default: presentationModeID == 4 ? cameraShotNoiseDefault : Double(cameraCalibration.shotNoise ?? Float(cameraShotNoiseDefault))
         )))
         let cameraFlareDefault: Double = {
+            if presentationModeID == 4 { return 0.0 }
             switch cameraProfileID {
             case 2: return 0.16
             case 3: return 0.05
@@ -510,7 +530,7 @@ enum ParamsBuilderVisual {
         }()
         let cameraFlareStrengthArg = Float(max(0.0, min(1.0, doubleArg(
             "--camera-flare",
-            default: Double(cameraCalibration.flareStrength ?? Float(cameraFlareDefault))
+            default: presentationModeID == 4 ? cameraFlareDefault : Double(cameraCalibration.flareStrength ?? Float(cameraFlareDefault))
         ))))
         if cameraProfileID < 2 && cameraModelID != 2 && cameraFlareStrengthArg > 1e-6 {
             FileHandle.standardError.write(Data("warn: --camera-flare is only active for cinematic/photo camera profiles\n".utf8))
@@ -528,6 +548,7 @@ enum ParamsBuilderVisual {
         let lensFocusDefault = Double(cameraCalibration.lensFocusDepth ?? 4.35)
         let lensFocusDepthArg = Float(max(0.0, doubleArg("--camera-focus-depth", default: lensFocusDefault)))
         let lensDofDefault: Double = {
+            if presentationModeID == 4 { return 0.0 }
             if let s = cameraCalibration.lensDofStrength { return Double(s) }
             return (cameraModelID == 2 || cameraProfileID >= 2) ? 1.0 : 0.0
         }()
@@ -558,6 +579,7 @@ enum ParamsBuilderVisual {
             }
             switch presentationModeID {
             case 1: return "off"
+            case 4: return "off"
             case 2, 3: return "stars"
             default: break
             }
@@ -596,7 +618,7 @@ enum ParamsBuilderVisual {
         let composeChunkArg = max(1, intArg("--chunk", default: 160000))
         let exposureSamplesArg = max(0, intArg("--exposure-samples", default: 200000))
         let exposureArg = Float(doubleArg("--exposure", default: -1.0))
-        let exposureModeName = stringArg("--exposure-mode", default: "auto").lowercased()
+        let exposureModeName = stringArg("--exposure-mode", default: presentationModeID == 4 ? "fixed" : "auto").lowercased()
         let exposureModeID: UInt32
         switch exposureModeName {
         case "auto":
@@ -607,6 +629,23 @@ enum ParamsBuilderVisual {
             exposureModeID = 2
         default:
             fail("invalid --exposure-mode \(exposureModeName). use one of: auto, fixed, photographic")
+        }
+        if presentationModeID == 4 {
+            if composeLookID != 4 {
+                fail("camera-raw requires --look linear/none so the RAW-like audit path stays display-neutral")
+            }
+            if abs(composeDitherArg) > 1e-6 {
+                fail("camera-raw requires --dither 0 so display dithering cannot enter the RAW-like audit path")
+            }
+            if cameraPsfSigmaArg > 1e-6 || cameraReadNoiseArg > 1e-6 || cameraShotNoiseArg > 1e-6 || cameraFlareStrengthArg > 1e-6 || lensDofStrengthArg > 1e-6 {
+                fail("camera-raw requires PSF, read noise, shot noise, flare, and depth of field disabled")
+            }
+            if backgroundModeID != 0 {
+                fail("camera-raw requires --background off so background presentation does not enter the RAW-like audit path")
+            }
+            if exposureModeID != 1 {
+                fail("camera-raw requires --exposure-mode fixed for reproducible RAW-like audit output")
+            }
         }
         let exposureEVArg = doubleArg("--exposure-ev", default: 0.0)
         let photographicExposureScale = Float(max(
@@ -650,6 +689,10 @@ enum ParamsBuilderVisual {
             realismDebugID = 0
         case "g", "gfactor", "g-factor", "redshift":
             realismDebugID = 31
+        case "raw-g", "g-raw", "gfactor-raw", "raw-gfactor", "raw-redshift", "redshift-raw":
+            realismDebugID = 43
+        case "same-tetrad-g", "same-tetrad-redshift", "local-g", "local-redshift", "static-local-g":
+            realismDebugID = 44
         case "emissivity", "emissivity-pre-transfer", "source-emissivity", "radial", "nt":
             realismDebugID = 32
         case "beaming", "asymmetry", "approach":
@@ -685,7 +728,7 @@ enum ParamsBuilderVisual {
         case "final-rgb", "final":
             realismDebugID = 38
         default:
-            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, beaming, emissivity-pre-transfer, body, skin, corona, branch-ratio, raw-radiance, final-rgb, temperature, density, opacity, optical-depth, transfer-saturation, activity, spiral, clump, hot-crescent")
+            fail("invalid --realism-debug \(realismDebugName). use one of: off, g, raw-g, same-tetrad-g, beaming, emissivity-pre-transfer, body, skin, corona, branch-ratio, raw-radiance, final-rgb, temperature, density, opacity, optical-depth, transfer-saturation, activity, spiral, clump, hot-crescent")
         }
         if realismDebugID != 0 && composeLookID != 6 && presentationModeID != 1 {
             FileHandle.standardError.write(Data("warn: --realism-debug is intended for --look realistic; enabling the debug map anyway\n".utf8))
