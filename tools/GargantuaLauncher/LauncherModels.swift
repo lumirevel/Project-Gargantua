@@ -211,10 +211,51 @@ enum RenderQuality: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum RenderSampling: String, CaseIterable, Identifiable {
+    case one = "1"
+    case two = "2"
+    case four = "4"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .one: return "1x"
+        case .two: return "2x"
+        case .four: return "4x"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .one: return "fast"
+        case .two: return "balanced"
+        case .four: return "clean"
+        }
+    }
+}
+
+enum RayBundleMode: String, CaseIterable, Identifiable {
+    case off
+    case on
+    case jacobian
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .on: return "Bundle"
+        case .jacobian: return "Jacobian"
+        }
+    }
+}
+
 enum OutputAspect: String, CaseIterable, Identifiable {
     case hd
     case square
     case small
+    case custom
 
     var id: String { rawValue }
 
@@ -223,14 +264,63 @@ enum OutputAspect: String, CaseIterable, Identifiable {
         case .hd: return "1536 x 864"
         case .square: return "1024 x 1024"
         case .small: return "768 x 432"
+        case .custom: return "Custom"
         }
     }
 
-    var size: (width: Int, height: Int) {
+    func size(customWidth: Int, customHeight: Int) -> (width: Int, height: Int) {
         switch self {
         case .hd: return (1536, 864)
         case .square: return (1024, 1024)
         case .small: return (768, 432)
+        case .custom:
+            return (max(64, customWidth), max(64, customHeight))
         }
     }
+}
+
+enum CameraExposureProgram: String, CaseIterable, Identifiable {
+    case manual
+    case auto
+    case aperturePriority
+    case shutterPriority
+    case fixedEV
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .manual: return "M"
+        case .auto: return "Auto"
+        case .aperturePriority: return "Av"
+        case .shutterPriority: return "Tv"
+        case .fixedEV: return "EV"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .manual: return "Manual photographic exposure: aperture, shutter, and ISO are explicit."
+        case .auto: return "Automatic exposure with camera optics still visible for focus and diffraction."
+        case .aperturePriority: return "Aperture-led workflow: f-number stays explicit, exposure uses auto plus EV compensation."
+        case .shutterPriority: return "Shutter-led workflow: shutter/ISO stay explicit, exposure uses auto plus EV compensation."
+        case .fixedEV: return "Fixed exposure value audit path for repeatable brightness comparisons."
+        }
+    }
+}
+
+enum EyePhotometricMode: String, CaseIterable, Identifiable {
+    case auto
+    case on
+    case off
+
+    var id: String { rawValue }
+}
+
+enum CameraPhotonNoiseMode: String, CaseIterable, Identifiable {
+    case auto
+    case on
+    case off
+
+    var id: String { rawValue }
 }
