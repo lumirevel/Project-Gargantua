@@ -84,6 +84,36 @@ Expected validation:
 - exposure debug outputs
 - camera stress scenes, including bright highlights and high-contrast black backgrounds
 
+### `codex/validation-lab-v1`
+
+Purpose: build and maintain reference scenes, scalar diagnostics, route-contract
+tests, and comparison harnesses. This branch is the third pillar beside physics
+and interpreter work.
+
+Allowed changes:
+
+- reference scenes
+- diagnostic render matrices
+- geodesic invariant checks
+- redshift and invariant-intensity sanity tests
+- thin-disk known-case comparisons
+- render route contract tests
+- validation scripts and reports
+
+Forbidden changes:
+
+- physics source tuning except for dedicated validation fixtures
+- camera/interpreter tuning except for dedicated validation fixtures
+- cinematic look development
+- broad CLI or ABI changes unless required by a validation contract
+
+Expected validation:
+
+- command-level reproducibility
+- scalar thresholds
+- image comparison sheets where applicable
+- explicit PASS / FAIL / PARTIAL reports
+
 ## Integration Branch
 
 ### `codex/realism-integration-v1`

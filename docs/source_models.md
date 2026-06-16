@@ -18,9 +18,42 @@ Presentation modes must not change the accretion source morphology.
 | Source model | Role | Scientific status |
 | --- | --- | --- |
 | `canonical-visible-disk-v1` | Default visible accretion disk source | Clean thin-disk visible body plus bounded disk-coordinate stochastic heating skin and weak corona |
+| `cinematic-physical-disk-v1` | Production visible source | Physically constrained procedural source for camera/cinema exploration; must remain source-layer, not post-processing |
+| `physics-constrained-cinematic-disk-v1` | Production candidate | Science-gated cinematic disk search target; requires diagnostics before promotion |
 | `thin-disk-visible-reference` | Clean reference | Analytic thin-disk visible photosphere, no procedural/GRMHD texture |
+| `static-transfer-reference-v1` | Transfer diagnostic | Motionless Schwarzschild thin-disk transfer fixture; source orbital/radial/turbulent motion disabled |
+| `grmhd-surrogate-disk-v1` | Synthetic surrogate | Deterministic GRMHD-like preview; not real evolved GRMHD data |
 | `grmhd-hot-flow-diagnostic` | GRMHD structure diagnostic | Optically thin hot-flow/synchrotron-like diagnostic, not the default human-visible disk |
 | `grmhd-temperature-flow-diagnostic` | GRMHD thermal volume diagnostic | 3D GRMHD visible thermal RT experiment, calibration/data-quality dependent |
+
+## Source Model Status Classes
+
+| Status | Meaning | GUI treatment |
+| --- | --- | --- |
+| recommended | Stable enough for normal source selection. | Show in the main source list. |
+| production-candidate | Useful but still requires source diagnostics and validation notes. | Show with candidate labeling. |
+| surrogate | Synthetic approximation, not an evolved simulation. | Show with surrogate warning. |
+| diagnostic | Intended for debug/validation, not final beauty output. | Show under diagnostics or advanced source list. |
+| legacy | Reproduction path. | Show only in legacy/reproduction section. |
+
+The GUI must preserve these labels instead of flattening all source models into
+one aesthetic preset list.
+
+## Source Model Contract Matrix
+
+Every public or candidate source model must carry the same documentation
+contract. This keeps GUI options from becoming unlabeled image presets.
+
+| Source model | Assumptions | Inputs | Outputs | Known limitations | Allowed render modes | Validation scenes | Forbidden hacks |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `canonical-visible-disk-v1` | Analytic visible thin disk with bounded positive hot-skin and weak corona source branches. | Metric/spin, visible temperature controls, disk-coordinate heating controls, presentation-independent source parameters. | Physical visible radiance proxy, branch diagnostics, g/beaming-compatible source records. | Not evolved GRMHD; heating field is deterministic surrogate; corona is phenomenological. | scientific, eye, camera-raw, camera-rendered, cinema. | branch diagnostics, presentation isolation, g/beaming maps, camera-raw sidecar. | No albedo/normal texture, no presentation bloom/color grade as source repair. |
+| `cinematic-physical-disk-v1` | Production visible source with stronger but still source-layer disk structure. | Source-model defaults, disk flow controls, visible/temperature controls, camera-independent structure parameters. | Visible disk radiance with bounded physical-looking source morphology. | Candidate/cinematic tuning needs diagnostics before being treated as scientific default. | scientific, eye, camera-raw, camera-rendered, cinema. | presentation source matrix, source-model registry, scientific linear comparison. | No post-processing morphology changes, no hiding transfer/geodesic defects. |
+| `physics-constrained-cinematic-disk-v1` | Science-gated search target over constrained source-layer parameters. | PCD density/emissivity/opacity/spiral/clump/hot-crescent controls, disk orbital controls. | Diagnostic source fields plus final radiance for candidate selection. | Surrogate parameter search, not a plasma solve; requires diagnostics for promotion. | scientific, eye, camera-raw, camera-rendered, cinema. | low/baseline/high Doppler g-factor maps, presentation source matrix, PCD diagnostics. | No parameter set promoted from beauty image alone; no cinematic effect as validation evidence. |
+| `thin-disk-visible-reference` | Clean analytic thin-disk visible photosphere without procedural or GRMHD texture. | Metric/spin, thin-disk temperature and photosphere controls. | Reference radiance for thin-disk transfer and presentation checks. | Simplified source physics; no turbulent structure or evolved plasma variability. | scientific, eye, camera-raw, camera-rendered, cinema. | source matrix, render-mode contract, geodesic/transfer sanity comparisons. | No procedural texture, no GRMHD atlas perturbation, no presentation-side source shaping. |
+| `static-transfer-reference-v1` | Motionless Schwarzschild thin-disk transfer diagnostic with source orbital/radial/turbulent motion disabled. | Schwarzschild metric, spin 0, zero orbital/radial/turbulent source controls, thin-disk temperature controls. | Renderer-produced g-factor and beaming maps for a no-flow transfer fixture. | Gravitational redshift and lens geometry remain; this is not a flat-space same-tetrad `g ~= 1` fixture. | scientific, eye, camera-raw, camera-rendered, cinema. | static-transfer renderer fixture, low-vs-orbiting Doppler comparison, g/beaming diagnostics. | No residual asymmetry hidden by tone mapping; no relabeling as a full static-emitter/static-observer proof. |
+| `grmhd-surrogate-disk-v1` | Synthetic GRMHD-like preview used for visual/diagnostic iteration. | Surrogate atlas/flow controls and source-model defaults. | Deterministic GRMHD-like visible source preview. | Not real evolved GRMHD data; cannot validate plasma dynamics. | scientific, eye, camera-raw, camera-rendered, cinema. | source registry, GUI labeling, presentation isolation where supported. | Must not be labeled as real GRMHD; no use as paper-grade evidence. |
+| `grmhd-hot-flow-diagnostic` | GRMHD-native hot-flow/synchrotron-like diagnostic source. | GRMHD volume/snapshot resources, density/B/emission/absorption/velocity scales. | Diagnostic hot-flow radiance and GRMHD debug maps. | Calibration and data quality dependent; not default human-visible disk. | scientific, eye, camera-raw, camera-rendered, cinema when data is available. | GRMHD debug maps, source registry, data-backed presentation fixture when fixture exists. | No silent fallback to procedural texture; no camera grade used to validate plasma structure. |
+| `grmhd-temperature-flow-diagnostic` | 3D GRMHD visible thermal volume RT experiment. | HDF5 snapshot or converted volume, temperature/emission/absorption/velocity controls. | Data-backed thermal visible volume radiance and GRMHD diagnostics. | Snapshot/electron-temperature/opacity calibration dependent; currently diagnostic. | scientific, eye, camera-raw, camera-rendered, cinema when HDF5 data is supplied. | optional GRMHD presentation fixture, raw-radiance/g/beaming/tau diagnostics. | No missing-data fallback disguised as GRMHD; no presentation smoothing as physics repair. |
 
 ## canonical-visible-disk-v1
 

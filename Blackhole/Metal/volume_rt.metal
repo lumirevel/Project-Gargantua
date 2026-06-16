@@ -750,7 +750,8 @@ static inline SchwarzschildSurfacePrepared trace_prepare_schwarzschild_surface(t
 {
     float4 atlas = disk_sample_atlas(hitState.dxy, hitState.phiHit, P, diskAtlasTex);
     float vrRatio = 0.0;
-    float vphiScale = 1.0;
+    float rRs = hitState.dxy / max(P.rs, 1e-6);
+    float vphiScale = disk_orbital_boost_at_r(rRs, P);
     float tempScale = 1.0;
     bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
@@ -773,7 +774,8 @@ static inline KerrSurfacePrepared trace_prepare_kerr_surface(thread const KerrSu
 {
     float4 atlas = disk_sample_atlas(hitState.dxy, hitState.phiHit, P, diskAtlasTex);
     float vrRatio = 0.0;
-    float vphiScale = 1.0;
+    float rRs = hitState.dxy / max(P.rs, 1e-6);
+    float vphiScale = disk_orbital_boost_at_r(rRs, P);
     float tempScale = 1.0;
     bool useAtlasKinematics = allowAtlasOverrides && !(FC_PHYSICS_MODE == 0u && (P.visibleTeffModel == 3u || P.visibleTeffModel == 4u));
     if (useAtlasKinematics) {
