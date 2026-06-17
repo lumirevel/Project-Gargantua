@@ -174,31 +174,31 @@ struct PreviewDiskStyle {
         switch id {
         case "canonical-visible-disk-v1":
             // Clean scientific thin disk: smooth, gently mottled.
-            return .init(turbulence: 0.28, noiseScale: 2.0, spiralArms: 0, spiralStrength: 0,
-                         tempScale: 8800, thickness: 0.5, brightnessScale: 1.0, density: 0.80, outer: 22)
+            return .init(turbulence: 0.26, noiseScale: 1.7, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8800, thickness: 0.5, brightnessScale: 1.0, density: 0.80, outer: 28)
         case "legacy-perlin":
             // Soft turbulent Perlin disk.
-            return .init(turbulence: 0.85, noiseScale: 2.8, spiralArms: 0, spiralStrength: 0,
-                         tempScale: 7600, thickness: 0.7, brightnessScale: 1.05, density: 0.72, outer: 22)
+            return .init(turbulence: 0.8, noiseScale: 2.2, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 7600, thickness: 0.7, brightnessScale: 1.05, density: 0.72, outer: 28)
         case "legacy-perlin-classic":
             // Stripe-like banded reproduction.
-            return .init(turbulence: 0.55, noiseScale: 2.0, spiralArms: 6, spiralStrength: 0.6,
-                         tempScale: 7400, thickness: 0.6, brightnessScale: 1.0, density: 0.78, outer: 22)
+            return .init(turbulence: 0.5, noiseScale: 1.7, spiralArms: 5, spiralStrength: 0.5,
+                         tempScale: 7400, thickness: 0.6, brightnessScale: 1.0, density: 0.78, outer: 28)
         case "legacy-perlin-ec7":
-            // Crisp high-frequency Perlin.
-            return .init(turbulence: 0.95, noiseScale: 4.6, spiralArms: 0, spiralStrength: 0,
-                         tempScale: 8000, thickness: 0.5, brightnessScale: 1.1, density: 0.72, outer: 21)
+            // Crisp (but still band-limited) high-frequency Perlin.
+            return .init(turbulence: 0.9, noiseScale: 2.8, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8000, thickness: 0.5, brightnessScale: 1.1, density: 0.72, outer: 27)
         case "legacy-bh-finish-grmhd":
             // Hot, thick, strongly turbulent GRMHD-style torus.
-            return .init(turbulence: 0.8, noiseScale: 3.2, spiralArms: 2, spiralStrength: 0.3,
-                         tempScale: 9600, thickness: 0.95, brightnessScale: 1.2, density: 0.85, outer: 26)
+            return .init(turbulence: 0.78, noiseScale: 2.4, spiralArms: 2, spiralStrength: 0.28,
+                         tempScale: 9600, thickness: 0.95, brightnessScale: 1.2, density: 0.85, outer: 32)
         case "legacy-thin-disk-preset-default":
             // Thin, mostly smooth DNGR-style preset.
-            return .init(turbulence: 0.4, noiseScale: 2.4, spiralArms: 0, spiralStrength: 0,
-                         tempScale: 8200, thickness: 0.4, brightnessScale: 0.95, density: 0.82, outer: 19)
+            return .init(turbulence: 0.38, noiseScale: 1.9, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8200, thickness: 0.4, brightnessScale: 0.95, density: 0.82, outer: 25)
         default:
-            return .init(turbulence: 0.4, noiseScale: 2.4, spiralArms: 0, spiralStrength: 0,
-                         tempScale: 8200, thickness: 0.6, brightnessScale: 1.0, density: 0.78, outer: 22)
+            return .init(turbulence: 0.38, noiseScale: 1.9, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8200, thickness: 0.6, brightnessScale: 1.0, density: 0.78, outer: 28)
         }
     }
 }

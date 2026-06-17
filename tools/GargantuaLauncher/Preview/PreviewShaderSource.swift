@@ -162,11 +162,11 @@ inline float diskTexture(float3 hit, float rHit, constant Uniforms& u) {
     float lr = log(max(rHit, 1.0));
 
     float n = fbm(float2(ang * (1.5 + noiseScale) + rHit * 0.18, lr * (2.0 + noiseScale)));
-    float tex = mix(1.0, 0.35 + 1.25 * n, clamp(turbulence, 0.0, 1.0));
+    float tex = mix(1.0, 0.55 + 0.9 * n, clamp(turbulence, 0.0, 1.0));
 
     if (spiralStrength > 0.0 && spiralArms > 0.0) {
         float s = 0.5 + 0.5 * sin(ang * spiralArms + lr * spiralArms * 1.6);
-        tex *= mix(1.0, 0.45 + 1.0 * s, clamp(spiralStrength, 0.0, 1.0));
+        tex *= mix(1.0, 0.6 + 0.8 * s, clamp(spiralStrength, 0.0, 1.0));
     }
     return max(tex, 0.0);
 }
@@ -203,7 +203,13 @@ inline float3 diskEmission(float3 hit, float3 rayDir, float rHit, constant Unifo
     // Relativistic beaming (bolometric ~ g^4), clamped to keep preview stable.
     float beaming = clamp(pow(g, 4.0), 0.02, 24.0);
     float edge = smoothstep(outer, outer * 0.72, rHit);
-    float texture = diskTexture(hit, rHit, u);
+    // Fade the surface texture toward smooth at grazing / strongly foreshortened
+    // views (ray nearly in the disk plane). There the texture's screen-space
+    // frequency outruns the sample rate and aliases into diffraction-like
+    // fringes; lensed images are seen through such grazing geometry too.
+    float facing = abs(dot(normalize(rayDir), float3(0.0, 0.0, 1.0)));
+    float texStrength = smoothstep(0.05, 0.34, facing);
+    float texture = mix(1.0, diskTexture(hit, rHit, u), texStrength);
     float brightness = profile * beaming * edge * u.disk1.x * texture;
     return color * brightness;
 }

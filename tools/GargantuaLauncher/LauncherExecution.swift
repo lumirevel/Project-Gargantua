@@ -140,7 +140,10 @@ final class LauncherModel: ObservableObject {
     /// the preview (the preview mirrors the final look at lower quality).
     var previewExposureGain: Float {
         if observerMode == .eye {
-            var e = 1.0
+            // Human-eye output adapts to the bright disk, so the offline result
+            // reads much brighter than a unit-exposure scene. Approximate that
+            // adaptation with a brighter base so the preview matches.
+            var e = 1.5
             if useEyeND { e *= pow(2.0, -eyeND) }
             return Float(min(max(e, 0.03), 12.0))
         }

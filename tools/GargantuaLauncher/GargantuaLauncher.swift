@@ -417,12 +417,13 @@ private struct ISOControl: View {
                 maxIndex: Double(CameraStopTables.isoValues.count - 1)
             )
         } else {
-            HStack {
-                Text("ISO")
+            HStack(spacing: 8) {
+                Text("ISO").frame(width: 80, alignment: .leading)
                 Slider(value: $model.iso, in: 50...12800, step: 1)
                 TextField("ISO", value: $model.iso, format: .number.precision(.fractionLength(0)))
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 82)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 56)
             }
         }
     }
@@ -443,13 +444,10 @@ private struct ShutterControl: View {
                 maxIndex: Double(CameraStopTables.shutters.count - 1)
             )
         } else {
-            HStack {
-                Text("Shutter")
-                TextField("1/60", text: $model.shutter)
+            HStack(spacing: 8) {
+                Text("Shutter").frame(width: 80, alignment: .leading)
+                TextField("1/60 or seconds", text: $model.shutter)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                Text("seconds or fraction")
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -462,12 +460,13 @@ private struct StopSlider: View {
     let maxIndex: Double
 
     var body: some View {
-        HStack {
-            Text(label)
+        HStack(spacing: 8) {
+            Text(label).frame(width: 80, alignment: .leading)
             Slider(value: $index, in: 0...maxIndex, step: 1)
             Text(valueText)
                 .monospacedDigit()
-                .frame(width: 70, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: 56, alignment: .trailing)
         }
     }
 }
@@ -865,29 +864,19 @@ private struct LabeledInputSlider: View {
     let label: String
     @Binding var value: Double
     let range: ClosedRange<Double>
-    let format: String
+    var format: String = "%.2f"
 
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text(label)
+                .lineLimit(1)
+                .frame(width: 80, alignment: .leading)
             Slider(value: $value, in: range)
             TextField(label, value: $value, format: .number)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 72)
-            NumericText(value: value, width: 64, format: format)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 56)
         }
-    }
-}
-
-private struct NumericText: View {
-    let value: Double
-    let width: CGFloat
-    let format: String
-
-    var body: some View {
-        Text(String(format: format, value))
-            .monospacedDigit()
-            .frame(width: width, alignment: .trailing)
     }
 }
 
