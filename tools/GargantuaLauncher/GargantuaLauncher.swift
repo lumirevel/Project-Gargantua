@@ -5,100 +5,65 @@ struct GargantuaLauncherView: View {
     @State private var commandExpanded = false
 
     var body: some View {
-        NavigationSplitView {
-            sourceSidebar
-        } detail: {
-            GeometryReader { geo in
-                // Explicitly partition the available width so the three columns
-                // always sum to exactly what is on screen — no overflow / clip
-                // regardless of how SwiftUI would distribute flexible frames.
-                let total = geo.size.width
-                let leftW = min(352, max(220, total * 0.30))
-                let rightW = min(312, max(196, total * 0.26))
-                let centerW = max(180, total - leftW - rightW - 2)
-                VStack(spacing: 0) {
-                    WorkflowHeader(model: model)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                    Divider()
-                    HStack(spacing: 0) {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 14) {
-                                PreviewControlsPanel(model: model)
-                                BlackHolePanel(model: model)
-                                SourceSummaryPanel(model: model)
-                                SourceDataPanel(model: model)
-                                ObserverPanel(model: model)
-                                if model.observerMode == .eye {
-                                    EyeInterpreterPanel(model: model)
-                                }
-                                if model.isCameraMode {
-                                    CameraInterpreterPanel(model: model)
-                                }
-                                RenderSetupPanel(model: model)
-                                AdvancedPhysicsPanel(model: model)
+        // No NavigationSplitView: a collapsing sidebar can overlay (cover) the
+        // settings on narrow widths. Instead lay out three columns explicitly
+        // across the full window so nothing is ever obscured, and the source
+        // selector lives inside the settings dashboard.
+        GeometryReader { geo in
+            let total = geo.size.width
+            let leftW = min(376, max(290, total * 0.31))
+            let rightW = min(324, max(248, total * 0.25))
+            let centerW = max(220, total - leftW - rightW - 2)
+            VStack(spacing: 0) {
+                WorkflowHeader(model: model)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                Divider()
+                HStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            BlackHolePanel(model: model)
+                            MatterSourcePanel(model: model)
+                            SourceDataPanel(model: model)
+                            ObserverPanel(model: model)
+                            if model.observerMode == .eye {
+                                EyeInterpreterPanel(model: model)
                             }
-                            .padding(14)
-                            .frame(width: leftW - 28, alignment: .leading)
-                        }
-                        .frame(width: leftW)
-
-                        Divider()
-
-                        InteractivePreviewPanel(model: model)
-                            .frame(width: centerW)
-
-                        Divider()
-
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 14) {
-                                CommandPanel(model: model, isExpanded: $commandExpanded)
-                                ExecutionPanel(model: model)
-                                ResultPanel(model: model)
+                            if model.isCameraMode {
+                                CameraInterpreterPanel(model: model)
                             }
-                            .padding(14)
-                            .frame(width: rightW - 28, alignment: .leading)
+                            RenderSetupPanel(model: model)
+                            AdvancedPhysicsPanel(model: model)
+                            PreviewControlsPanel(model: model)
                         }
-                        .frame(width: rightW)
+                        .padding(14)
+                        .frame(width: leftW - 28, alignment: .leading)
                     }
-                    .frame(maxHeight: .infinity)
+                    .frame(width: leftW)
+
+                    Divider()
+
+                    InteractivePreviewPanel(model: model)
+                        .frame(width: centerW)
+
+                    Divider()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            CommandPanel(model: model, isExpanded: $commandExpanded)
+                            ExecutionPanel(model: model)
+                            ResultPanel(model: model)
+                        }
+                        .padding(14)
+                        .frame(width: rightW - 28, alignment: .leading)
+                    }
+                    .frame(width: rightW)
                 }
-                .frame(width: total, height: geo.size.height)
+                .frame(maxHeight: .infinity)
             }
-            .navigationTitle("Observation Workflow")
+            .frame(width: total, height: geo.size.height)
         }
-        .frame(minWidth: 940, minHeight: 560)
-    }
-
-    private var sourceSidebar: some View {
-        List(selection: $model.selectedSourceID) {
-            Section("Recommended") {
-                sourceRows(statuses: ["recommended", "production-candidate"])
-            }
-            Section("Diagnostics") {
-                sourceRows(statuses: ["diagnostic", "surrogate"])
-            }
-            Section("Legacy") {
-                sourceRows(statuses: ["legacy"])
-            }
-        }
-        .listStyle(.sidebar)
-        .navigationTitle("Matter")
-        .navigationSplitViewColumnWidth(min: 160, ideal: 195, max: 230)
-    }
-
-    @ViewBuilder
-    private func sourceRows(statuses: Set<String>) -> some View {
-        ForEach(model.sourceModels.filter { statuses.contains($0.status) }) { source in
-            VStack(alignment: .leading, spacing: 3) {
-                Text(source.title)
-                    .font(.headline)
-                Text("\(source.status) - \(source.layer)")
-                    .font(.caption)
-                    .foregroundStyle(source.status == "legacy" ? Color.orange : Color.secondary)
-            }
-            .tag(source.id)
-        }
+        .frame(minWidth: 1000, minHeight: 600)
     }
 }
 
@@ -170,15 +135,25 @@ private struct BlackHolePanel: View {
     }
 }
 
-private struct SourceSummaryPanel: View {
+private struct MatterSourcePanel: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
         GroupBox("2. Accretion Source") {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(model.selectedSource.title)
-                    .font(.headline)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Model", selection: $model.selectedSourceID) {
+                    Section("Recommended") {
+                        sourceItems(statuses: ["recommended", "production-candidate"])
+                    }
+                    Section("Diagnostics") {
+                        sourceItems(statuses: ["diagnostic", "surrogate"])
+                    }
+                    Section("Legacy") {
+                        sourceItems(statuses: ["legacy"])
+                    }
+                }
                 Text(model.selectedSource.summary)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
                     Label(model.selectedSource.layer, systemImage: "scope")
@@ -190,6 +165,13 @@ private struct SourceSummaryPanel: View {
                 .font(.caption)
             }
             .padding(4)
+        }
+    }
+
+    @ViewBuilder
+    private func sourceItems(statuses: Set<String>) -> some View {
+        ForEach(model.sourceModels.filter { statuses.contains($0.status) }) { source in
+            Text(source.title).tag(source.id)
         }
     }
 }
@@ -723,16 +705,11 @@ private struct PreviewControlsPanel: View {
                 }
                 .pickerStyle(.segmented)
 
-                LabeledInputSlider(label: "Disk glow", value: $model.previewDiskBrightness, range: 0...4, format: "%.2f")
-                LabeledInputSlider(label: "Disk outer", value: $model.previewDiskOuter, range: 8...40, format: "%.1f")
-                LabeledInputSlider(label: "Disk density", value: $model.previewDiskDensity, range: 0...1, format: "%.2f")
-                LabeledInputSlider(label: "Stars", value: $model.previewBackgroundStars, range: 0...3, format: "%.2f")
-
                 Divider()
                 cameraControls
                 Toggle("Apply preview camera to final render", isOn: $model.linkPreviewCameraToRender)
 
-                Text("The viewport mirrors the metric, spin, accretion source and the camera/eye exposure, tone and grade — only at lower quality. Use Quality for speed; Final Render for full quality.")
+                Text("The preview mirrors every setting — metric, spin, accretion source, and the observer/camera exposure, tone and grade. Quality is the only knob that trades fidelity for speed; everything else matches Final Render.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

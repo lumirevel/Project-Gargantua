@@ -31,10 +31,6 @@ final class LauncherModel: ObservableObject {
     let previewStats = PreviewStats()
     @Published var linkPreviewCameraToRender = true
     @Published var previewQuality: PreviewQuality = .medium
-    @Published var previewDiskBrightness = 1.0
-    @Published var previewDiskOuter = 22.0
-    @Published var previewDiskDensity = 0.78
-    @Published var previewBackgroundStars = 1.0
 
     // MARK: Camera interpreter
     @Published var exposureProgram: CameraExposureProgram = .manual
@@ -113,19 +109,19 @@ final class LauncherModel: ObservableObject {
         let metric: PreviewMetric = blackHoleMetric == .kerr ? .kerr : .schwarzschild
         let spinValue: Float = blackHoleMetric == .kerr ? Float(spin) : 0
         let inner = PreviewPhysics.diskInnerRadius(metric: metric, spin: spinValue)
-        let outer = max(Float(previewDiskOuter), inner + 2.0)
-        // The selected accretion-source model drives the disk's appearance
-        // (turbulence, spiral banding, temperature, thickness, brightness) so
-        // switching sources in the sidebar is reflected live in the preview.
+        // The disk appearance is derived entirely from the selected accretion
+        // source model and the physics — there are no preview-only disk knobs,
+        // so the preview matches the final render's inputs (only quality differs).
         let style = PreviewDiskStyle.preset(forSourceID: selectedSourceID)
+        let outer = max(style.outer, inner + 2.0)
         return PreviewRenderSettings(
             metric: metric,
             spin: spinValue,
             diskInner: inner,
             diskOuter: outer,
             diskThickness: style.thickness,
-            diskDensity: Float(previewDiskDensity),
-            diskBrightness: Float(previewDiskBrightness) * style.brightnessScale,
+            diskDensity: style.density,
+            diskBrightness: style.brightnessScale,
             diskTempScale: style.tempScale,
             diskTurbulence: style.turbulence,
             diskNoiseScale: style.noiseScale,
@@ -134,7 +130,7 @@ final class LauncherModel: ObservableObject {
             exposure: previewExposureGain,
             toneMap: previewToneMapDerived,
             saturation: previewSaturation,
-            backgroundStars: Float(previewBackgroundStars),
+            backgroundStars: isRawLikeCamera ? 0.0 : 1.0,
             quality: previewQuality
         )
     }
