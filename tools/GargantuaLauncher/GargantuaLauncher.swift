@@ -5,65 +5,100 @@ struct GargantuaLauncherView: View {
     @State private var commandExpanded = false
 
     var body: some View {
-        // No NavigationSplitView: a collapsing sidebar can overlay (cover) the
-        // settings on narrow widths. Instead lay out three columns explicitly
-        // across the full window so nothing is ever obscured, and the source
-        // selector lives inside the settings dashboard.
-        GeometryReader { geo in
-            let total = geo.size.width
-            let leftW = min(376, max(290, total * 0.31))
-            let rightW = min(324, max(248, total * 0.25))
-            let centerW = max(220, total - leftW - rightW - 2)
-            VStack(spacing: 0) {
-                WorkflowHeader(model: model)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                Divider()
-                HStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            BlackHolePanel(model: model)
-                            MatterSourcePanel(model: model)
-                            SourceDataPanel(model: model)
-                            ObserverPanel(model: model)
-                            if model.observerMode == .eye {
-                                EyeInterpreterPanel(model: model)
-                            }
-                            if model.isCameraMode {
-                                CameraInterpreterPanel(model: model)
-                            }
-                            RenderSetupPanel(model: model)
-                            AdvancedPhysicsPanel(model: model)
-                            PreviewControlsPanel(model: model)
-                        }
-                        .padding(14)
-                        .frame(width: leftW - 28, alignment: .leading)
-                    }
-                    .frame(width: leftW)
-
+        NavigationSplitView {
+            sourceSidebar
+        } detail: {
+            GeometryReader { geo in
+                // Explicitly partition the detail width so the three columns
+                // always sum to exactly what is on screen — no overflow / clip.
+                let total = geo.size.width
+                let leftW = min(372, max(264, total * 0.32))
+                let rightW = min(320, max(232, total * 0.25))
+                let centerW = max(220, total - leftW - rightW - 2)
+                VStack(spacing: 0) {
+                    WorkflowHeader(model: model)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     Divider()
-
-                    InteractivePreviewPanel(model: model)
-                        .frame(width: centerW)
-
-                    Divider()
-
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            CommandPanel(model: model, isExpanded: $commandExpanded)
-                            ExecutionPanel(model: model)
-                            ResultPanel(model: model)
+                    HStack(spacing: 0) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                BlackHolePanel(model: model)
+                                SourceSummaryPanel(model: model)
+                                SourceDataPanel(model: model)
+                                ObserverPanel(model: model)
+                                if model.observerMode == .eye {
+                                    EyeInterpreterPanel(model: model)
+                                }
+                                if model.isCameraMode {
+                                    CameraInterpreterPanel(model: model)
+                                }
+                                RenderSetupPanel(model: model)
+                                AdvancedPhysicsPanel(model: model)
+                                PreviewControlsPanel(model: model)
+                            }
+                            .padding(14)
+                            .frame(width: leftW - 28, alignment: .leading)
                         }
-                        .padding(14)
-                        .frame(width: rightW - 28, alignment: .leading)
+                        .frame(width: leftW)
+
+                        Divider()
+
+                        InteractivePreviewPanel(model: model)
+                            .frame(width: centerW)
+
+                        Divider()
+
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                CommandPanel(model: model, isExpanded: $commandExpanded)
+                                ExecutionPanel(model: model)
+                                ResultPanel(model: model)
+                            }
+                            .padding(14)
+                            .frame(width: rightW - 28, alignment: .leading)
+                        }
+                        .frame(width: rightW)
                     }
-                    .frame(width: rightW)
+                    .frame(maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(width: total, height: geo.size.height)
             }
-            .frame(width: total, height: geo.size.height)
+            .navigationTitle("Observation Workflow")
         }
-        .frame(minWidth: 1000, minHeight: 600)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 1060, minHeight: 600)
+    }
+
+    private var sourceSidebar: some View {
+        List(selection: $model.selectedSourceID) {
+            Section("Recommended") {
+                sourceRows(statuses: ["recommended", "production-candidate"])
+            }
+            Section("Diagnostics") {
+                sourceRows(statuses: ["diagnostic", "surrogate"])
+            }
+            Section("Legacy") {
+                sourceRows(statuses: ["legacy"])
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Matter")
+        .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 240)
+    }
+
+    @ViewBuilder
+    private func sourceRows(statuses: Set<String>) -> some View {
+        ForEach(model.sourceModels.filter { statuses.contains($0.status) }) { source in
+            VStack(alignment: .leading, spacing: 3) {
+                Text(source.title)
+                    .font(.headline)
+                Text("\(source.status) - \(source.layer)")
+                    .font(.caption)
+                    .foregroundStyle(source.status == "legacy" ? Color.orange : Color.secondary)
+            }
+            .tag(source.id)
+        }
     }
 }
 
@@ -135,25 +170,15 @@ private struct BlackHolePanel: View {
     }
 }
 
-private struct MatterSourcePanel: View {
+private struct SourceSummaryPanel: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
         GroupBox("2. Accretion Source") {
-            VStack(alignment: .leading, spacing: 8) {
-                Picker("Model", selection: $model.selectedSourceID) {
-                    Section("Recommended") {
-                        sourceItems(statuses: ["recommended", "production-candidate"])
-                    }
-                    Section("Diagnostics") {
-                        sourceItems(statuses: ["diagnostic", "surrogate"])
-                    }
-                    Section("Legacy") {
-                        sourceItems(statuses: ["legacy"])
-                    }
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.selectedSource.title)
+                    .font(.headline)
                 Text(model.selectedSource.summary)
-                    .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
                     Label(model.selectedSource.layer, systemImage: "scope")
@@ -165,13 +190,6 @@ private struct MatterSourcePanel: View {
                 .font(.caption)
             }
             .padding(4)
-        }
-    }
-
-    @ViewBuilder
-    private func sourceItems(statuses: Set<String>) -> some View {
-        ForEach(model.sourceModels.filter { statuses.contains($0.status) }) { source in
-            Text(source.title).tag(source.id)
         }
     }
 }
