@@ -20,21 +20,23 @@ enum PreviewQuality: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Longest-edge width for the immediate, rough pass.
+    /// Longest-edge width for the immediate, rough pass. Kept small because the
+    /// renderer has a fixed ~0.5 s per-launch cost, so a lower resolution buys
+    /// the biggest responsiveness gain.
     var fastWidth: Int {
         switch self {
-        case .low: return 160
-        case .medium: return 200
-        case .high: return 248
+        case .low: return 112
+        case .medium: return 144
+        case .high: return 192
         }
     }
 
     /// Longest-edge width for the refined pass (rendered when the camera settles).
     var refineWidth: Int {
         switch self {
-        case .low: return 280
-        case .medium: return 384
-        case .high: return 512
+        case .low: return 240
+        case .medium: return 340
+        case .high: return 480
         }
     }
 }

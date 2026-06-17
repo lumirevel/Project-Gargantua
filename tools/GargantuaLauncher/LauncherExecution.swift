@@ -203,7 +203,8 @@ final class LauncherModel: ObservableObject {
         process.currentDirectoryURL = plan.repositoryRoot
         process.environment = processEnvironment(
             root: plan.repositoryRoot.path,
-            collisionsOut: "/private/tmp/gargantua_gui_preview_collisions.bin"
+            collisionsOut: "/private/tmp/gargantua_gui_preview_collisions.bin",
+            etaHistory: "/private/tmp/gargantua_gui_preview_eta.json"
         )
         process.standardOutput = pipe
         process.standardError = pipe
@@ -364,7 +365,7 @@ final class LauncherModel: ObservableObject {
         )
     }
 
-    private func processEnvironment(root: String, collisionsOut: String?) -> [String: String] {
+    private func processEnvironment(root: String, collisionsOut: String?, etaHistory: String?) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let guiPath = [
             environment["PATH"],
@@ -379,6 +380,12 @@ final class LauncherModel: ObservableObject {
         environment["PATH"] = guiPath
         environment["BH_PROJECT_ROOT"] = root
         if let collisionsOut { environment["BH_COLLISIONS_OUT"] = collisionsOut }
+        if let etaHistory {
+            // Separate ETA history + no relay: avoids clashing with the final
+            // render's file and trims the pipeline's per-launch bookkeeping.
+            environment["BH_ETA_HISTORY"] = etaHistory
+            environment["BH_ETA_RELAY"] = "none"
+        }
         return environment
     }
 
@@ -389,7 +396,7 @@ final class LauncherModel: ObservableObject {
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [plan.executablePath] + plan.arguments
         process.currentDirectoryURL = plan.repositoryRoot
-        process.environment = processEnvironment(root: plan.repositoryRoot.path, collisionsOut: nil)
+        process.environment = processEnvironment(root: plan.repositoryRoot.path, collisionsOut: nil, etaHistory: nil)
         process.standardOutput = pipe
         process.standardError = pipe
 

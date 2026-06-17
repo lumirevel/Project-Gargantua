@@ -123,7 +123,7 @@ struct InteractivePreviewViewport: NSViewRepresentable {
                 self.model.requestPreviewRender()
             }
             settle = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
         }
     }
 }
