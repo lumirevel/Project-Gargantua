@@ -68,6 +68,33 @@ struct GargantuaLauncherView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1060, minHeight: 600)
+        .onAppear { model.requestPreviewRender() }
+        .onChange(of: previewTriggerKey) { model.requestPreviewRender() }
+    }
+
+    /// Every option that changes the rendered image, folded into one value so a
+    /// single onChange schedules a preview re-render without a huge modifier chain.
+    private var previewTriggerKey: String {
+        [
+            String(describing: model.blackHoleMetric),
+            String(model.spin),
+            model.selectedSourceID,
+            String(describing: model.observerMode),
+            model.renderIntentID,
+            String(describing: model.previewQuality),
+            String(describing: model.exposureProgram),
+            String(model.exposureEV),
+            String(model.fNumber),
+            String(model.iso),
+            model.shutter,
+            String(model.enableColorGrade),
+            String(model.enableCinematicEffects),
+            String(model.enableDepthOfField),
+            String(describing: model.eyePhotometric),
+            String(model.useEyeND),
+            String(model.eyeND),
+            model.diskHDF5Path
+        ].joined(separator: "|")
     }
 
     private var sourceSidebar: some View {
@@ -640,30 +667,21 @@ private struct ExecutionPanel: View {
 
 private struct InteractivePreviewPanel: View {
     @ObservedObject var model: LauncherModel
-    @ObservedObject private var stats: PreviewStats
-
-    init(model: LauncherModel) {
-        self.model = model
-        self.stats = model.previewStats
-    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black
             InteractivePreviewViewport(model: model)
 
-            if let failure = stats.failureMessage {
+            if model.previewImage == nil {
                 VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
+                    Image(systemName: "photo")
                         .font(.largeTitle)
-                    Text("Preview unavailable")
-                        .font(.headline)
-                    Text(failure)
+                    Text(model.previewStatus)
                         .font(.caption)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
-                .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -672,7 +690,7 @@ private struct InteractivePreviewPanel: View {
 
             VStack {
                 Spacer()
-                Text("Drag to orbit · Scroll or pinch to zoom")
+                Text(model.isPreviewInteracting ? "Release to render this view" : "Drag to orbit · Scroll or pinch to zoom")
                     .font(.caption2)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -685,32 +703,20 @@ private struct InteractivePreviewPanel: View {
     }
 
     private var previewHUD: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(statusLine)
-                .font(.caption.weight(.semibold))
-            Text("Samples \(stats.sampleCount) / \(stats.maxSamples)")
-                .font(.caption2)
-            ProgressView(value: progressValue)
-                .frame(width: 150)
-                .tint(.white)
-            Text("\(stats.width)x\(stats.height) · \(Int(stats.fps.rounded())) fps")
-                .font(.caption2)
+        HStack(spacing: 8) {
+            if model.isPreviewRendering {
+                ProgressView().controlSize(.small).tint(.white)
+            } else {
+                Image(systemName: "viewfinder").font(.caption)
+            }
+            Text(model.previewStatus)
+                .font(.caption.weight(.medium))
         }
         .monospacedDigit()
         .foregroundStyle(.white.opacity(0.92))
-        .padding(10)
-        .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
-    }
-
-    private var progressValue: Double {
-        guard stats.maxSamples > 0 else { return 0 }
-        return min(1.0, Double(stats.sampleCount) / Double(stats.maxSamples))
-    }
-
-    private var statusLine: String {
-        if stats.interacting { return "Interacting · fast preview" }
-        if stats.converged { return "Converged" }
-        return "Accumulating…"
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.42), in: Capsule())
     }
 }
 
@@ -718,7 +724,7 @@ private struct PreviewControlsPanel: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
-        GroupBox("Interactive Preview Viewport") {
+        GroupBox("Interactive Preview") {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("Quality", selection: $model.previewQuality) {
                     ForEach(PreviewQuality.allCases) { quality in
@@ -727,11 +733,23 @@ private struct PreviewControlsPanel: View {
                 }
                 .pickerStyle(.segmented)
 
+                HStack {
+                    Toggle("Auto", isOn: $model.autoPreview)
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                    Button {
+                        model.renderPreviewNow()
+                    } label: {
+                        Label("Render preview", systemImage: "bolt.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(model.isPreviewRendering)
+                }
+
                 Divider()
                 cameraControls
-                Toggle("Apply preview camera to final render", isOn: $model.linkPreviewCameraToRender)
 
-                Text("The preview mirrors every setting — metric, spin, accretion source, and the observer/camera exposure, tone and grade. Quality is the only knob that trades fidelity for speed; everything else matches Final Render.")
+                Text("The preview runs the SAME renderer as Final Render — identical physics, disk model and colour science — only at lower resolution. Each camera move renders a quick pass, then a sharper one.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

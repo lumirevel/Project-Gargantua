@@ -26,11 +26,19 @@ final class LauncherModel: ObservableObject {
     @Published var rayBundleJacobianStrength = 1.0
     @Published var rayBundleFootprintClamp = 6.0
 
-    // MARK: Interactive preview camera + settings
+    // MARK: Interactive preview (drives the *real* renderer at low resolution)
     let camera = OrbitCameraController()
-    let previewStats = PreviewStats()
-    @Published var linkPreviewCameraToRender = true
     @Published var previewQuality: PreviewQuality = .medium
+    @Published var autoPreview = true
+    @Published var previewImage: NSImage?
+    @Published var isPreviewRendering = false
+    @Published var isPreviewInteracting = false
+    @Published var previewStatus = "Drag to orbit · scroll to zoom"
+    @Published var previewPixelSize = ""
+    let previewOutputPath = "/private/tmp/gargantua_gui_preview.png"
+    private var previewProcess: Process?
+    private var previewSeq = 0
+    private var lastPreviewStart = Date.distantPast
 
     // MARK: Camera interpreter
     @Published var exposureProgram: CameraExposureProgram = .manual
@@ -99,110 +107,143 @@ final class LauncherModel: ObservableObject {
         aspect.size(customWidth: customWidth, customHeight: customHeight)
     }
 
-    var commandPlan: RenderCommandPlan { RenderCommandPlanner.plan(for: commandInputs) }
+    var commandPlan: RenderCommandPlan { RenderCommandPlanner.plan(for: commandInputs(noBuild: noBuild)) }
     var commandPreview: String { commandPlan.commandPreview }
 
-    // MARK: - Interactive preview bindings
-
-    /// GUI option panels gathered into the renderer-facing settings struct.
-    var previewRenderSettings: PreviewRenderSettings {
-        let metric: PreviewMetric = blackHoleMetric == .kerr ? .kerr : .schwarzschild
-        let spinValue: Float = blackHoleMetric == .kerr ? Float(spin) : 0
-        let inner = PreviewPhysics.diskInnerRadius(metric: metric, spin: spinValue)
-        // The disk appearance is derived entirely from the selected accretion
-        // source model and the physics — there are no preview-only disk knobs,
-        // so the preview matches the final render's inputs (only quality differs).
-        let style = PreviewDiskStyle.preset(forSourceID: selectedSourceID)
-        let outer = max(style.outer, inner + 2.0)
-        return PreviewRenderSettings(
-            metric: metric,
-            spin: spinValue,
-            diskInner: inner,
-            diskOuter: outer,
-            diskThickness: style.thickness,
-            diskDensity: style.density,
-            diskBrightness: style.brightnessScale,
-            diskTempScale: style.tempScale,
-            diskTurbulence: style.turbulence,
-            diskNoiseScale: style.noiseScale,
-            diskSpiralArms: style.spiralArms,
-            diskSpiralStrength: style.spiralStrength,
-            exposure: previewExposureGain,
-            toneMap: previewToneMapDerived,
-            saturation: previewSaturation,
-            backgroundStars: isRawLikeCamera ? 0.0 : 1.0,
-            quality: previewQuality
-        )
+    /// Path to the cached Release binary the pipeline reuses with `--no-build`.
+    static var blackholeBinaryPath: String {
+        let dd = ProcessInfo.processInfo.environment["BH_DERIVED_DATA_PATH"] ?? "/tmp/BlackholeDD_rebuild"
+        return "\(dd)/Build/Products/Release/Blackhole"
     }
 
-    /// Scene exposure inferred from the observer / camera-interpreter options,
-    /// so changing exposure mode, ISO, shutter, aperture or EV is reflected in
-    /// the preview (the preview mirrors the final look at lower quality).
-    var previewExposureGain: Float {
-        if observerMode == .eye {
-            // Human-eye output adapts to the bright disk, so the offline result
-            // reads much brighter than a unit-exposure scene. Approximate that
-            // adaptation with a brighter base so the preview matches.
-            var e = 1.5
-            if useEyeND { e *= pow(2.0, -eyeND) }
-            return Float(min(max(e, 0.03), 12.0))
-        }
-        if isRawLikeCamera { return 1.0 }
-        var gain: Double
-        switch exposureProgram {
-        case .manual:
-            let reference = 100.0 * (1.0 / 60.0) / (4.0 * 4.0) // ISO100, 1/60s, f/4
-            gain = (iso * shutterSeconds(shutter) / (fNumber * fNumber)) / reference
-        case .auto:
-            gain = 1.0 // auto-exposure normalizes brightness
-        case .aperturePriority, .shutterPriority, .fixedEV:
-            gain = pow(2.0, exposureEV)
-        }
-        return Float(min(max(gain, 0.02), 16.0))
+    // MARK: - Interactive preview (same renderer, lower resolution)
+
+    func setPreviewRadius(_ value: Double) { camera.setRadius(value); cameraEdited() }
+    func setPreviewAzimuth(_ value: Double) { camera.setAzimuthDegrees(value); cameraEdited() }
+    func setPreviewElevation(_ value: Double) { camera.setElevationDegrees(value); cameraEdited() }
+    func setPreviewFov(_ value: Double) { camera.setFov(value); cameraEdited() }
+    func resetPreviewCamera() { camera.reset(); cameraEdited() }
+
+    private func cameraEdited() {
+        objectWillChange.send()
+        requestPreviewRender()
     }
 
-    /// Tone-mapping operator inferred from the observer mode and camera look.
-    var previewToneMapDerived: PreviewToneMap {
-        if isRawLikeCamera { return .linear }
-        if observerMode == .eye { return .aces }
-        if renderIntentID == "cinematic" { return .aces }
-        return enableColorGrade ? .aces : .reinhard
+    func setPreviewInteracting(_ value: Bool) {
+        if isPreviewInteracting != value { isPreviewInteracting = value }
     }
 
-    /// Saturation inferred from the camera look / colour grade.
-    var previewSaturation: Float {
-        if isRawLikeCamera { return 1.0 }
-        if observerMode == .camera && (enableColorGrade || renderIntentID == "cinematic") {
-            return 1.32
-        }
-        return 1.12
+    /// Called when an interactive drag/zoom finishes so the camera sliders and
+    /// generated command refresh to the committed pose.
+    func previewCameraDidCommit() { objectWillChange.send() }
+
+    /// Queue a preview render of the current camera + options. Renders are
+    /// serialized; the most recent request wins. A quick low-resolution pass is
+    /// shown first, then a sharper pass once the camera settles (progressive).
+    func requestPreviewRender() {
+        previewSeq += 1
+        startPreviewIfIdle()
     }
 
-    private func shutterSeconds(_ text: String) -> Double {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        if trimmed.contains("/") {
-            let parts = trimmed.split(separator: "/")
-            if parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]), b != 0 {
-                return a / b
+    /// Manual trigger (also works when Auto is off).
+    func renderPreviewNow() {
+        previewSeq += 1
+        if previewProcess == nil { runPreviewPass(width: previewQuality.fastWidth, seq: previewSeq, refine: false) }
+    }
+
+    private func startPreviewIfIdle() {
+        guard autoPreview, !isRunning, previewProcess == nil else { return }
+        runPreviewPass(width: previewQuality.fastWidth, seq: previewSeq, refine: false)
+    }
+
+    private func runPreviewPass(width baseWidth: Int, seq: Int, refine: Bool) {
+        let size = previewSize(width: baseWidth)
+        let binaryExists = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
+        let inputs = commandInputs(noBuild: binaryExists)
+        let plan = RenderCommandPlanner.previewPlan(for: inputs, width: size.width, height: size.height, output: previewOutputPath)
+
+        isPreviewRendering = true
+        previewPixelSize = "\(size.width)x\(size.height)"
+        previewStatus = binaryExists
+            ? (refine ? "Refining \(previewPixelSize)…" : "Rendering \(previewPixelSize)…")
+            : "Building renderer (first run)…"
+        lastPreviewStart = Date()
+
+        runPreviewProcess(plan: plan) { [weak self] success in
+            guard let self else { return }
+            self.previewProcess = nil
+            if success { self.loadPreviewImage(plan.outputPath) }
+
+            if self.previewSeq != seq {
+                // A newer request arrived while this one was rendering: render it.
+                self.startPreviewIfIdle()
+            } else if success && !refine {
+                // Camera + options unchanged: render the sharper pass.
+                self.runPreviewPass(width: self.previewQuality.refineWidth, seq: seq, refine: true)
+            } else {
+                self.isPreviewRendering = false
+                if success {
+                    let dt = Date().timeIntervalSince(self.lastPreviewStart)
+                    self.previewStatus = String(format: "Preview %@ · %.1fs", self.previewPixelSize, dt)
+                } else {
+                    self.previewStatus = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
+                        ? "Preview render failed."
+                        : "Renderer not built — run a Final Render once."
+                }
             }
         }
-        return Double(trimmed) ?? (1.0 / 60.0)
     }
 
-    func setPreviewRadius(_ value: Double) { camera.setRadius(value); objectWillChange.send() }
-    func setPreviewAzimuth(_ value: Double) { camera.setAzimuthDegrees(value); objectWillChange.send() }
-    func setPreviewElevation(_ value: Double) { camera.setElevationDegrees(value); objectWillChange.send() }
-    func setPreviewFov(_ value: Double) { camera.setFov(value); objectWillChange.send() }
-    func resetPreviewCamera() { camera.reset(); objectWillChange.send() }
+    private func runPreviewProcess(plan: RenderCommandPlan, completion: @escaping (Bool) -> Void) {
+        let process = Process()
+        let pipe = Pipe()
+        let readHandle = pipe.fileHandleForReading
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [plan.executablePath] + plan.arguments
+        process.currentDirectoryURL = plan.repositoryRoot
+        process.environment = processEnvironment(
+            root: plan.repositoryRoot.path,
+            collisionsOut: "/private/tmp/gargantua_gui_preview_collisions.bin"
+        )
+        process.standardOutput = pipe
+        process.standardError = pipe
+        // Drain output so the pipe buffer never blocks the renderer.
+        readHandle.readabilityHandler = { handle in _ = handle.availableData }
+        previewProcess = process
 
-    /// Called when an interactive drag/zoom finishes so dependent UI (camera
-    /// sliders, generated command) refreshes to the committed pose.
-    func previewCameraDidCommit() { objectWillChange.send() }
+        process.terminationHandler = { proc in
+            readHandle.readabilityHandler = nil
+            let ok = proc.terminationStatus == 0
+            DispatchQueue.main.async { completion(ok) }
+        }
+        do {
+            try process.run()
+        } catch {
+            previewProcess = nil
+            DispatchQueue.main.async { completion(false) }
+        }
+    }
+
+    private func loadPreviewImage(_ path: String) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let image = NSImage(data: data) else { return }
+        previewImage = image
+    }
+
+    /// Preview pixel size from a target width, matching the final output aspect
+    /// (so framing matches), rounded to even dimensions.
+    private func previewSize(width baseWidth: Int) -> (width: Int, height: Int) {
+        let out = outputSize
+        let w = max(16, baseWidth)
+        let h = max(16, Int((Double(w) * Double(out.height) / Double(max(out.width, 1))).rounded()))
+        return (w - (w % 2), h - (h % 2))
+    }
 
     // MARK: - Final render
 
     func runRender() {
         guard !isRunning else { return }
+        previewProcess?.terminate() // avoid eta-history / GPU contention with the preview
         let plan = commandPlan
         isRunning = true
         progressFraction = 0.01
@@ -232,6 +273,7 @@ final class LauncherModel: ObservableObject {
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
             diskHDF5Path = url.path
+            requestPreviewRender()
         }
     }
 
@@ -267,7 +309,7 @@ final class LauncherModel: ObservableObject {
         shutter = CameraStopTables.shutters[idx]
     }
 
-    private var commandInputs: RenderCommandInputs {
+    private func commandInputs(noBuild noBuildValue: Bool) -> RenderCommandInputs {
         let eye = camera.state.eye
         let rollDegrees = Double(camera.state.roll) * 180.0 / .pi
         return RenderCommandInputs(
@@ -283,11 +325,11 @@ final class LauncherModel: ObservableObject {
             outputWidth: outputSize.width,
             outputHeight: outputSize.height,
             ssaa: ssaa,
-            noBuild: noBuild,
+            noBuild: noBuildValue,
             rayBundleMode: showAdvancedPhysics ? rayBundleMode : .off,
             rayBundleJacobianStrength: rayBundleJacobianStrength,
             rayBundleFootprintClamp: rayBundleFootprintClamp,
-            useCustomCamera: linkPreviewCameraToRender,
+            useCustomCamera: true, // the orbit camera always drives both preview and final
             camX: Double(eye.x),
             camY: Double(eye.y),
             camZ: Double(eye.z),
@@ -322,13 +364,7 @@ final class LauncherModel: ObservableObject {
         )
     }
 
-    private func startProcess(plan: RenderCommandPlan) {
-        let process = Process()
-        let pipe = Pipe()
-        let readHandle = pipe.fileHandleForReading
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [plan.executablePath] + plan.arguments
-        process.currentDirectoryURL = plan.repositoryRoot
+    private func processEnvironment(root: String, collisionsOut: String?) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let guiPath = [
             environment["PATH"],
@@ -341,8 +377,19 @@ final class LauncherModel: ObservableObject {
             "/Applications/Xcode.app/Contents/Developer/usr/bin"
         ].compactMap { $0 }.joined(separator: ":")
         environment["PATH"] = guiPath
-        environment["BH_PROJECT_ROOT"] = plan.repositoryRoot.path
-        process.environment = environment
+        environment["BH_PROJECT_ROOT"] = root
+        if let collisionsOut { environment["BH_COLLISIONS_OUT"] = collisionsOut }
+        return environment
+    }
+
+    private func startProcess(plan: RenderCommandPlan) {
+        let process = Process()
+        let pipe = Pipe()
+        let readHandle = pipe.fileHandleForReading
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [plan.executablePath] + plan.arguments
+        process.currentDirectoryURL = plan.repositoryRoot
+        process.environment = processEnvironment(root: plan.repositoryRoot.path, collisionsOut: nil)
         process.standardOutput = pipe
         process.standardError = pipe
 
@@ -401,6 +448,8 @@ final class LauncherModel: ObservableObject {
         }
         logText += "\nFinal render finished with status \(status)."
         refreshResult()
+        // A final render builds/refreshes the binary; refresh the preview too.
+        requestPreviewRender()
     }
 
     private func updateProgress(from text: String, plan: RenderCommandPlan) {

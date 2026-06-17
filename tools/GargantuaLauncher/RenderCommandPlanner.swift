@@ -101,6 +101,20 @@ enum RenderCommandPlanner {
         )
     }
 
+    /// Same renderer as the final output, just smaller — used for the live
+    /// interactive preview so its physics / disk model / colour match exactly.
+    static func previewPlan(for inputs: RenderCommandInputs, width: Int, height: Int, output: String) -> RenderCommandPlan {
+        plan(
+            for: inputs,
+            outputPath: output,
+            width: max(16, width),
+            height: max(16, height),
+            ssaa: .one,
+            quality: .preview,
+            includeRawSidecars: false
+        )
+    }
+
     private static func plan(
         for inputs: RenderCommandInputs,
         outputPath: String,
