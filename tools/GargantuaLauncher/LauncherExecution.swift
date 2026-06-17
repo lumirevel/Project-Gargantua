@@ -31,8 +31,6 @@ final class LauncherModel: ObservableObject {
     let previewStats = PreviewStats()
     @Published var linkPreviewCameraToRender = true
     @Published var previewQuality: PreviewQuality = .medium
-    @Published var previewToneMap: PreviewToneMap = .aces
-    @Published var previewExposure = 1.0
     @Published var previewDiskBrightness = 1.0
     @Published var previewDiskOuter = 22.0
     @Published var previewDiskDensity = 0.78
@@ -133,11 +131,63 @@ final class LauncherModel: ObservableObject {
             diskNoiseScale: style.noiseScale,
             diskSpiralArms: style.spiralArms,
             diskSpiralStrength: style.spiralStrength,
-            exposure: Float(previewExposure),
-            toneMap: previewToneMap,
+            exposure: previewExposureGain,
+            toneMap: previewToneMapDerived,
+            saturation: previewSaturation,
             backgroundStars: Float(previewBackgroundStars),
             quality: previewQuality
         )
+    }
+
+    /// Scene exposure inferred from the observer / camera-interpreter options,
+    /// so changing exposure mode, ISO, shutter, aperture or EV is reflected in
+    /// the preview (the preview mirrors the final look at lower quality).
+    var previewExposureGain: Float {
+        if observerMode == .eye {
+            var e = 1.0
+            if useEyeND { e *= pow(2.0, -eyeND) }
+            return Float(min(max(e, 0.03), 12.0))
+        }
+        if isRawLikeCamera { return 1.0 }
+        var gain: Double
+        switch exposureProgram {
+        case .manual:
+            let reference = 100.0 * (1.0 / 60.0) / (4.0 * 4.0) // ISO100, 1/60s, f/4
+            gain = (iso * shutterSeconds(shutter) / (fNumber * fNumber)) / reference
+        case .auto:
+            gain = 1.0 // auto-exposure normalizes brightness
+        case .aperturePriority, .shutterPriority, .fixedEV:
+            gain = pow(2.0, exposureEV)
+        }
+        return Float(min(max(gain, 0.02), 16.0))
+    }
+
+    /// Tone-mapping operator inferred from the observer mode and camera look.
+    var previewToneMapDerived: PreviewToneMap {
+        if isRawLikeCamera { return .linear }
+        if observerMode == .eye { return .aces }
+        if renderIntentID == "cinematic" { return .aces }
+        return enableColorGrade ? .aces : .reinhard
+    }
+
+    /// Saturation inferred from the camera look / colour grade.
+    var previewSaturation: Float {
+        if isRawLikeCamera { return 1.0 }
+        if observerMode == .camera && (enableColorGrade || renderIntentID == "cinematic") {
+            return 1.32
+        }
+        return 1.12
+    }
+
+    private func shutterSeconds(_ text: String) -> Double {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed.contains("/") {
+            let parts = trimmed.split(separator: "/")
+            if parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]), b != 0 {
+                return a / b
+            }
+        }
+        return Double(trimmed) ?? (1.0 / 60.0)
     }
 
     func setPreviewRadius(_ value: Double) { camera.setRadius(value); objectWillChange.send() }

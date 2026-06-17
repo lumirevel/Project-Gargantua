@@ -130,6 +130,7 @@ struct PreviewRenderSettings: Equatable {
     var diskSpiralStrength: Float
     var exposure: Float
     var toneMap: PreviewToneMap
+    var saturation: Float
     var backgroundStars: Float
     var quality: PreviewQuality
 
@@ -148,6 +149,7 @@ struct PreviewRenderSettings: Equatable {
         diskSpiralStrength: 0,
         exposure: 1.0,
         toneMap: .aces,
+        saturation: 1.12,
         backgroundStars: 1.0,
         quality: .medium
     )
@@ -260,5 +262,5 @@ struct PreviewPresentParams {
     var exposure: Float = 1.0
     var gamma: Float = 2.2
     var toneMode: UInt32 = 1
-    var pad: UInt32 = 0
+    var saturation: Float = 1.0
 }

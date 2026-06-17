@@ -8,57 +8,66 @@ struct GargantuaLauncherView: View {
         NavigationSplitView {
             sourceSidebar
         } detail: {
-            VStack(spacing: 0) {
-                WorkflowHeader(model: model)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
-                Divider()
-                HStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            PreviewControlsPanel(model: model)
-                            BlackHolePanel(model: model)
-                            SourceSummaryPanel(model: model)
-                            SourceDataPanel(model: model)
-                            ObserverPanel(model: model)
-                            if model.observerMode == .eye {
-                                EyeInterpreterPanel(model: model)
-                            }
-                            if model.isCameraMode {
-                                CameraInterpreterPanel(model: model)
-                            }
-                            RenderSetupPanel(model: model)
-                            AdvancedPhysicsPanel(model: model)
-                        }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(width: 392)
-
+            GeometryReader { geo in
+                // Explicitly partition the available width so the three columns
+                // always sum to exactly what is on screen — no overflow / clip
+                // regardless of how SwiftUI would distribute flexible frames.
+                let total = geo.size.width
+                let leftW = min(352, max(220, total * 0.30))
+                let rightW = min(312, max(196, total * 0.26))
+                let centerW = max(180, total - leftW - rightW - 2)
+                VStack(spacing: 0) {
+                    WorkflowHeader(model: model)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     Divider()
-
-                    InteractivePreviewPanel(model: model)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(1)
-
-                    Divider()
-
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            CommandPanel(model: model, isExpanded: $commandExpanded)
-                            ExecutionPanel(model: model)
-                            ResultPanel(model: model)
+                    HStack(spacing: 0) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                PreviewControlsPanel(model: model)
+                                BlackHolePanel(model: model)
+                                SourceSummaryPanel(model: model)
+                                SourceDataPanel(model: model)
+                                ObserverPanel(model: model)
+                                if model.observerMode == .eye {
+                                    EyeInterpreterPanel(model: model)
+                                }
+                                if model.isCameraMode {
+                                    CameraInterpreterPanel(model: model)
+                                }
+                                RenderSetupPanel(model: model)
+                                AdvancedPhysicsPanel(model: model)
+                            }
+                            .padding(14)
+                            .frame(width: leftW - 28, alignment: .leading)
                         }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: leftW)
+
+                        Divider()
+
+                        InteractivePreviewPanel(model: model)
+                            .frame(width: centerW)
+
+                        Divider()
+
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                CommandPanel(model: model, isExpanded: $commandExpanded)
+                                ExecutionPanel(model: model)
+                                ResultPanel(model: model)
+                            }
+                            .padding(14)
+                            .frame(width: rightW - 28, alignment: .leading)
+                        }
+                        .frame(width: rightW)
                     }
-                    .frame(width: 344)
+                    .frame(maxHeight: .infinity)
                 }
+                .frame(width: total, height: geo.size.height)
             }
             .navigationTitle("Observation Workflow")
         }
-        .frame(minWidth: 1180, minHeight: 700)
+        .frame(minWidth: 940, minHeight: 560)
     }
 
     private var sourceSidebar: some View {
@@ -75,6 +84,7 @@ struct GargantuaLauncherView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("Matter")
+        .navigationSplitViewColumnWidth(min: 160, ideal: 195, max: 230)
     }
 
     @ViewBuilder
@@ -713,14 +723,6 @@ private struct PreviewControlsPanel: View {
                 }
                 .pickerStyle(.segmented)
 
-                Picker("Tone map", selection: $model.previewToneMap) {
-                    ForEach(PreviewToneMap.allCases) { tone in
-                        Text(tone.title).tag(tone)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                LabeledInputSlider(label: "Exposure", value: $model.previewExposure, range: 0.1...8, format: "%.2f")
                 LabeledInputSlider(label: "Disk glow", value: $model.previewDiskBrightness, range: 0...4, format: "%.2f")
                 LabeledInputSlider(label: "Disk outer", value: $model.previewDiskOuter, range: 8...40, format: "%.1f")
                 LabeledInputSlider(label: "Disk density", value: $model.previewDiskDensity, range: 0...1, format: "%.2f")
@@ -730,7 +732,7 @@ private struct PreviewControlsPanel: View {
                 cameraControls
                 Toggle("Apply preview camera to final render", isOn: $model.linkPreviewCameraToRender)
 
-                Text("The viewport live-traces the selected metric, spin and accretion-source model. It is a reduced-cost preview — use Final Render for full quality.")
+                Text("The viewport mirrors the metric, spin, accretion source and the camera/eye exposure, tone and grade — only at lower quality. Use Quality for speed; Final Render for full quality.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -895,6 +897,7 @@ struct GargantuaLauncherApp: App {
         WindowGroup("Project-Gargantua Launcher") {
             GargantuaLauncherView()
         }
+        .defaultSize(width: 1180, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }

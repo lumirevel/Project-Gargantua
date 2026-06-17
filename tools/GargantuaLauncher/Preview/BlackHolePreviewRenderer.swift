@@ -235,7 +235,7 @@ final class BlackHolePreviewRenderer: NSObject, MTKViewDelegate {
             exposure: settings.exposure,
             gamma: 2.2,
             toneMode: settings.toneMap.rawMode,
-            pad: 0
+            saturation: settings.saturation
         )
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) {
             encoder.setRenderPipelineState(presentPSO)

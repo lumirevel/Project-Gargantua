@@ -40,7 +40,7 @@ struct PresentParams {
     float exposure;
     float gamma;
     uint  toneMode;
-    uint  pad;
+    float saturation;
 };
 
 // ---------- hashing / RNG ----------------------------------------------------
@@ -350,6 +350,9 @@ fragment float4 presentFrag(VOut in [[stage_in]],
     } else {
         col = clamp(col, 0.0, 1.0);
     }
+    // Saturation (reflects the camera look / color grade).
+    float luma = dot(col, float3(0.2126, 0.7152, 0.0722));
+    col = max(mix(float3(luma), col, p.saturation), 0.0);
     col = pow(max(col, 0.0), float3(1.0 / max(p.gamma, 0.1)));
     return float4(col, 1.0);
 }
