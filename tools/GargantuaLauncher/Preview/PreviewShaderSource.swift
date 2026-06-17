@@ -87,19 +87,23 @@ inline float3 colorTempToRGB(float kelvin) {
 
 inline float3 starfield(float3 dir) {
     float3 d = normalize(dir);
-    // Two-axis angular hash to avoid obvious axis streaks.
     float u = atan2(d.y, d.x) * 0.1591549431 + 0.5; // [0,1)
     float v = acos(clamp(d.z, -1.0, 1.0)) * 0.3183098862; // [0,1]
-    float2 uv = float2(u, v) * float2(900.0, 450.0);
+    float2 uv = float2(u, v) * float2(620.0, 310.0);
     float2 cell = floor(uv);
+    float2 f = fract(uv);
     float h = fract(sin(dot(cell, float2(127.1, 311.7))) * 43758.5453);
-    float star = smoothstep(0.9965, 1.0, h);
-    float twinkle = 0.55 + 0.45 * fract(h * 41.0);
-    float3 starColor = mix(float3(0.7, 0.8, 1.0), float3(1.0, 0.92, 0.78), fract(h * 13.0));
-    float3 col = starColor * star * twinkle * 2.2;
-    // Very faint cool nebular gradient so empty space is not pure black.
-    float neb = pow(clamp(d.z * 0.5 + 0.5, 0.0, 1.0), 3.0);
-    col += float3(0.015, 0.02, 0.038) * neb;
+    // One soft, round star per occupied cell at a hashed sub-cell position, so
+    // the field reads as random points rather than a regular grid. Soft + dim
+    // stars avoid the sharp high-frequency content that gravitational lensing
+    // turns into ring / moire (diffraction-like) fringes in the preview.
+    float2 starPos = float2(fract(h * 57.0), fract(h * 191.0));
+    float dist2 = dot(f - starPos, f - starPos);
+    float star = smoothstep(0.0016, 0.0, dist2) * step(0.986, h);
+    float3 starColor = mix(float3(0.72, 0.81, 1.0), float3(1.0, 0.93, 0.82), fract(h * 13.0));
+    float3 col = starColor * star * 0.9;
+    // Flat, very faint cool tint (no directional gradient to alias).
+    col += float3(0.006, 0.008, 0.014);
     return col;
 }
 
@@ -334,12 +338,20 @@ inline float3 toneACES(float3 x) {
 fragment float4 presentFrag(VOut in [[stage_in]],
                             texture2d<float, access::read> accum [[texture(0)]],
                             constant PresentParams& p           [[buffer(0)]]) {
-    uint w = accum.get_width();
-    uint h = accum.get_height();
-    uint2 sz = uint2(w, h);
-    float2 fp = clamp(in.uv * float2(sz), float2(0.0), float2(sz) - 1.0);
-    uint2 px = uint2(fp);
-    float4 s = accum.read(px);
+    float2 sz = float2(accum.get_width(), accum.get_height());
+    // Bilinear upscale of the low-resolution accumulation buffer. rgba32Float
+    // is not hardware-filterable, so fetch four texels and blend manually; this
+    // removes the moire / fringe artefacts that nearest-neighbour upscaling left
+    // on the photon ring and lensed background.
+    float2 fp = clamp(in.uv * sz - 0.5, float2(0.0), sz - 1.0);
+    float2 i0 = floor(fp);
+    float2 fr = fp - i0;
+    uint2 p00 = uint2(i0);
+    uint2 p10 = uint2(min(i0 + float2(1.0, 0.0), sz - 1.0));
+    uint2 p01 = uint2(min(i0 + float2(0.0, 1.0), sz - 1.0));
+    uint2 p11 = uint2(min(i0 + float2(1.0, 1.0), sz - 1.0));
+    float4 s = mix(mix(accum.read(p00), accum.read(p10), fr.x),
+                   mix(accum.read(p01), accum.read(p11), fr.x), fr.y);
     float3 col = s.rgb / max(s.w, 1.0);
     col *= p.exposure;
 

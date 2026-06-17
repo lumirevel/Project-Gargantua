@@ -490,15 +490,15 @@ private struct RenderSetupPanel: View {
                         Text(aspect.title).tag(aspect)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
 
                 if model.aspect == .custom {
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                         GridRow {
                             Text("Width")
                             TextField("Width", value: $model.customWidth, format: .number)
                                 .textFieldStyle(.roundedBorder)
-                                .frame(width: 100)
+                                .frame(width: 84)
                             Stepper("", value: $model.customWidth, in: 64...8192, step: 64)
                                 .labelsHidden()
                         }
@@ -506,7 +506,7 @@ private struct RenderSetupPanel: View {
                             Text("Height")
                             TextField("Height", value: $model.customHeight, format: .number)
                                 .textFieldStyle(.roundedBorder)
-                                .frame(width: 100)
+                                .frame(width: 84)
                             Stepper("", value: $model.customHeight, in: 64...8192, step: 64)
                                 .labelsHidden()
                         }
@@ -515,7 +515,7 @@ private struct RenderSetupPanel: View {
 
                 Picker("SSAA", selection: $model.ssaa) {
                     ForEach(RenderSampling.allCases) { sampling in
-                        Text("\(sampling.title) \(sampling.detail)").tag(sampling)
+                        Text(sampling.title).tag(sampling)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -581,20 +581,16 @@ private struct ExecutionPanel: View {
     var body: some View {
         GroupBox("Run") {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
+                HStack(spacing: 8) {
                     ProgressView(value: model.progressFraction)
                         .frame(maxWidth: .infinity)
                     Text(model.progressLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 150, alignment: .trailing)
+                        .lineLimit(1)
+                        .frame(width: 104, alignment: .trailing)
                 }
-                HStack {
-                    Button {
-                        model.copyCommandToPasteboard()
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
+                HStack(spacing: 8) {
                     Button {
                         model.runRender()
                     } label: {
@@ -605,14 +601,23 @@ private struct ExecutionPanel: View {
                     Button {
                         model.stopRender()
                     } label: {
-                        Label("Stop", systemImage: "stop.fill")
+                        Image(systemName: "stop.fill")
                     }
+                    .help("Stop render")
                     .disabled(!model.isRunning)
+                    Button {
+                        model.copyCommandToPasteboard()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .help("Copy generated command")
                     Button {
                         model.refreshResult()
                     } label: {
-                        Label("Reload Result", systemImage: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise")
                     }
+                    .help("Reload final result")
+                    Spacer(minLength: 0)
                 }
                 if !model.progressWorkLabel.isEmpty {
                     Text(model.progressWorkLabel)

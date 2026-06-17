@@ -50,8 +50,8 @@ enum PreviewQuality: String, CaseIterable, Identifiable {
     /// Resolution scale used while idle (accumulating).
     var idleScale: Float {
         switch self {
-        case .low: return 0.55
-        case .medium: return 0.8
+        case .low: return 0.7
+        case .medium: return 0.9
         case .high: return 1.0
         }
     }
