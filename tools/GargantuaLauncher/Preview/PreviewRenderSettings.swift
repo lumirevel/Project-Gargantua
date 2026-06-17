@@ -123,6 +123,11 @@ struct PreviewRenderSettings: Equatable {
     var diskDensity: Float
     var diskBrightness: Float
     var diskTempScale: Float
+    // Source-model-driven disk surface texture (see PreviewDiskStyle).
+    var diskTurbulence: Float
+    var diskNoiseScale: Float
+    var diskSpiralArms: Float
+    var diskSpiralStrength: Float
     var exposure: Float
     var toneMap: PreviewToneMap
     var backgroundStars: Float
@@ -133,15 +138,65 @@ struct PreviewRenderSettings: Equatable {
         spin: 0.6,
         diskInner: PreviewPhysics.diskInnerRadius(metric: .kerr, spin: 0.6),
         diskOuter: 22.0,
-        diskThickness: 0.6,
+        diskThickness: 0.5,
         diskDensity: 0.78,
         diskBrightness: 1.0,
-        diskTempScale: 8200.0,
+        diskTempScale: 8600.0,
+        diskTurbulence: 0.30,
+        diskNoiseScale: 2.2,
+        diskSpiralArms: 0,
+        diskSpiralStrength: 0,
         exposure: 1.0,
         toneMap: .aces,
         backgroundStars: 1.0,
         quality: .medium
     )
+}
+
+/// Maps a GUI accretion-source model to a distinct preview disk appearance, so
+/// switching the source in the sidebar visibly changes the live preview. These
+/// are cheap stylistic presets (turbulence / spiral banding / temperature /
+/// thickness), not a re-derivation of each source's full physics.
+struct PreviewDiskStyle {
+    var turbulence: Float
+    var noiseScale: Float
+    var spiralArms: Float
+    var spiralStrength: Float
+    var tempScale: Float
+    var thickness: Float
+    var brightnessScale: Float
+
+    static func preset(forSourceID id: String) -> PreviewDiskStyle {
+        switch id {
+        case "canonical-visible-disk-v1":
+            // Clean scientific thin disk: smooth, gently mottled.
+            return .init(turbulence: 0.28, noiseScale: 2.0, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8800, thickness: 0.5, brightnessScale: 1.0)
+        case "legacy-perlin":
+            // Soft turbulent Perlin disk.
+            return .init(turbulence: 0.85, noiseScale: 2.8, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 7600, thickness: 0.7, brightnessScale: 1.05)
+        case "legacy-perlin-classic":
+            // Stripe-like banded reproduction.
+            return .init(turbulence: 0.55, noiseScale: 2.0, spiralArms: 6, spiralStrength: 0.6,
+                         tempScale: 7400, thickness: 0.6, brightnessScale: 1.0)
+        case "legacy-perlin-ec7":
+            // Crisp high-frequency Perlin.
+            return .init(turbulence: 0.95, noiseScale: 4.6, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8000, thickness: 0.5, brightnessScale: 1.1)
+        case "legacy-bh-finish-grmhd":
+            // Hot, thick, strongly turbulent GRMHD-style torus.
+            return .init(turbulence: 0.8, noiseScale: 3.2, spiralArms: 2, spiralStrength: 0.3,
+                         tempScale: 9600, thickness: 0.95, brightnessScale: 1.2)
+        case "legacy-thin-disk-preset-default":
+            // Thin, mostly smooth DNGR-style preset.
+            return .init(turbulence: 0.4, noiseScale: 2.4, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8200, thickness: 0.4, brightnessScale: 0.95)
+        default:
+            return .init(turbulence: 0.4, noiseScale: 2.4, spiralArms: 0, spiralStrength: 0,
+                         tempScale: 8200, thickness: 0.6, brightnessScale: 1.0)
+        }
+    }
 }
 
 /// Shared physical helpers (units: M = 1, Schwarzschild radius rs = 2M = 2).
@@ -195,6 +250,7 @@ struct PreviewUniforms {
     var disk0: SIMD4<Float> = .zero     // x=spin, y=inner, z=outer, w=thickness
     var disk1: SIMD4<Float> = .zero     // x=brightness, y=density, z=bgStars, w=stepScale
     var disk2: SIMD4<Float> = .zero     // x=escapeR, y=horizon, z=photonR, w=tempScale
+    var disk3: SIMD4<Float> = .zero     // x=turbulence, y=noiseScale, z=spiralArms, w=spiralStrength
     var u0: SIMD4<UInt32> = .zero       // x=sampleIndex, y=frameSeed, z=maxSteps, w=metric
     var u1: SIMD4<UInt32> = .zero       // x=samplesPerFrame, y=flags, z=reserved, w=reserved
 }

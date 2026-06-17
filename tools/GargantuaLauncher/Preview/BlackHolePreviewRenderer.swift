@@ -300,6 +300,7 @@ final class BlackHolePreviewRenderer: NSObject, MTKViewDelegate {
         u.disk0 = SIMD4<Float>(settings.spin, settings.diskInner, settings.diskOuter, settings.diskThickness)
         u.disk1 = SIMD4<Float>(settings.diskBrightness, settings.diskDensity, settings.backgroundStars, stepScale)
         u.disk2 = SIMD4<Float>(escapeR, horizon, 3.0, settings.diskTempScale)
+        u.disk3 = SIMD4<Float>(settings.diskTurbulence, settings.diskNoiseScale, settings.diskSpiralArms, settings.diskSpiralStrength)
 
         let maxSteps = isInteracting ? settings.quality.interactiveMarchSteps : settings.quality.idleMarchSteps
         u.u0 = SIMD4<UInt32>(sampleCount, frameSeed, maxSteps, settings.metric.rawValue)

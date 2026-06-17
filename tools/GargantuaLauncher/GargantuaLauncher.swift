@@ -730,7 +730,7 @@ private struct PreviewControlsPanel: View {
                 cameraControls
                 Toggle("Apply preview camera to final render", isOn: $model.linkPreviewCameraToRender)
 
-                Text("The viewport runs a fast progressive GPU ray-trace of the current options. It is a reduced-cost preview — use Final Render for full quality.")
+                Text("The viewport live-traces the selected metric, spin and accretion-source model. It is a reduced-cost preview — use Final Render for full quality.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

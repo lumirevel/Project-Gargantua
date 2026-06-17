@@ -31,6 +31,7 @@ struct Uniforms {
     float4 disk0;    // x=spin, y=inner, z=outer, w=thickness
     float4 disk1;    // x=brightness, y=density, z=bgStars, w=stepScale
     float4 disk2;    // x=escapeR, y=horizon, z=photonR, w=tempScale
+    float4 disk3;    // x=turbulence, y=noiseScale, z=spiralArms, w=spiralStrength
     uint4  u0;       // x=sampleIndex, y=frameSeed, z=maxSteps, w=metric
     uint4  u1;       // x=samplesPerFrame, y=flags, z=reserved, w=reserved
 };
@@ -121,6 +122,51 @@ inline void rk4Step(thread float3& p, thread float3& v, float h, float h2) {
     v += (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
 }
 
+// ---------- disk surface texture --------------------------------------------
+
+inline float vnoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = fract(sin(dot(i + float2(0.0, 0.0), float2(127.1, 311.7))) * 43758.5453);
+    float b = fract(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);
+    float c = fract(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+    float d = fract(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+inline float fbm(float2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 3; i++) {
+        v += amp * vnoise(p);
+        p *= 2.03;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+// Source-model-driven surface texture (turbulence + optional spiral banding),
+// evaluated in disk-surface coordinates so it stays stable as the camera moves.
+inline float diskTexture(float3 hit, float rHit, constant Uniforms& u) {
+    float turbulence = u.disk3.x;
+    float noiseScale = u.disk3.y;
+    float spiralArms = u.disk3.z;
+    float spiralStrength = u.disk3.w;
+
+    float ang = atan2(hit.y, hit.x);
+    float lr = log(max(rHit, 1.0));
+
+    float n = fbm(float2(ang * (1.5 + noiseScale) + rHit * 0.18, lr * (2.0 + noiseScale)));
+    float tex = mix(1.0, 0.35 + 1.25 * n, clamp(turbulence, 0.0, 1.0));
+
+    if (spiralStrength > 0.0 && spiralArms > 0.0) {
+        float s = 0.5 + 0.5 * sin(ang * spiralArms + lr * spiralArms * 1.6);
+        tex *= mix(1.0, 0.45 + 1.0 * s, clamp(spiralStrength, 0.0, 1.0));
+    }
+    return max(tex, 0.0);
+}
+
 // Emission from a thin equatorial disk crossing at world point `hit`.
 inline float3 diskEmission(float3 hit, float3 rayDir, float rHit, constant Uniforms& u) {
     const float rs = 2.0;
@@ -153,7 +199,8 @@ inline float3 diskEmission(float3 hit, float3 rayDir, float rHit, constant Unifo
     // Relativistic beaming (bolometric ~ g^4), clamped to keep preview stable.
     float beaming = clamp(pow(g, 4.0), 0.02, 24.0);
     float edge = smoothstep(outer, outer * 0.72, rHit);
-    float brightness = profile * beaming * edge * u.disk1.x;
+    float texture = diskTexture(hit, rHit, u);
+    float brightness = profile * beaming * edge * u.disk1.x * texture;
     return color * brightness;
 }
 

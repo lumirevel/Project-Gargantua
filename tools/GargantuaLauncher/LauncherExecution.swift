@@ -35,7 +35,6 @@ final class LauncherModel: ObservableObject {
     @Published var previewExposure = 1.0
     @Published var previewDiskBrightness = 1.0
     @Published var previewDiskOuter = 22.0
-    @Published var previewDiskThickness = 0.6
     @Published var previewDiskDensity = 0.78
     @Published var previewBackgroundStars = 1.0
 
@@ -117,15 +116,23 @@ final class LauncherModel: ObservableObject {
         let spinValue: Float = blackHoleMetric == .kerr ? Float(spin) : 0
         let inner = PreviewPhysics.diskInnerRadius(metric: metric, spin: spinValue)
         let outer = max(Float(previewDiskOuter), inner + 2.0)
+        // The selected accretion-source model drives the disk's appearance
+        // (turbulence, spiral banding, temperature, thickness, brightness) so
+        // switching sources in the sidebar is reflected live in the preview.
+        let style = PreviewDiskStyle.preset(forSourceID: selectedSourceID)
         return PreviewRenderSettings(
             metric: metric,
             spin: spinValue,
             diskInner: inner,
             diskOuter: outer,
-            diskThickness: Float(previewDiskThickness),
+            diskThickness: style.thickness,
             diskDensity: Float(previewDiskDensity),
-            diskBrightness: Float(previewDiskBrightness),
-            diskTempScale: 8200.0,
+            diskBrightness: Float(previewDiskBrightness) * style.brightnessScale,
+            diskTempScale: style.tempScale,
+            diskTurbulence: style.turbulence,
+            diskNoiseScale: style.noiseScale,
+            diskSpiralArms: style.spiralArms,
+            diskSpiralStrength: style.spiralStrength,
             exposure: Float(previewExposure),
             toneMap: previewToneMap,
             backgroundStars: Float(previewBackgroundStars),
