@@ -5010,6 +5010,18 @@ else
   SWIFT_CMD=("${RUNNER[@]}" --output "$COLLISIONS_OUT" "${GPU_COMPOSE_ARGS[@]}")
 fi
 
+# Emit the fully-translated binary command (one argument per line) to the file
+# named by BH_PRINT_CMD and exit, without rendering. The GUI uses this to launch
+# the binary directly in --serve (persistent warm) mode while reusing all of
+# this script's argument mapping.
+if [[ -n "${BH_PRINT_CMD:-}" ]]; then
+  : > "$BH_PRINT_CMD"
+  for cmd_arg in "${SWIFT_CMD[@]}"; do
+    printf '%s\n' "$cmd_arg" >> "$BH_PRINT_CMD"
+  done
+  exit 0
+fi
+
 ETA_VARIANT_SWIFT="swift-gpu-compose"
 ETA_VARIANT_PY="python-compose"
 

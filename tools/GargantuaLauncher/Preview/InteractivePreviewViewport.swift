@@ -95,13 +95,16 @@ struct InteractivePreviewViewport: NSViewRepresentable {
 
         func handleOrbit(dx: Float, dy: Float) {
             model.camera.orbit(deltaX: dx, deltaY: dy)
-            scheduleCommit()
+            model.setPreviewInteracting(true)
+            model.streamPreviewCamera() // live low-res frame; renders coalesce
+            scheduleRefine()
         }
 
         func handleZoom(_ delta: Float) {
             model.camera.zoom(delta: delta)
             model.setPreviewInteracting(true)
-            scheduleCommit()
+            model.streamPreviewCamera()
+            scheduleRefine()
         }
 
         func beginInteraction() {
@@ -109,21 +112,21 @@ struct InteractivePreviewViewport: NSViewRepresentable {
         }
 
         func endInteraction() {
-            scheduleCommit()
+            scheduleRefine()
         }
 
-        /// Debounce: once the camera stops moving, refresh dependent UI and ask
-        /// the model to render this pose with the real renderer.
-        private func scheduleCommit() {
+        /// Once the camera stops moving, refresh dependent UI and render a sharper
+        /// (higher-resolution) frame.
+        private func scheduleRefine() {
             settle?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.model.setPreviewInteracting(false)
                 self.model.previewCameraDidCommit()
-                self.model.requestPreviewRender()
+                self.model.refinePreview()
             }
             settle = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
         }
     }
 }

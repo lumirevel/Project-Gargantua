@@ -26,8 +26,9 @@ final class LauncherModel: ObservableObject {
     @Published var rayBundleJacobianStrength = 1.0
     @Published var rayBundleFootprintClamp = 6.0
 
-    // MARK: Interactive preview (drives the *real* renderer at low resolution)
+    // MARK: Interactive preview (persistent "warm" instance of the real renderer)
     let camera = OrbitCameraController()
+    let previewServer = PreviewServer()
     @Published var previewQuality: PreviewQuality = .medium
     @Published var autoPreview = true
     @Published var previewImage: NSImage?
@@ -36,9 +37,7 @@ final class LauncherModel: ObservableObject {
     @Published var previewStatus = "Drag to orbit · scroll to zoom"
     @Published var previewPixelSize = ""
     let previewOutputPath = "/private/tmp/gargantua_gui_preview.png"
-    private var previewProcess: Process?
-    private var previewSeq = 0
-    private var lastPreviewStart = Date.distantPast
+    private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
 
     // MARK: Camera interpreter
     @Published var exposureProgram: CameraExposureProgram = .manual
@@ -88,6 +87,13 @@ final class LauncherModel: ObservableObject {
         self.sourceModels = manifest.sourceModels
         self.renderIntents = manifest.renderIntents
         refreshResult()
+        previewServer.onFrame = { [weak self] image in
+            self?.previewImage = image
+        }
+        previewServer.onStatus = { [weak self] rendering, status in
+            self?.isPreviewRendering = rendering
+            self?.previewStatus = status
+        }
     }
 
     var selectedSource: SourceModelOption {
@@ -116,7 +122,7 @@ final class LauncherModel: ObservableObject {
         return "\(dd)/Build/Products/Release/Blackhole"
     }
 
-    // MARK: - Interactive preview (same renderer, lower resolution)
+    // MARK: - Interactive preview (persistent warm renderer)
 
     func setPreviewRadius(_ value: Double) { camera.setRadius(value); cameraEdited() }
     func setPreviewAzimuth(_ value: Double) { camera.setAzimuthDegrees(value); cameraEdited() }
@@ -126,113 +132,101 @@ final class LauncherModel: ObservableObject {
 
     private func cameraEdited() {
         objectWillChange.send()
-        requestPreviewRender()
+        refinePreview()
     }
 
     func setPreviewInteracting(_ value: Bool) {
         if isPreviewInteracting != value { isPreviewInteracting = value }
     }
 
-    /// Called when an interactive drag/zoom finishes so the camera sliders and
-    /// generated command refresh to the committed pose.
     func previewCameraDidCommit() { objectWillChange.send() }
 
-    /// Queue a preview render of the current camera + options. Renders are
-    /// serialized; the most recent request wins. A quick low-resolution pass is
-    /// shown first, then a sharper pass once the camera settles (progressive).
-    func requestPreviewRender() {
-        previewSeq += 1
-        startPreviewIfIdle()
-    }
+    /// Stream the current pose to the warm renderer at the fast (low) resolution —
+    /// called continuously while the camera is being dragged (renders coalesce).
+    func streamPreviewCamera() { sendPreview(width: previewQuality.fastWidth) }
 
-    /// Manual trigger (also works when Auto is off).
-    func renderPreviewNow() {
-        previewSeq += 1
-        if previewProcess == nil { runPreviewPass(width: previewQuality.fastWidth, seq: previewSeq, refine: false) }
-    }
+    /// Render the current pose at the sharper resolution — used when the camera
+    /// settles, on a settings change, or as the manual trigger.
+    func requestPreviewRender() { refinePreview() }
+    func refinePreview() { sendPreview(width: previewQuality.refineWidth) }
+    func renderPreviewNow() { refinePreview() }
 
-    private func startPreviewIfIdle() {
-        guard autoPreview, !isRunning, previewProcess == nil else { return }
-        runPreviewPass(width: previewQuality.fastWidth, seq: previewSeq, refine: false)
-    }
-
-    private func runPreviewPass(width baseWidth: Int, seq: Int, refine: Bool) {
+    /// (Re)configure the warm serve process for the current setup and send the
+    /// current camera pose at the given resolution.
+    private func sendPreview(width baseWidth: Int) {
+        guard autoPreview, !isRunning else { return }
         let size = previewSize(width: baseWidth)
+        previewPixelSize = "\(size.width)x\(size.height)"
+        let invocation = previewPipelineInvocation()
+        let cmdFile = previewCmdFile
+        previewServer.configure(token: previewSetupToken, imageOut: previewOutputPath) {
+            LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
+        }
+        let eye = camera.state.eye
+        let roll = Double(camera.state.roll) * 180.0 / .pi
+        let line = "\(Double(eye.x)) \(Double(eye.y)) \(Double(eye.z)) \(Double(camera.state.fov)) \(roll) \(size.width) \(size.height)"
+        previewServer.render(camera: line)
+    }
+
+    /// Everything except the camera pose + resolution. When this changes the warm
+    /// serve process must relaunch (new disk atlas / pipelines / exposure setup).
+    private var previewSetupToken: String {
+        [
+            selectedSourceID, String(describing: blackHoleMetric), String(spin),
+            String(describing: observerMode), renderIntentID,
+            String(describing: exposureProgram), String(exposureEV),
+            String(fNumber), String(iso), shutter,
+            String(enableColorGrade), String(enableCinematicEffects), String(enableDepthOfField),
+            String(describing: eyePhotometric), String(useEyeND), String(eyeND),
+            diskHDF5Path, "\(outputSize.width)x\(outputSize.height)"
+        ].joined(separator: "|")
+    }
+
+    /// The run_pipeline.sh + BH_PRINT_CMD invocation that yields the translated
+    /// binary argv for the current setup (built on the main actor; run off it).
+    private func previewPipelineInvocation() -> PreviewPipelineInvocation {
         let binaryExists = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
         let inputs = commandInputs(noBuild: binaryExists)
-        let plan = RenderCommandPlanner.previewPlan(for: inputs, width: size.width, height: size.height, output: previewOutputPath)
-
-        isPreviewRendering = true
-        previewPixelSize = "\(size.width)x\(size.height)"
-        previewStatus = binaryExists
-            ? (refine ? "Refining \(previewPixelSize)…" : "Rendering \(previewPixelSize)…")
-            : "Building renderer (first run)…"
-        lastPreviewStart = Date()
-
-        runPreviewProcess(plan: plan) { [weak self] success in
-            guard let self else { return }
-            self.previewProcess = nil
-            if success { self.loadPreviewImage(plan.outputPath) }
-
-            if self.previewSeq != seq {
-                // A newer request arrived while this one was rendering: render it.
-                self.startPreviewIfIdle()
-            } else if success && !refine {
-                // Camera + options unchanged: render the sharper pass.
-                self.runPreviewPass(width: self.previewQuality.refineWidth, seq: seq, refine: true)
-            } else {
-                self.isPreviewRendering = false
-                if success {
-                    let dt = Date().timeIntervalSince(self.lastPreviewStart)
-                    self.previewStatus = String(format: "Preview %@ · %.1fs", self.previewPixelSize, dt)
-                } else {
-                    self.previewStatus = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
-                        ? "Preview render failed."
-                        : "Renderer not built — run a Final Render once."
-                }
-            }
-        }
+        let launch = previewSize(width: previewQuality.fastWidth)
+        let plan = RenderCommandPlanner.previewPlan(for: inputs, width: launch.width, height: launch.height, output: previewOutputPath)
+        // Bake a preview-specific collisions path into the emitted binary command
+        // so the warm serve never clashes with a final render's collisions file.
+        var env = processEnvironment(
+            root: plan.repositoryRoot.path,
+            collisionsOut: "/private/tmp/gargantua_gui_serve_collisions.bin",
+            etaHistory: nil
+        )
+        env["BH_PRINT_CMD"] = previewCmdFile
+        return PreviewPipelineInvocation(
+            executable: "/bin/bash",
+            arguments: [plan.executablePath] + plan.arguments,
+            currentDirectory: plan.repositoryRoot.path,
+            environment: env
+        )
     }
 
-    private func runPreviewProcess(plan: RenderCommandPlan, completion: @escaping (Bool) -> Void) {
+    /// Runs run_pipeline.sh in BH_PRINT_CMD mode (off the main actor) and returns
+    /// the translated binary argv, building the renderer first if it is missing.
+    nonisolated static func fetchServeCommand(invocation: PreviewPipelineInvocation, cmdFile: String) -> [String]? {
+        try? FileManager.default.removeItem(atPath: cmdFile)
         let process = Process()
-        let pipe = Pipe()
-        let readHandle = pipe.fileHandleForReading
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [plan.executablePath] + plan.arguments
-        process.currentDirectoryURL = plan.repositoryRoot
-        process.environment = processEnvironment(
-            root: plan.repositoryRoot.path,
-            collisionsOut: "/private/tmp/gargantua_gui_preview_collisions.bin",
-            etaHistory: "/private/tmp/gargantua_gui_preview_eta.json"
-        )
-        process.standardOutput = pipe
-        process.standardError = pipe
-        // Drain output so the pipe buffer never blocks the renderer.
-        readHandle.readabilityHandler = { handle in _ = handle.availableData }
-        previewProcess = process
-
-        process.terminationHandler = { proc in
-            readHandle.readabilityHandler = nil
-            let ok = proc.terminationStatus == 0
-            DispatchQueue.main.async { completion(ok) }
-        }
+        process.executableURL = URL(fileURLWithPath: invocation.executable)
+        process.arguments = invocation.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: invocation.currentDirectory)
+        process.environment = invocation.environment
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            process.waitUntilExit()
         } catch {
-            previewProcess = nil
-            DispatchQueue.main.async { completion(false) }
+            return nil
         }
+        guard let text = try? String(contentsOfFile: cmdFile, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        return lines.count >= 2 ? lines : nil
     }
 
-    private func loadPreviewImage(_ path: String) {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let image = NSImage(data: data) else { return }
-        previewImage = image
-    }
-
-    /// Preview pixel size from a target width, matching the final output aspect
-    /// (so framing matches), rounded to even dimensions.
     private func previewSize(width baseWidth: Int) -> (width: Int, height: Int) {
         let out = outputSize
         let w = max(16, baseWidth)
@@ -244,7 +238,7 @@ final class LauncherModel: ObservableObject {
 
     func runRender() {
         guard !isRunning else { return }
-        previewProcess?.terminate() // avoid eta-history / GPU contention with the preview
+        previewServer.shutdown() // free the GPU for the full-resolution render
         let plan = commandPlan
         isRunning = true
         progressFraction = 0.01
