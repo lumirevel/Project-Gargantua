@@ -204,6 +204,20 @@ enum ObserverMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum BlackHoleMetric: String, CaseIterable, Identifiable {
+    case schwarzschild
+    case kerr
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .schwarzschild: return "Schwarzschild"
+        case .kerr: return "Kerr"
+        }
+    }
+}
+
 enum RenderQuality: String, CaseIterable, Identifiable {
     case preview
     case hq
@@ -211,10 +225,65 @@ enum RenderQuality: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum ExposureControlGranularity: String, CaseIterable, Identifiable {
+    case stops
+    case fine
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .stops: return "Stops"
+        case .fine: return "Fine"
+        }
+    }
+}
+
+enum RenderSampling: String, CaseIterable, Identifiable {
+    case one = "1"
+    case two = "2"
+    case four = "4"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .one: return "1x"
+        case .two: return "2x"
+        case .four: return "4x"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .one: return "fast"
+        case .two: return "balanced"
+        case .four: return "clean"
+        }
+    }
+}
+
+enum RayBundleMode: String, CaseIterable, Identifiable {
+    case off
+    case on
+    case jacobian
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .on: return "Bundle"
+        case .jacobian: return "Jacobian"
+        }
+    }
+}
+
 enum OutputAspect: String, CaseIterable, Identifiable {
     case hd
     case square
     case small
+    case custom
 
     var id: String { rawValue }
 
@@ -223,14 +292,83 @@ enum OutputAspect: String, CaseIterable, Identifiable {
         case .hd: return "1536 x 864"
         case .square: return "1024 x 1024"
         case .small: return "768 x 432"
+        case .custom: return "Custom"
         }
     }
 
-    var size: (width: Int, height: Int) {
+    func size(customWidth: Int, customHeight: Int) -> (width: Int, height: Int) {
         switch self {
         case .hd: return (1536, 864)
         case .square: return (1024, 1024)
         case .small: return (768, 432)
+        case .custom:
+            return (max(64, customWidth), max(64, customHeight))
         }
+    }
+}
+
+enum CameraExposureProgram: String, CaseIterable, Identifiable {
+    case manual
+    case auto
+    case aperturePriority
+    case shutterPriority
+    case fixedEV
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .manual: return "M"
+        case .auto: return "Auto"
+        case .aperturePriority: return "Av"
+        case .shutterPriority: return "Tv"
+        case .fixedEV: return "EV"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .manual: return "Manual photographic exposure: aperture, shutter, and ISO are explicit."
+        case .auto: return "Automatic exposure with camera optics still visible for focus and diffraction."
+        case .aperturePriority: return "Aperture-led workflow: f-number stays explicit, exposure uses auto plus EV compensation."
+        case .shutterPriority: return "Shutter-led workflow: shutter/ISO stay explicit, exposure uses auto plus EV compensation."
+        case .fixedEV: return "Fixed exposure value audit path for repeatable brightness comparisons."
+        }
+    }
+}
+
+enum EyePhotometricMode: String, CaseIterable, Identifiable {
+    case auto
+    case on
+    case off
+
+    var id: String { rawValue }
+}
+
+enum CameraPhotonNoiseMode: String, CaseIterable, Identifiable {
+    case auto
+    case on
+    case off
+
+    var id: String { rawValue }
+}
+
+enum CameraStopTables {
+    static let fNumbers = [1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0]
+    static let isoValues = [100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0, 12800.0]
+    static let shutters = ["1/1000", "1/500", "1/250", "1/125", "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1"]
+
+    static func nearestIndex(_ value: Double, in values: [Double]) -> Double {
+        guard let best = values.enumerated().min(by: { abs($0.element - value) < abs($1.element - value) }) else {
+            return 0
+        }
+        return Double(best.offset)
+    }
+
+    static func shutterIndex(_ value: String) -> Double {
+        if let exact = shutters.firstIndex(of: value) {
+            return Double(exact)
+        }
+        return Double(shutters.firstIndex(of: "1/60") ?? 4)
     }
 }

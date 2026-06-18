@@ -37,12 +37,18 @@ VALID_STATUS = {"recommended", "production-candidate", "surrogate", "diagnostic"
 COMMAND_MATRIX_MODES = ["eye", "raw-like", "rendered", "cinematic"]
 
 BASE_PREFIX_ARGS = [
+    "--metric",
+    "kerr",
+    "--spin",
+    "0.6",
     "--quality",
     "preview",
     "--width",
     "1536",
     "--height",
     "864",
+    "--ssaa",
+    "1",
 ]
 
 BASE_SUFFIX_ARGS = [
@@ -125,6 +131,14 @@ def command_for(source: dict[str, Any], mode: str) -> list[str]:
             "cinematic",
             "--exposure-mode",
             "photographic",
+            "--camera-f-number",
+            "4",
+            "--camera-shutter",
+            "1/60",
+            "--camera-iso",
+            "100",
+            "--photographic-calibration",
+            "photometric",
             "--camera-profile",
             "full-frame",
             "--look",
@@ -135,6 +149,18 @@ def command_for(source: dict[str, Any], mode: str) -> list[str]:
             "0",
             "--camera-dof-strength",
             "0",
+            "--camera-diffraction",
+            "0.02",
+            "--camera-psf-sigma",
+            "0",
+            "--camera-read-noise",
+            "0",
+            "--camera-shot-noise",
+            "0",
+            "--camera-photon-noise",
+            "auto",
+            "--camera-photon-scale",
+            "1",
         ]
     elif mode == "cinematic":
         args += [
@@ -144,6 +170,14 @@ def command_for(source: dict[str, Any], mode: str) -> list[str]:
             "cinematic",
             "--exposure-mode",
             "photographic",
+            "--camera-f-number",
+            "4",
+            "--camera-shutter",
+            "1/60",
+            "--camera-iso",
+            "100",
+            "--photographic-calibration",
+            "photometric",
             "--camera-profile",
             "cinema-digital",
             "--look",
@@ -156,6 +190,18 @@ def command_for(source: dict[str, Any], mode: str) -> list[str]:
             "0",
             "--camera-aperture-blades",
             "7",
+            "--camera-diffraction",
+            "0.02",
+            "--camera-psf-sigma",
+            "0",
+            "--camera-read-noise",
+            "0",
+            "--camera-shot-noise",
+            "0",
+            "--camera-photon-noise",
+            "auto",
+            "--camera-photon-scale",
+            "1",
         ]
     else:
         raise ValueError(mode)

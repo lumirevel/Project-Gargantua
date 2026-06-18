@@ -88,11 +88,31 @@ def main() -> None:
                     failures.append(f"{source['id']} rendered: missing camera-rendered presentation")
                 if has_pair(args, "--realism-profile", "cinematic"):
                     failures.append(f"{source['id']} rendered: must not use cinematic realism profile")
+                for key, value in [
+                    ("--exposure-mode", "photographic"),
+                    ("--camera-f-number", "4"),
+                    ("--camera-shutter", "1/60"),
+                    ("--camera-iso", "100"),
+                    ("--photographic-calibration", "photometric"),
+                    ("--camera-diffraction", "0.02"),
+                    ("--camera-photon-noise", "auto"),
+                ]:
+                    if not has_pair(args, key, value):
+                        failures.append(f"{source['id']} rendered: missing {key} {value}")
             elif mode == "cinematic":
                 if not has_pair(args, "--presentation", "cinema"):
                     failures.append(f"{source['id']} cinematic: missing cinema presentation")
                 if not has_pair(args, "--realism-profile", "cinematic"):
                     failures.append(f"{source['id']} cinematic: missing cinematic realism profile")
+                for key, value in [
+                    ("--exposure-mode", "photographic"),
+                    ("--camera-profile", "cinema-digital"),
+                    ("--camera-aperture-blades", "7"),
+                    ("--camera-diffraction", "0.02"),
+                    ("--camera-photon-noise", "auto"),
+                ]:
+                    if not has_pair(args, key, value):
+                        failures.append(f"{source['id']} cinematic: missing {key} {value}")
 
     for token in RAW_LIKE_ARGS:
         if token in [
@@ -103,7 +123,35 @@ def main() -> None:
         if token not in launcher:
             failures.append(f"GargantuaLauncher.swift raw-like path missing token {token}")
 
-    for token in ["requiresDiskHDF5", "defaultDiskHDF5", "--disk-hdf5", "chooseDiskHDF5", "rawBufferPath", ".raw.linear32f32", "sensorRawBufferPath", ".bayer-rggb-f32.raw"]:
+    for token in [
+        "requiresDiskHDF5",
+        "defaultDiskHDF5",
+        "--disk-hdf5",
+        "chooseDiskHDF5",
+        "BlackHolePanel",
+        "BlackHoleMetric",
+        "--metric",
+        "schwarzschild",
+        "rawBufferPath",
+        ".raw.linear32f32",
+        "sensorRawBufferPath",
+        ".bayer-rggb-f32.raw",
+        "--ssaa",
+        "--ray-bundle",
+        "--camX",
+        "--fov",
+        "CameraExposureProgram",
+        "--eye-nd",
+        "--camera-diffraction",
+        "--camera-photon-noise",
+        "LivePreviewPanel",
+        "ResultPanel",
+        "livePreviewPlan",
+        "livePreviewWidth",
+        "previewProgressFraction",
+        "workUnits",
+        "ProgressView",
+    ]:
         if token not in launcher:
             failures.append(f"GargantuaLauncher.swift data-backed source path missing token {token}")
 

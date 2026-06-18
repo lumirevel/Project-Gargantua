@@ -28,7 +28,9 @@ enum AppMain {
         }
         built.resolvedConfig = nil
         built.packedParams = nil
-        if !resolvedConfig.composeHDRInputPath.isEmpty {
+        if arguments.contains("--serve") {
+            try Renderer.serve(config: &resolvedConfig, params: packedParams)
+        } else if !resolvedConfig.composeHDRInputPath.isEmpty {
             try Renderer.composeHDRInput(config: &resolvedConfig, params: packedParams)
         } else {
             try Renderer.render(config: &resolvedConfig, params: packedParams)

@@ -37,10 +37,12 @@ def main() -> None:
         "source_file_referenced": "tools/GargantuaLauncher/GargantuaLauncher.swift" in text,
         "launcher_model_file_referenced": "tools/GargantuaLauncher/LauncherModels.swift" in text,
         "command_planner_file_referenced": "tools/GargantuaLauncher/RenderCommandPlanner.swift" in text,
+        "launcher_execution_file_referenced": "tools/GargantuaLauncher/LauncherExecution.swift" in text,
         "manifest_file_referenced": "docs/realism/gui_option_manifest_v1.json" in text,
         "launcher_in_sources": "GargantuaLauncher.swift in Sources" in sources_block,
         "launcher_models_in_sources": "LauncherModels.swift in Sources" in sources_block,
         "command_planner_in_sources": "RenderCommandPlanner.swift in Sources" in sources_block,
+        "launcher_execution_in_sources": "LauncherExecution.swift in Sources" in sources_block,
         "manifest_in_resources": "gui_option_manifest_v1.json in Resources" in resources_block,
         "generated_infoplist": "GENERATE_INFOPLIST_FILE = YES;" in text,
         "bundle_identifier": "local.project-gargantua.GargantuaLauncher" in text,
@@ -53,9 +55,9 @@ def main() -> None:
         and "/Applications/Xcode.app/Contents/Developer/usr/bin" in launcher_text,
         "render_process_is_retained": "private var runningProcess: Process?" in launcher_text
         and "runningProcess = process" in launcher_text
-        and "self?.runningProcess = nil" in launcher_text,
+        and ("self?.runningProcess = nil" in launcher_text or "runningProcess = nil" in launcher_text),
         "render_can_be_stopped": "func stopRender()" in launcher_text
-        and 'Button("Stop")' in launcher_text,
+        and ('Button("Stop")' in launcher_text or 'Label("Stop"' in launcher_text),
         "fallback_includes_restored_legacy_models": "legacy-perlin-classic" in launcher_text
         and "legacy-perlin-ec7" in launcher_text
         and "perlin-classic" in launcher_text
@@ -86,6 +88,7 @@ def main() -> None:
             "GUI is a separate macOS app target.",
             "GUI bundles the option manifest.",
             "GUI target does not compile renderer or Metal physics files.",
+            "GUI execution state is split from views and compiled into the app target.",
             "Blackhole CLI target remains a tool.",
             "GUI render action uses an absolute run_pipeline path from the resolved repository root.",
             "GUI retains the running Process until termination and exposes a Stop control.",

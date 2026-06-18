@@ -6,7 +6,11 @@ BUILD_DIR="${TMPDIR:-/tmp}/gargantua-launcher"
 APP_BIN="$BUILD_DIR/GargantuaLauncher"
 
 mkdir -p "$BUILD_DIR"
-swiftc -parse-as-library "$ROOT/tools/GargantuaLauncher/GargantuaLauncher.swift" \
+swiftc -parse-as-library \
+  "$ROOT/tools/GargantuaLauncher/LauncherModels.swift" \
+  "$ROOT/tools/GargantuaLauncher/RenderCommandPlanner.swift" \
+  "$ROOT/tools/GargantuaLauncher/LauncherExecution.swift" \
+  "$ROOT/tools/GargantuaLauncher/GargantuaLauncher.swift" \
   -framework SwiftUI \
   -framework AppKit \
   -o "$APP_BIN"

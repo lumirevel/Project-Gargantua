@@ -7,11 +7,13 @@ duplicating renderer logic.
 ## UX Shape
 
 ```text
-Accretion Source
+Black Hole
+  -> Accretion Source
   -> Observer
-  -> Camera / Cinematic Controls
-  -> Render
+  -> Eye / Camera Interpreter
+  -> Render Setup
   -> Generated CLI
+  -> Progress / Preview
 ```
 
 ## Source Layer
@@ -95,9 +97,27 @@ development entry point. The launcher:
 - builds CLI arguments through the side-effect-free
   `tools/GargantuaLauncher/RenderCommandPlanner.swift`
 - exposes a GRMHD HDF5 snapshot field for data-backed diagnostic sources
-- groups observer and camera controls by contract layer
+- groups the workflow as black-hole metric, physical source, observer,
+  eye/camera interpreter, render setup, advanced validation, generated CLI, run
+  progress, live preview, and final result
+- separates source presets from actual user inputs such as output size, SSAA,
+  camera framing, ray-bundle validation mode, exposure mode, and camera optics
+- exposes black-hole metric first: Schwarzschild fixes spin to zero, while Kerr
+  exposes spin and emits `--metric kerr --spin <a>`
 - disables camera/cinematic adjustment controls for the scientific RAW audit
   intent
+- exposes human-eye photometric mode, optional neutral-density filtering, and
+  optional adaptation-luminance override only for the eye observer
+- exposes camera-like `M`, `Auto`, `Av`, `Tv`, and fixed-`EV` workflows for
+  camera-rendered and cinematic outputs while mapping them to existing CLI
+  exposure routes
+- exposes stop-based aperture/ISO/shutter sliders for normal operation and
+  fine/direct numeric inputs for precise tuning
+- exposes f-number, shutter, ISO, EV compensation, diffraction/glare controls,
+  photon noise mode, PSF/read/shot-noise expert controls, optional DOF, and
+  motion-blur sampling only when a camera output can use them
+- keeps custom camera position/FOV/roll and ray-bundle controls behind explicit
+  advanced validation sections so presets remain the default workflow
 - writes linear32 and ideal RGGB CFA sidecars for scientific RAW audit renders
 - generates the exact CLI command
 - can copy or run the command
@@ -105,6 +125,33 @@ development entry point. The launcher:
 - keeps advanced physics controls behind a validation disclosure
 - keeps cinematic flare/DOF controls behind an experimental disclosure
 - streams process output while rendering to avoid blocking on long logs
+- shows a progress bar whose stage boundaries are weighted by estimated work
+  units from output size, SSAA, quality, and ray-bundle mode
+- separates the final result panel from a live preview panel
+- runs live preview as a separate low-resolution, SSAA 1 CLI render to a
+  separate output path, so it is useful for framing and interpreter tuning but
+  cannot be mistaken for the final render
+- provides an interactive camera-orbit control plus direct camera coordinate
+  fields for updating `--camX`, `--camY`, `--camZ`, `--fov`, and `--roll`
+
+## User Control Surface
+
+The GUI intentionally has two layers of control:
+
+- Presets select source models and legacy reproduction paths.
+- User inputs override runtime and observer settings where the CLI already has
+  a contract-backed option.
+
+Default user inputs are conservative:
+
+- `--ssaa 1` unless the user asks for cleaner supersampling.
+- Ray bundle off unless the advanced validation section is opened.
+- Source-model camera presets are preserved unless `Use custom camera/framing`
+  is enabled.
+- Custom final image size can be typed directly.
+- Live preview has its own smaller typed size and output file.
+- Camera RAW audit keeps camera effects disabled and writes sidecars.
+- Cinematic controls remain opt-in and cannot appear for RAW audit output.
 
 ## Promotion Path
 
