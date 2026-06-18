@@ -39,6 +39,16 @@ final class LauncherModel: ObservableObject {
     let previewOutputPath = "/private/tmp/gargantua_gui_preview.png"
     private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
 
+    // Progressive refine ladder. After the camera settles the preview climbs a
+    // few increasing resolutions (rough -> sharp) instead of jumping straight to
+    // full width. Each step is dispatched only after the previous frame arrives,
+    // and a step is recognised by the rendered frame's pixel width (not a raw
+    // frame counter) so the server's initial launch frame can't desync it.
+    private var refineLadderWidths: [Int] = []
+    private var ladderStep = 0
+    private var ladderActive = false
+    private var ladderPendingWidth = 0
+
     // MARK: Camera interpreter
     @Published var exposureProgram: CameraExposureProgram = .manual
     @Published var exposureGranularity: ExposureControlGranularity = .stops
@@ -88,7 +98,9 @@ final class LauncherModel: ObservableObject {
         self.renderIntents = manifest.renderIntents
         refreshResult()
         previewServer.onFrame = { [weak self] image in
-            self?.previewImage = image
+            guard let self else { return }
+            self.previewImage = image
+            self.advanceLadder(renderedWidth: Self.pixelWidth(of: image))
         }
         previewServer.onStatus = { [weak self] rendering, status in
             self?.isPreviewRendering = rendering
@@ -143,13 +155,52 @@ final class LauncherModel: ObservableObject {
 
     /// Stream the current pose to the warm renderer at the fast (low) resolution —
     /// called continuously while the camera is being dragged (renders coalesce).
-    func streamPreviewCamera() { sendPreview(width: previewQuality.fastWidth) }
+    /// A live camera move abandons any in-progress refine climb.
+    func streamPreviewCamera() {
+        ladderActive = false
+        sendPreview(width: previewQuality.fastWidth)
+    }
 
-    /// Render the current pose at the sharper resolution — used when the camera
-    /// settles, on a settings change, or as the manual trigger.
+    /// Render the current pose progressively — used when the camera settles, on a
+    /// settings change, or as the manual trigger. Starts the resolution ladder at
+    /// its first (intermediate) step; `advanceLadder` climbs to full width as each
+    /// frame arrives.
     func requestPreviewRender() { refinePreview() }
-    func refinePreview() { sendPreview(width: previewQuality.refineWidth) }
     func renderPreviewNow() { refinePreview() }
+    func refinePreview() {
+        refineLadderWidths = previewQuality.refineLadder
+        guard let first = refineLadderWidths.first else {
+            ladderActive = false
+            sendPreview(width: previewQuality.refineWidth)
+            return
+        }
+        ladderStep = 0
+        ladderActive = true
+        ladderPendingWidth = previewSize(width: first).width
+        sendPreview(width: first)
+    }
+
+    /// Called for every frame the warm renderer delivers. When a refine climb is
+    /// active and the arriving frame matches the width we last requested, dispatch
+    /// the next-higher rung; the initial launch frame and any stale drag frames
+    /// have a different width and are ignored.
+    private func advanceLadder(renderedWidth: Int) {
+        guard ladderActive, renderedWidth == ladderPendingWidth else { return }
+        ladderStep += 1
+        guard ladderStep < refineLadderWidths.count else {
+            ladderActive = false
+            return
+        }
+        let next = refineLadderWidths[ladderStep]
+        ladderPendingWidth = previewSize(width: next).width
+        sendPreview(width: next)
+    }
+
+    /// Pixel width of a decoded preview frame (used to identify its ladder rung).
+    private static func pixelWidth(of image: NSImage) -> Int {
+        if let rep = image.representations.first as? NSBitmapImageRep { return rep.pixelsWide }
+        return Int(image.size.width.rounded())
+    }
 
     /// (Re)configure the warm serve process for the current setup and send the
     /// current camera pose at the given resolution.
@@ -238,6 +289,7 @@ final class LauncherModel: ObservableObject {
 
     func runRender() {
         guard !isRunning else { return }
+        ladderActive = false
         previewServer.shutdown() // free the GPU for the full-resolution render
         let plan = commandPlan
         isRunning = true

@@ -31,12 +31,21 @@ enum PreviewQuality: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Longest-edge width for the refined pass (rendered when the camera settles).
-    var refineWidth: Int {
+    /// Resolution ladder for the refine pass, rendered one step at a time once the
+    /// camera settles. The renderer is deterministic (every pixel is traced on the
+    /// GPU each pass — there is no Monte-Carlo noise to average down), so the
+    /// "progressive" axis that actually buys anything here is *resolution*: render
+    /// an intermediate width first so a sharper-than-drag image appears quickly,
+    /// then climb to full width. Each step strictly exceeds `fastWidth` and the
+    /// previous step, so a frame's pixel width unambiguously identifies its step.
+    var refineLadder: [Int] {
         switch self {
-        case .low: return 240
-        case .medium: return 340
-        case .high: return 480
+        case .low: return [176, 240]
+        case .medium: return [240, 340]
+        case .high: return [320, 480]
         }
     }
+
+    /// Longest-edge width for the final refined frame (top of the ladder).
+    var refineWidth: Int { refineLadder.last ?? fastWidth }
 }
