@@ -20,6 +20,9 @@ final class LauncherModel: ObservableObject {
     @Published var customWidth = 1536
     @Published var customHeight = 864
     @Published var ssaa: RenderSampling = .one
+    // Sub-pixel-jitter temporal AA for the final render only (1 = off). The live
+    // preview always renders single-sample, so this never slows the warm preview.
+    @Published var taaSamples: Int = 1
     @Published var noBuild = true
     @Published var showAdvancedPhysics = false
     @Published var rayBundleMode: RayBundleMode = .off
@@ -407,7 +410,8 @@ final class LauncherModel: ObservableObject {
             useEyeAdaptation: useEyeAdaptation,
             eyeAdaptation: eyeAdaptation,
             diskHDF5Path: diskHDF5Path,
-            outputPath: outputPath
+            outputPath: outputPath,
+            taaSamples: taaSamples
         )
     }
 

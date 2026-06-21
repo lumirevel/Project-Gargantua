@@ -59,6 +59,8 @@ enum ParamsBuilder {
     let traceHDRDirectMode = runtimeIO.traceHDRDirectMode
     let downsampleArg = max(1, intArg("--downsample", default: 1))
     ParamsBuilderRuntime.validateDownsample(downsampleArg)
+    // Sub-pixel-jitter temporal AA pass count (1 = off). Clamped to a sane range.
+    let taaSamplesArg = max(1, min(64, intArg("--taa-samples", default: 1)))
     let metricSettings = ParamsBuilderRuntime.resolveMetricSettings()
     let metricName = metricSettings.metricName
     let metricArg = metricSettings.metricArg
@@ -653,7 +655,14 @@ enum ParamsBuilder {
         config.pcdClumpContrastArg = pcdClumpContrastArg
         config.pcdHotCrescentArg = pcdHotCrescentArg
         config.pcdDebugFieldID = pcdDebugFieldID
-        config.useLinear32Intermediate = useLinear32Intermediate
+        // Temporal AA needs the linear HDR intermediate as its accumulation seam
+        // (passes are averaged in linear radiance, then tone-mapped once). Auto-
+        // enable it for N>1 so `--taa-samples` works without also remembering
+        // `--hdr-intermediate`; the GPU-full-compose path is left untouched.
+        let taaWantsLinear32 = taaSamplesArg > 1 && composeGPU && !gpuFullCompose
+        config.useLinear32Intermediate = useLinear32Intermediate || taaWantsLinear32
+        if taaWantsLinear32 { config.linear32IntermediateRequested = true }
+        config.taaSamplesArg = taaSamplesArg
         config.rayBundleEnabled = rayBundleEnabled
         config.rayBundleActive = rayBundleActive
         config.rayBundleJacobianActive = rayBundleJacobianActive

@@ -183,10 +183,10 @@ enum RenderExecution {
         }
         print("trace in-flight=\(frameResources.maxInFlight), slotBytes=\(frameResources.slotBytes), tiles=\(plan.traceTileTotal)")
 
-        let traceResult = try RenderTracePhase.execute(
+        let makeTraceInput: (PackedParams) -> RenderTracePhaseInput = { traceParams in
             RenderTracePhaseInput(
                 queue: queue,
-                params: params,
+                params: traceParams,
                 width: config.width,
                 height: config.height,
                 effectiveTile: plan.effectiveTile,
@@ -256,7 +256,27 @@ enum RenderExecution {
                 diskVol0Tex: runtime.diskVol0Tex,
                 diskVol1Tex: runtime.diskVol1Tex
             )
-        )
+        }
+
+        let traceResult: RenderTracePhaseResult
+        if config.taaSamplesArg > 1 && plan.flags.effectiveUseLinear32Intermediate {
+            print("taa: temporal anti-aliasing enabled, samples=\(config.taaSamplesArg) (sub-pixel jitter, linear-HDR accumulation)")
+            traceResult = try RenderTAAAccumulation.run(
+                samples: config.taaSamplesArg,
+                params: params,
+                width: config.width,
+                height: config.height,
+                linearStride: policy.linearStride,
+                linearURL: frameResources.linearOutputURL,
+                linearOutHandle: linearOutHandle,
+                makeTraceInput: makeTraceInput
+            )
+        } else {
+            if config.taaSamplesArg > 1 {
+                print("warn: --taa-samples \(config.taaSamplesArg) ignored (requires the HDR intermediate compose path); rendering a single pass")
+            }
+            traceResult = try RenderTracePhase.execute(makeTraceInput(params))
+        }
 
         let composeResult = try RenderComposePhase.execute(
             RenderComposePhaseInput(

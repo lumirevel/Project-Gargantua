@@ -243,6 +243,10 @@ struct ResolvedRenderConfig {
     var motionBlurSamplesArg: Int = 1
     var motionBlurTimeLapseArg: Double = 1.0
     var shutterFlowTimeSpan: Double = 0.0
+    // Sub-pixel-jitter temporal anti-aliasing. 1 = off (single centered ray,
+    // byte-identical to legacy). N>1 traces N jittered passes and averages the
+    // linear HDR radiance before tone mapping. Requires the HDR intermediate path.
+    var taaSamplesArg: Int = 1
     var eyePhotometricEnabled: Bool = false
     var eyeNDArg: Double = -1.0
     var eyeAdaptationArg: Double = -1.0

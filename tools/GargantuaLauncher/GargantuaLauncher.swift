@@ -546,6 +546,19 @@ private struct RenderSetupPanel: View {
                 }
                 .pickerStyle(.segmented)
 
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Temporal AA (sub-pixel jitter)", selection: $model.taaSamples) {
+                        Text("Off").tag(1)
+                        Text("4×").tag(4)
+                        Text("8×").tag(8)
+                        Text("16×").tag(16)
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Final render only — averages N Halton-jittered passes in linear HDR for smoother edges. Camera-sampling only; physics unchanged. Ignored for the raw-like intent and the live preview.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Toggle("Skip build", isOn: $model.noBuild)
                 TextField("Output path", text: $model.outputPath)
                     .textFieldStyle(.roundedBorder)
