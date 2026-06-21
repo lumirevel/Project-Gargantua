@@ -34,8 +34,13 @@ final class PreviewServer {
     private var launchGeneration = 0
 
     private var latestCamera: String?     // most recent requested pose
-    private var sentCamera: String?       // pose currently being rendered
+    private var sentCamera: String?       // pose/command currently being rendered
+    private var pendingReconfig: String?  // argv file for an interpreter-only recompose
     private var seq = 0
+
+    /// True when the warm process is up and idle-capable — i.e. an interpreter-only
+    /// `reconfig` can be applied without a relaunch.
+    var canReconfigure: Bool { ready && process != nil }
     private var lineBuffer = ""
     private var firstFrameDeadline = Date.distantFuture
 
@@ -63,6 +68,14 @@ final class PreviewServer {
     /// Request a render of this camera pose ("camX camY camZ fov roll").
     func render(camera: String) {
         latestCamera = camera
+        pumpIfIdle()
+    }
+
+    /// Apply an interpreter-only change (exposure / look / eye) to the CURRENT view
+    /// by handing the warm process a freshly resolved argv file. The renderer reuses
+    /// its warm runtime and last camera — no relaunch, no re-warm.
+    func reconfig(argvFile: String) {
+        pendingReconfig = argvFile
         pumpIfIdle()
     }
 
@@ -170,9 +183,18 @@ final class PreviewServer {
     }
 
     private func pumpIfIdle() {
-        guard ready, process != nil, sentCamera == nil,
-              let camera = latestCamera, camera != sentCamera else { return }
+        guard ready, process != nil, sentCamera == nil else { return }
+        // An interpreter-only adjustment takes priority and re-renders the last view.
+        if let argvFile = pendingReconfig {
+            pendingReconfig = nil
+            sentCamera = "reconfig"
+            seq += 1
+            stdinHandle?.write(Data("reconfig \(argvFile) \(seq)\n".utf8))
+            onStatus?(true, "Adjusting…")
+            return
+        }
         // Render only the newest pose; intermediate ones are skipped.
+        guard let camera = latestCamera, camera != sentCamera else { return }
         latestCamera = nil
         sentCamera = camera
         seq += 1

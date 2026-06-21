@@ -51,6 +51,7 @@ final class LauncherModel: ObservableObject {
     // bytes directly (PreviewServer.loadFrame) instead of PNG-decoding.
     let previewOutputPath = "/private/tmp/gargantua_gui_preview.ppm"
     private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
+    private let previewReconfigCmdFile = "/private/tmp/gargantua_gui_reconfig_cmd.txt"
 
     // Progressive refine ladder. After the camera settles the preview climbs a
     // few increasing resolutions (rough -> sharp) instead of jumping straight to
@@ -180,6 +181,27 @@ final class LauncherModel: ObservableObject {
     /// frame arrives.
     func requestPreviewRender() { refinePreview() }
     func renderPreviewNow() { refinePreview() }
+
+    /// Apply a camera/eye interpreter change (exposure, look, optics, eye) to the
+    /// current preview WITHOUT a relaunch: resolve the new argv off the main actor
+    /// (~0.1 s), then hand it to the warm process for a recompose. Falls back to a
+    /// full render when the warm process isn't up yet (e.g. first frame).
+    func requestPreviewReconfig() {
+        guard autoPreview, !isRunning else { return }
+        guard previewServer.canReconfigure else {
+            requestPreviewRender()
+            return
+        }
+        let invocation = previewPipelineInvocation(cmdFile: previewReconfigCmdFile)
+        let cmdFile = previewReconfigCmdFile
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let argv = LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile),
+                  argv.count >= 2 else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.previewServer.reconfig(argvFile: cmdFile)
+            }
+        }
+    }
     func refinePreview() {
         refineLadderWidths = previewQuality.refineLadder
         guard let first = refineLadderWidths.first else {
@@ -221,7 +243,7 @@ final class LauncherModel: ObservableObject {
         guard autoPreview, !isRunning else { return }
         let size = previewSize(width: baseWidth)
         previewPixelSize = "\(size.width)x\(size.height)"
-        let invocation = previewPipelineInvocation()
+        let invocation = previewPipelineInvocation(cmdFile: previewCmdFile)
         let cmdFile = previewCmdFile
         previewServer.configure(token: previewSetupToken, imageOut: previewOutputPath) {
             LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
@@ -232,23 +254,38 @@ final class LauncherModel: ObservableObject {
         previewServer.render(camera: line)
     }
 
-    /// Everything except the camera pose + resolution. When this changes the warm
-    /// serve process must relaunch (new disk atlas / pipelines / exposure setup).
-    private var previewSetupToken: String {
+    /// Geometry/source setup. When THIS changes the warm serve must relaunch (new
+    /// disk atlas / trace). Camera-interpreter options are deliberately excluded —
+    /// they flow through `reconfig` (no relaunch), see `previewInterpreterToken`.
+    var previewSetupToken: String {
         [
             selectedSourceID, String(describing: blackHoleMetric), String(spin),
             String(describing: observerMode), renderIntentID,
+            diskHDF5Path, "\(outputSize.width)x\(outputSize.height)"
+        ].joined(separator: "|")
+    }
+
+    /// Camera/eye interpreter options (exposure, look, optics, eye). Changing any of
+    /// these re-renders the current view via `reconfig` — the warm runtime is reused
+    /// and only the compose stage changes, so it adjusts like a Lightroom edit.
+    var previewInterpreterToken: String {
+        [
             String(describing: exposureProgram), String(exposureEV),
             String(fNumber), String(iso), shutter,
-            String(enableColorGrade), String(enableCinematicEffects), String(enableDepthOfField),
+            String(enableColorGrade), String(allowExperimentalCinematicControls),
+            String(enableCinematicEffects), String(enableDepthOfField),
+            String(flareStrength), String(diffractionStrength), String(focusDepth),
+            String(motionBlurSamples), String(motionBlurTimeLapse),
+            String(describing: cameraPhotonNoise), String(cameraPhotonScale),
+            String(psfSigma), String(readNoise), String(shotNoise),
             String(describing: eyePhotometric), String(useEyeND), String(eyeND),
-            diskHDF5Path, "\(outputSize.width)x\(outputSize.height)"
+            String(useEyeAdaptation), String(eyeAdaptation)
         ].joined(separator: "|")
     }
 
     /// The run_pipeline.sh + BH_PRINT_CMD invocation that yields the translated
     /// binary argv for the current setup (built on the main actor; run off it).
-    private func previewPipelineInvocation() -> PreviewPipelineInvocation {
+    private func previewPipelineInvocation(cmdFile: String) -> PreviewPipelineInvocation {
         let binaryExists = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
         let inputs = commandInputs(noBuild: binaryExists)
         let launch = previewSize(width: previewQuality.fastWidth)
@@ -260,7 +297,7 @@ final class LauncherModel: ObservableObject {
             collisionsOut: "/private/tmp/gargantua_gui_serve_collisions.bin",
             etaHistory: nil
         )
-        env["BH_PRINT_CMD"] = previewCmdFile
+        env["BH_PRINT_CMD"] = cmdFile
         return PreviewPipelineInvocation(
             executable: "/bin/bash",
             arguments: [plan.executablePath] + plan.arguments,

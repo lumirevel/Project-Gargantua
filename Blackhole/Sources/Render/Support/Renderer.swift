@@ -55,6 +55,12 @@ enum Renderer {
         var ctxHeight = -1
         defer { frameContext?.close() }
 
+        // Last camera/resolution the GUI requested. A `reconfig` (interpreter-only
+        // change: exposure / look / eye) re-renders this same view with the new
+        // compose settings, so the user sees a Lightroom-style instant adjustment
+        // instead of paying a full process relaunch + re-warm.
+        var lastCam: (cx: Double, cy: Double, cz: Double, fov: Double, roll: Double, w: Int, h: Int)?
+
         func renderAndSignal(_ seq: String) {
             do {
                 if frameContext == nil || ctxWidth != localConfig.width || ctxHeight != localConfig.height {
@@ -84,6 +90,45 @@ enum Renderer {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
             if trimmed == "quit" || trimmed == "q" { break }
+
+            // "reconfig <argv-file> [seq]": re-resolve the render config from a new
+            // argument list (the GUI emits it for camera/eye interpreter edits),
+            // reuse the warm runtime, and re-render the last view. No relaunch, no
+            // re-warm. The trace re-runs but the disk atlas / pipelines are reused.
+            if trimmed.hasPrefix("reconfig ") {
+                let comps = trimmed.split(separator: " ").map(String.init)
+                let seq = comps.count >= 3 ? comps[2] : "0"
+                do {
+                    let path = comps.count >= 2 ? comps[1] : ""
+                    let argv = try String(contentsOfFile: path, encoding: .utf8)
+                        .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                    guard !argv.isEmpty else {
+                        throw NSError(domain: "Blackhole", code: 140, userInfo: [NSLocalizedDescriptionKey: "empty reconfig argv"])
+                    }
+                    let rebuilt = ParamsBuilder.build(from: CLI.parse(arguments: argv))
+                    guard var cfg2 = rebuilt.resolvedConfig, let p2 = rebuilt.packedParams else {
+                        throw NSError(domain: "Blackhole", code: 141, userInfo: [NSLocalizedDescriptionKey: "reconfig produced no render config"])
+                    }
+                    cfg2.serveFullFrameCompose = true
+                    cfg2.diskAtlasData.removeAll(keepingCapacity: false)
+                    cfg2.diskVolume0Data.removeAll(keepingCapacity: false)
+                    cfg2.diskVolume1Data.removeAll(keepingCapacity: false)
+                    localConfig = cfg2
+                    live = p2
+                    if let c = lastCam {
+                        applyView(camX: c.cx, camY: c.cy, camZ: c.cz, fovDeg: c.fov, rollDeg: c.roll,
+                                  width: c.w, height: c.h, params: &live, config: &localConfig, rsD: rsD)
+                    }
+                    // Compose params changed but resolution did not, so the cached
+                    // frame context (resolution-derived) is still valid and reused.
+                    renderAndSignal(seq)
+                } catch {
+                    print("SERVE_ERROR \(seq) reconfig \(error)")
+                    fflush(stdout)
+                }
+                continue
+            }
+
             let parts = trimmed.split(separator: " ").map(String.init)
             guard parts.count >= 7,
                   let cx = Double(parts[0]), let cy = Double(parts[1]), let cz = Double(parts[2]),
@@ -94,6 +139,7 @@ enum Renderer {
                 continue
             }
             let seq = parts.count >= 8 ? parts[7] : "0"
+            lastCam = (cx, cy, cz, fov, roll, w, h)
             applyView(camX: cx, camY: cy, camZ: cz, fovDeg: fov, rollDeg: roll,
                       width: w, height: h, params: &live, config: &localConfig, rsD: rsD)
             renderAndSignal(seq)

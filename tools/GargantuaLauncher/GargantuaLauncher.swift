@@ -69,32 +69,18 @@ struct GargantuaLauncherView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1060, minHeight: 600)
         .onAppear { model.requestPreviewRender() }
-        .onChange(of: previewTriggerKey) { model.requestPreviewRender() }
+        // Geometry/source/quality changes re-render (and relaunch the warm process
+        // when the setup token changes).
+        .onChange(of: setupTriggerKey) { model.requestPreviewRender() }
+        // Camera/eye interpreter changes (exposure, look, optics, eye) recompose the
+        // current view through the warm process — no relaunch, Lightroom-style.
+        .onChange(of: model.previewInterpreterToken) { model.requestPreviewReconfig() }
     }
 
-    /// Every option that changes the rendered image, folded into one value so a
-    /// single onChange schedules a preview re-render without a huge modifier chain.
-    private var previewTriggerKey: String {
-        [
-            String(describing: model.blackHoleMetric),
-            String(model.spin),
-            model.selectedSourceID,
-            String(describing: model.observerMode),
-            model.renderIntentID,
-            String(describing: model.previewQuality),
-            String(describing: model.exposureProgram),
-            String(model.exposureEV),
-            String(model.fNumber),
-            String(model.iso),
-            model.shutter,
-            String(model.enableColorGrade),
-            String(model.enableCinematicEffects),
-            String(model.enableDepthOfField),
-            String(describing: model.eyePhotometric),
-            String(model.useEyeND),
-            String(model.eyeND),
-            model.diskHDF5Path
-        ].joined(separator: "|")
+    /// Setup that forces a re-render / relaunch: metric, source, observer, intent,
+    /// resolution, disk data, and the preview quality ladder.
+    private var setupTriggerKey: String {
+        model.previewSetupToken + "|" + String(describing: model.previewQuality)
     }
 
     private var sourceSidebar: some View {
