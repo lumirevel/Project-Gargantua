@@ -39,6 +39,11 @@ final class LauncherModel: ObservableObject {
     @Published var isPreviewInteracting = false
     @Published var previewStatus = "Drag to orbit · scroll to zoom"
     @Published var previewPixelSize = ""
+    // Aspect ratio (w/h) of the on-screen preview viewport. The preview renders to
+    // THIS shape so it fills the whole viewport edge-to-edge; the final-output
+    // aspect is drawn as a white frame overlay rather than by letterboxing the
+    // render. Reported by the viewport on resize.
+    @Published var previewViewportAspect: Double = 16.0 / 9.0
     // Raw P6 PPM, not PNG: the warm renderer writes each preview frame straight to
     // disk as header + raw RGB bytes (RenderOutputs.writeImage short-circuits the
     // `.ppm` extension), avoiding the per-frame `python3 ppm_to_png.py` / `sips`
@@ -287,10 +292,23 @@ final class LauncherModel: ObservableObject {
     }
 
     private func previewSize(width baseWidth: Int) -> (width: Int, height: Int) {
-        let out = outputSize
+        // Render at the VIEWPORT's aspect so the preview fills the window; the
+        // final-output aspect is shown as a white overlay, not by cropping.
+        let aspect = (previewViewportAspect.isFinite && previewViewportAspect > 0.05) ? previewViewportAspect : (16.0 / 9.0)
         let w = max(16, baseWidth)
-        let h = max(16, Int((Double(w) * Double(out.height) / Double(max(out.width, 1))).rounded()))
+        let h = max(16, Int((Double(w) / aspect).rounded()))
         return (w - (w % 2), h - (h % 2))
+    }
+
+    /// The preview viewport reports its on-screen aspect (w/h) here. When it changes
+    /// meaningfully, re-render so the preview keeps filling the resized window. This
+    /// only changes frame dimensions (handled per-frame by the warm serve), so it
+    /// does NOT relaunch the renderer.
+    func updatePreviewViewportAspect(_ aspect: Double) {
+        guard aspect.isFinite, aspect > 0.05, aspect < 20 else { return }
+        guard abs(aspect - previewViewportAspect) > 0.02 else { return }
+        previewViewportAspect = aspect
+        refinePreview()
     }
 
     // MARK: - Final render

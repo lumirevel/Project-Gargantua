@@ -256,12 +256,14 @@ private struct ObserverPanel: View {
                 .pickerStyle(.segmented)
 
                 if model.isCameraMode {
+                    // Menu (not segmented): the intent titles are long and get
+                    // clipped as segments in the narrow controls column.
                     Picker("Camera output", selection: $model.renderIntentID) {
                         ForEach(model.renderIntents) { intent in
                             Text(intent.title).tag(intent.id)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     Text(model.selectedIntent.summary)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -334,12 +336,14 @@ private struct CameraInterpreterPanel: View {
 
     private var cameraExposure: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Menu (not segmented): five long titles get clipped as segments in the
+            // narrow controls column.
             Picker("Exposure mode", selection: $model.exposureProgram) {
                 ForEach(CameraExposureProgram.allCases) { program in
                     Text(program.title).tag(program)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             Text(model.exposureProgram.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
