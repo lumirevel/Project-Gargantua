@@ -181,9 +181,54 @@ final class PreviewServer {
     }
 
     private func loadFrame() {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: imageOut)),
-              let image = NSImage(data: data) else { return }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: imageOut)) else { return }
+        // The warm renderer writes raw P6 PPM (see LauncherModel.previewOutputPath),
+        // so decode the bytes directly — no PNG codec, no NSImage(data:) round-trip.
+        guard let image = Self.imageFromPPM(data) ?? NSImage(data: data) else { return }
         onFrame?(image)
         onStatus?(false, "Live")
+    }
+
+    /// Decode a binary P6 PPM ("P6\n<w> <h>\n<maxval>\n<raw RGB>") into an NSImage by
+    /// wrapping the pixel bytes in a 24-bit RGB CGImage. Returns nil if the bytes are
+    /// not a P6 PPM (caller falls back to the generic image loader).
+    static func imageFromPPM(_ data: Data) -> NSImage? {
+        let bytes = [UInt8](data)
+        guard bytes.count > 2, bytes[0] == 0x50, bytes[1] == 0x36 else { return nil } // "P6"
+
+        // Parse three ASCII integers (width, height, maxval) separated by whitespace,
+        // skipping any `#` comment lines, then a single whitespace byte before pixels.
+        var i = 2
+        func isSpace(_ b: UInt8) -> Bool { b == 0x20 || b == 0x09 || b == 0x0a || b == 0x0d }
+        func nextInt() -> Int? {
+            while i < bytes.count {
+                if isSpace(bytes[i]) { i += 1; continue }
+                if bytes[i] == 0x23 { while i < bytes.count && bytes[i] != 0x0a { i += 1 }; continue } // comment
+                break
+            }
+            var value = 0, digits = 0
+            while i < bytes.count, bytes[i] >= 0x30, bytes[i] <= 0x39 {
+                value = value * 10 + Int(bytes[i] - 0x30); digits += 1; i += 1
+            }
+            return digits > 0 ? value : nil
+        }
+        guard let width = nextInt(), let height = nextInt(), let maxval = nextInt(),
+              maxval == 255, width > 0, height > 0 else { return nil }
+        i += 1 // single whitespace byte after maxval, before the pixel block
+
+        let pixelCount = width * height * 3
+        guard bytes.count - i >= pixelCount else { return nil }
+        let pixels = data.subdata(in: i ..< (i + pixelCount))
+
+        guard let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        guard let cg = CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 24, bytesPerRow: width * 3,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: width, height: height))
     }
 }

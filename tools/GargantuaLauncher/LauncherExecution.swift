@@ -39,7 +39,12 @@ final class LauncherModel: ObservableObject {
     @Published var isPreviewInteracting = false
     @Published var previewStatus = "Drag to orbit · scroll to zoom"
     @Published var previewPixelSize = ""
-    let previewOutputPath = "/private/tmp/gargantua_gui_preview.png"
+    // Raw P6 PPM, not PNG: the warm renderer writes each preview frame straight to
+    // disk as header + raw RGB bytes (RenderOutputs.writeImage short-circuits the
+    // `.ppm` extension), avoiding the per-frame `python3 ppm_to_png.py` / `sips`
+    // subprocess that otherwise dominated preview latency. The GUI decodes the raw
+    // bytes directly (PreviewServer.loadFrame) instead of PNG-decoding.
+    let previewOutputPath = "/private/tmp/gargantua_gui_preview.ppm"
     private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
 
     // Progressive refine ladder. After the camera settles the preview climbs a

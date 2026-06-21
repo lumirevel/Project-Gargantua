@@ -97,18 +97,52 @@ enum RenderExecution {
         print("compose-only image=\(config.imageOutPath)")
     }
 
-    static func execute(config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime) throws {
+    /// Per-call render context: the policy / Metal resources / execution plan /
+    /// file handles derived from a (config, resolution). The one-shot final render
+    /// builds one, runs a single frame, and closes it. The warm `--serve` loop
+    /// reuses one across frames while only the camera pose changes, rebuilding only
+    /// when the frame dimensions change — for the preview path these resources do
+    /// not depend on the camera (they are sized buffers + pipelines), so reuse is
+    /// safe and skips the per-frame Metal allocation churn.
+    struct RenderFrameContext {
+        let policy: RenderResourcePolicy
+        let frameResources: RenderFrameResources
+        let plan: RenderExecutionPlan
+        let outHandle: FileHandle?
+        let linearOutHandle: FileHandle?
+        let width: Int
+        let height: Int
+        func close() {
+            try? outHandle?.close()
+            try? linearOutHandle?.close()
+        }
+    }
+
+    /// One-shot render: build a context, run a single frame, close. `quiet`
+    /// suppresses the per-frame diagnostic prints (used by the warm serve loop so
+    /// it does not spam the stdout pipe the GUI parses). Default `false` keeps the
+    /// final render's output byte-for-byte and log-for-log identical.
+    static func execute(config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime, quiet: Bool = false) throws {
+        let context = try makeFrameContext(config: config, params: inputParams, runtime: runtime, quiet: quiet)
+        defer { context.close() }
+        try runFrame(context, config: config, params: inputParams, runtime: runtime, quiet: quiet)
+    }
+
+    /// Build the resolution-derived render context (policy, Metal resources, plan,
+    /// output file handles). Invariant under camera-only changes.
+    static func makeFrameContext(config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime, quiet: Bool = false) throws -> RenderFrameContext {
         let device = runtime.device
-        let queue = runtime.queue
         let params = inputParams
 
-        print(config.renderConfigLine)
-        if !config.grmhdConfigLine.isEmpty { print(config.grmhdConfigLine) }
-        if !config.visibleConfigLine.isEmpty { print(config.visibleConfigLine) }
+        if !quiet {
+            print(config.renderConfigLine)
+            if !config.grmhdConfigLine.isEmpty { print(config.grmhdConfigLine) }
+            if !config.visibleConfigLine.isEmpty { print(config.visibleConfigLine) }
+        }
 
         let policy = RenderResourcePolicy(config: config, params: params, device: device)
         if config.traceHDRDirectMode == "on" && !policy.directLinearTraceSafe {
-            print("warn: --trace-hdr-direct on ignored: \(policy.directLinearUnsafeReason)")
+            if !quiet { print("warn: --trace-hdr-direct on ignored: \(policy.directLinearUnsafeReason)") }
         }
         let flags = RenderExecutionPlanning.makeFlags(config: config, policy: policy)
         let frameResources = Resources.makeFrameResources(
@@ -158,8 +192,10 @@ enum RenderExecution {
             fail("--discard-collisions/--skip-collision-dump is only supported with --gpu-full-compose/--compose-in-memory or --linear32-intermediate/--hdr-intermediate")
         }
 
-        print("trace path=\(plan.tracePathSummary)")
-        print(memoryPlanSummary(plan.intermediatePlan))
+        if !quiet {
+            print("trace path=\(plan.tracePathSummary)")
+            print(memoryPlanSummary(plan.intermediatePlan))
+        }
 
         var linearOutHandle: FileHandle? = nil
         if plan.flags.effectiveUseLinear32Intermediate {
@@ -173,15 +209,35 @@ enum RenderExecution {
             outHandle = try FileHandle(forWritingTo: frameResources.outputURL)
             try outHandle?.truncate(atOffset: UInt64(frameResources.collisionStorageSize))
         }
-        defer {
-            try? outHandle?.close()
-            try? linearOutHandle?.close()
+
+        if !quiet {
+            if plan.effectiveTile < max(config.width, config.height) {
+                print("tile rendering enabled: \(plan.effectiveTile)x\(plan.effectiveTile)")
+            }
+            print("trace in-flight=\(frameResources.maxInFlight), slotBytes=\(frameResources.slotBytes), tiles=\(plan.traceTileTotal)")
         }
 
-        if plan.effectiveTile < max(config.width, config.height) {
-            print("tile rendering enabled: \(plan.effectiveTile)x\(plan.effectiveTile)")
-        }
-        print("trace in-flight=\(frameResources.maxInFlight), slotBytes=\(frameResources.slotBytes), tiles=\(plan.traceTileTotal)")
+        return RenderFrameContext(
+            policy: policy,
+            frameResources: frameResources,
+            plan: plan,
+            outHandle: outHandle,
+            linearOutHandle: linearOutHandle,
+            width: config.width,
+            height: config.height
+        )
+    }
+
+    /// Run a single frame against an existing context: trace + compose + write +
+    /// metadata. The context (resources/plan) is reused across warm serve frames.
+    static func runFrame(_ context: RenderFrameContext, config: ResolvedRenderConfig, params inputParams: PackedParams, runtime: RenderRuntime, quiet: Bool = false) throws {
+        let queue = runtime.queue
+        let params = inputParams
+        let policy = context.policy
+        let frameResources = context.frameResources
+        let plan = context.plan
+        let outHandle = context.outHandle
+        let linearOutHandle = context.linearOutHandle
 
         let makeTraceInput: (PackedParams) -> RenderTracePhaseInput = { traceParams in
             RenderTracePhaseInput(

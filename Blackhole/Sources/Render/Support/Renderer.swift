@@ -42,9 +42,25 @@ enum Renderer {
         var localConfig = config
         let rsD = config.rsD
 
+        // Reuse the resolution-derived render context across frames: only the camera
+        // pose changes between most requests, so we rebuild the Metal resources/plan
+        // only when width/height actually changes (e.g. a ladder step). quiet=true
+        // suppresses the per-frame diagnostic prints on the stdout pipe the GUI reads.
+        var frameContext: RenderExecution.RenderFrameContext?
+        var ctxWidth = -1
+        var ctxHeight = -1
+        defer { frameContext?.close() }
+
         func renderAndSignal(_ seq: String) {
             do {
-                try RenderExecution.execute(config: localConfig, params: live, runtime: runtime)
+                if frameContext == nil || ctxWidth != localConfig.width || ctxHeight != localConfig.height {
+                    frameContext?.close()
+                    frameContext = try RenderExecution.makeFrameContext(config: localConfig, params: live, runtime: runtime, quiet: true)
+                    ctxWidth = localConfig.width
+                    ctxHeight = localConfig.height
+                }
+                guard let context = frameContext else { return }
+                try RenderExecution.runFrame(context, config: localConfig, params: live, runtime: runtime, quiet: true)
                 print("SERVE_FRAME \(seq)")
             } catch {
                 print("SERVE_ERROR \(seq) \(error)")
