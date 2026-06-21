@@ -101,8 +101,10 @@ final class OrbitCameraController {
     private func bump() { generation &+= 1 }
 
     /// Pointer/trackpad drag: horizontal -> azimuth, vertical -> elevation.
+    /// Horizontal is "grab and drag the scene" (Google-Earth style): dragging right
+    /// rotates the view rightward, so azimuth follows +deltaX.
     func orbit(deltaX: Float, deltaY: Float) {
-        state.theta -= deltaX * orbitSpeed
+        state.theta += deltaX * orbitSpeed
         // Wrap azimuth into a stable range to avoid float drift.
         let twoPi = Float.pi * 2
         if state.theta > twoPi { state.theta -= twoPi }
