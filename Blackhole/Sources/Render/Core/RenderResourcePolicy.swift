@@ -94,6 +94,11 @@ struct RenderResourcePolicy {
         projectedDirectLinearBytes = approxTextureBytes + linearOutSize + fullComposeOutBytes
         projectedFullComposeBytes = approxTextureBytes + outSize + linearOutSize + fullComposeOutBytes
         composeStrategyPreference = {
+            // Warm preview serve: always full-frame. The tiled route corrupts / hangs
+            // the GPU when this warm runtime renders at a non-launch resolution.
+            if config.serveFullFrameCompose {
+                return .fullFrameFirst
+            }
             if config.diskPhysicsModeID == 3 || config.rayBundleActive {
                 return .fullFrameFirst
             }

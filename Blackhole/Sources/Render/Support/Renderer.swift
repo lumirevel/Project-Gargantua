@@ -30,6 +30,10 @@ enum Renderer {
     /// "SERVE_FRAME <seq>" when the frame is ready. Everything but the camera is
     /// fixed for the session, so changing the source/resolution restarts serve.
     static func serve(config: inout ResolvedRenderConfig, params: PackedParams) throws {
+        // Force full-frame compose for every preview frame: the tile-first legacy
+        // paths corrupt / GPU-hang when this warm runtime renders at a resolution
+        // other than its launch size (the refine ladder resizes each settle).
+        config.serveFullFrameCompose = true
         let uploadedDiskAssetBytes =
             config.diskAtlasData.count + config.diskVolume0Data.count + config.diskVolume1Data.count
         let runtime = try RenderSetup.prepare(config: config, params: params)
