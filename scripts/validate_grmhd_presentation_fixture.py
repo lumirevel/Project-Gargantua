@@ -22,7 +22,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SINGLE_SOURCE_VALIDATOR = ROOT / "scripts" / "validate_blackhole_presentation_invariance.py"
-DEFAULT_HDF5 = Path("/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5")
+DEFAULT_HDF5 = Path(__file__).resolve().parent.parent / "data" / "grmhd" / "SANE_a0_torus.out0.05010.h5"
 DEFAULT_SUITE_HDF5 = [
     DEFAULT_HDF5,
     Path("/private/tmp/bh-march-grmhd-repro/cache/sample.h5"),

@@ -231,7 +231,11 @@ enum RenderCommandPlanner {
         if !explicit.isEmpty {
             return explicit
         }
-        return inputs.source.defaultDiskHDF5 ?? ""
+        // A relative default (e.g. "data/grmhd/...") resolves against the repo root so
+        // the snapshot lives in the persistent in-repo data dir, not volatile /tmp.
+        let def = inputs.source.defaultDiskHDF5 ?? ""
+        if def.isEmpty || def.hasPrefix("/") { return def }
+        return ProjectPaths.repositoryRoot.appendingPathComponent(def).path
     }
 
     private static func appendRayBundleArguments(_ inputs: RenderCommandInputs, to args: inout [String]) {

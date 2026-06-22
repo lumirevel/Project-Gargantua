@@ -93,7 +93,12 @@ final class LauncherModel: ObservableObject {
     @Published var eyeAdaptation = 2000.0
 
     // MARK: Output / execution
-    @Published var diskHDF5Path = "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
+    // Persistent in-repo location (gitignored data/), so the GRMHD snapshot survives
+    // reboots / tmp cleanups instead of vanishing from /private/tmp.
+    static var defaultGrmhdSnapshotPath: String {
+        ProjectPaths.repositoryRoot.appendingPathComponent("data/grmhd/SANE_a0_torus.out0.05010.h5").path
+    }
+    @Published var diskHDF5Path = LauncherModel.defaultGrmhdSnapshotPath
     @Published var outputPath = "/private/tmp/gargantua_gui_render.png"
     @Published var logText = "Ready."
     @Published var progressFraction = 0.0

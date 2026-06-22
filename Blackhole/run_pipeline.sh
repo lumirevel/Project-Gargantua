@@ -1124,16 +1124,19 @@ apply_science_regime_defaults() {
           SWIFT_ARGS+=(--metric "kerr")
         fi
         if [[ -z "$DISK_HDF5_PATH" ]]; then
-          LEGACY_BH_FINISH_GRMHD_SNAPSHOT="/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
+          # Prefer the persistent in-repo copy (survives reboots); fall back to the
+          # historical volatile /tmp locations for older setups.
+          LEGACY_BH_FINISH_GRMHD_SNAPSHOT="$ROOT_DIR/data/grmhd/SANE_a0_torus.out0.05010.h5"
           if [[ -f "$LEGACY_BH_FINISH_GRMHD_SNAPSHOT" ]]; then
             DISK_HDF5_PATH="$LEGACY_BH_FINISH_GRMHD_SNAPSHOT"
+          elif [[ -f "/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" ]]; then
+            DISK_HDF5_PATH="/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
           elif [[ -f "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" ]]; then
             DISK_HDF5_PATH="/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
           else
             echo "error: legacy-bh-finish-grmhd requires the Illinois SANE a0 dump 05010 HDF5 snapshot." >&2
             echo "       expected: $LEGACY_BH_FINISH_GRMHD_SNAPSHOT" >&2
-            echo "       fallback: /private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" >&2
-            echo "       fetch with: Blackhole/scripts/fetch_illinois_grmhd_snapshot.py --flux SANE --spin 0 --dump 05010 --out-dir /tmp/bh_real_grmhd_sequence" >&2
+            echo "       fetch with: Blackhole/scripts/fetch_illinois_grmhd_snapshot.py --flux SANE --spin 0 --dump 05010 --out-dir \"$ROOT_DIR/data/grmhd\"" >&2
             exit 2
           fi
         fi
