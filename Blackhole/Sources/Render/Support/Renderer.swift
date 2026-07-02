@@ -119,8 +119,13 @@ enum Renderer {
                         applyView(camX: c.cx, camY: c.cy, camZ: c.cz, fovDeg: c.fov, rollDeg: c.roll,
                                   width: c.w, height: c.h, params: &live, config: &localConfig, rsD: rsD)
                     }
-                    // Compose params changed but resolution did not, so the cached
-                    // frame context (resolution-derived) is still valid and reused.
+                    // The frame context bakes compose settings into Metal buffers at
+                    // creation (e.g. exposure/look in the direct-linear ComposeParams),
+                    // so a reconfig MUST rebuild it — otherwise interpreter edits are
+                    // silently ignored on direct-linear sources. Rebuild costs ~ms and
+                    // reconfigs are rare (one per slider settle).
+                    frameContext?.close()
+                    frameContext = nil
                     renderAndSignal(seq)
                 } catch {
                     print("SERVE_ERROR \(seq) reconfig \(error)")

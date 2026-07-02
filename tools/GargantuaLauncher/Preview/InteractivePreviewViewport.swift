@@ -8,7 +8,9 @@ final class PreviewImageView: NSView {
     var image: NSImage? { didSet { needsDisplay = true } }
     /// Final-output aspect (w/h). Drawn as a white frame so the user sees what the
     /// final render will crop to, while the preview itself fills the whole viewport.
-    var outputAspect: CGFloat = 16.0 / 9.0 { didSet { needsDisplay = true } }
+    var outputAspect: CGFloat = 16.0 / 9.0 {
+        didSet { if outputAspect != oldValue { needsDisplay = true } }
+    }
     var onOrbit: ((Float, Float) -> Void)?
     var onZoom: ((Float) -> Void)?
     var onInteractionBegan: (() -> Void)?
@@ -41,15 +43,14 @@ final class PreviewImageView: NSView {
 
         // White frame marking the final-output crop. The preview and final share the
         // same horizontal field of view, so the output spans the full preview width
-        // and a centered vertical band of height width/outputAspect (clamped to fit
-        // when the output is taller than the viewport).
+        // and a centered vertical band of height width/outputAspect. When the output
+        // is as tall as / taller than the viewport, everything visible is inside the
+        // final frame — there is no crop to mark, and a shrunken box would misstate
+        // the framing — so draw nothing.
         guard outputAspect > 0.01 else { return }
-        var boxW = rect.width
-        var boxH = boxW / outputAspect
-        if boxH > rect.height {
-            boxH = rect.height
-            boxW = boxH * outputAspect
-        }
+        let boxW = rect.width
+        let boxH = boxW / outputAspect
+        guard boxH < rect.height - 1 else { return }
         let boxRect = NSRect(x: rect.midX - boxW / 2, y: rect.midY - boxH / 2, width: boxW, height: boxH)
         NSColor.white.withAlphaComponent(0.85).setStroke()
         let path = NSBezierPath(rect: boxRect.insetBy(dx: 0.75, dy: 0.75))

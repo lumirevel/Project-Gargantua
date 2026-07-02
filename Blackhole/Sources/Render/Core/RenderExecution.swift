@@ -239,6 +239,18 @@ enum RenderExecution {
         let outHandle = context.outHandle
         let linearOutHandle = context.linearOutHandle
 
+        // The linear-compose base buffer holds a PackedParams copy (camera basis
+        // included) captured at context creation. The warm serve loop reuses the
+        // context across camera-only frames, so refresh it with this frame's params
+        // to keep the linear32 path camera-fresh (one-shot renders are unaffected —
+        // their context is built from the same params).
+        if let base = frameResources.composeBaseBufForLinear {
+            var current = params
+            withUnsafeBytes(of: &current) { raw in
+                base.contents().copyMemory(from: raw.baseAddress!, byteCount: min(raw.count, base.length))
+            }
+        }
+
         let makeTraceInput: (PackedParams) -> RenderTracePhaseInput = { traceParams in
             RenderTracePhaseInput(
                 queue: queue,
@@ -316,7 +328,7 @@ enum RenderExecution {
 
         let traceResult: RenderTracePhaseResult
         if config.taaSamplesArg > 1 && plan.flags.effectiveUseLinear32Intermediate {
-            print("taa: temporal anti-aliasing enabled, samples=\(config.taaSamplesArg) (sub-pixel jitter, linear-HDR accumulation)")
+            if !quiet { print("taa: temporal anti-aliasing enabled, samples=\(config.taaSamplesArg) (sub-pixel jitter, linear-HDR accumulation)") }
             traceResult = try RenderTAAAccumulation.run(
                 samples: config.taaSamplesArg,
                 params: params,
@@ -328,7 +340,7 @@ enum RenderExecution {
                 makeTraceInput: makeTraceInput
             )
         } else {
-            if config.taaSamplesArg > 1 {
+            if config.taaSamplesArg > 1 && !quiet {
                 print("warn: --taa-samples \(config.taaSamplesArg) ignored (requires the HDR intermediate compose path); rendering a single pass")
             }
             traceResult = try RenderTracePhase.execute(makeTraceInput(params))

@@ -38,9 +38,11 @@ final class PreviewServer {
     private var pendingReconfig: String?  // argv file for an interpreter-only recompose
     private var seq = 0
 
-    /// True when the warm process is up and idle-capable — i.e. an interpreter-only
-    /// `reconfig` can be applied without a relaunch.
-    var canReconfigure: Bool { ready && process != nil }
+    /// True when the warm process exists or is being launched — i.e. an
+    /// interpreter-only `reconfig` can be applied (immediately when ready, or queued
+    /// in `pendingReconfig` until SERVE_READY pumps it). Reconfigs queued before a
+    /// relaunch are dropped in `shutdown()` so they can't cross setups.
+    var canReconfigure: Bool { process != nil || launching }
     private var lineBuffer = ""
     private var firstFrameDeadline = Date.distantFuture
 
@@ -82,6 +84,10 @@ final class PreviewServer {
     func shutdown() {
         launchGeneration += 1
         launching = false
+        // A queued interpreter recompose belongs to the OLD setup's argv; if it
+        // survived a relaunch it would fire after the new SERVE_READY and override
+        // the fresh process's config with the stale (old-source) arguments.
+        pendingReconfig = nil
         if let stdinHandle {
             try? stdinHandle.write(contentsOf: Data("quit\n".utf8))
         }
