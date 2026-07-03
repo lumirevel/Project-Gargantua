@@ -121,7 +121,7 @@ def main() -> None:
         ]:
             continue
         if token not in launcher:
-            failures.append(f"GargantuaLauncher.swift raw-like path missing token {token}")
+            failures.append(f"GargantuaLauncher sources raw-like path missing token {token}")
 
     for token in [
         "requiresDiskHDF5",
@@ -144,16 +144,20 @@ def main() -> None:
         "--eye-nd",
         "--camera-diffraction",
         "--camera-photon-noise",
-        "LivePreviewPanel",
+        "InteractivePreviewPanel",
+        "PreviewServer",
         "ResultPanel",
-        "livePreviewPlan",
-        "livePreviewWidth",
-        "previewProgressFraction",
+        "previewPipelineInvocation",
+        "previewPixelSize",
+        "isPreviewRendering",
+        "previewReconfigGeneration",
+        "canReconfigure(setupToken:",
+        "UUID().uuidString",
         "workUnits",
         "ProgressView",
     ]:
         if token not in launcher:
-            failures.append(f"GargantuaLauncher.swift data-backed source path missing token {token}")
+            failures.append(f"GargantuaLauncher sources data-backed source path missing token {token}")
 
     report = {
         "passed": not failures,

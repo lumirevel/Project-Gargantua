@@ -97,7 +97,7 @@ def load_manifest() -> dict[str, Any]:
 def launcher_sources_text() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in sorted(LAUNCHER_DIR.glob("*.swift"))
+        for path in sorted(LAUNCHER_DIR.rglob("*.swift"))
     )
 
 

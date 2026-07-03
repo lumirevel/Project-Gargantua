@@ -20,6 +20,11 @@ struct PreviewPipelineInvocation: Sendable {
 /// the most recent pose is rendered when the renderer frees up.
 @MainActor
 final class PreviewServer {
+    private struct QueuedReconfig {
+        let argvFile: String
+        let setupToken: String
+    }
+
     /// Called on the main actor with each freshly rendered frame.
     var onFrame: ((NSImage) -> Void)?
     /// Called with short status strings for the HUD.
@@ -35,7 +40,8 @@ final class PreviewServer {
 
     private var latestCamera: String?     // most recent requested pose
     private var sentCamera: String?       // pose/command currently being rendered
-    private var pendingReconfig: String?  // argv file for an interpreter-only recompose
+    private var pendingReconfig: QueuedReconfig?  // argv file for an interpreter-only recompose
+    private var sentReconfig: QueuedReconfig?
     private var seq = 0
 
     /// True when the warm process exists or is being launched — i.e. an
@@ -43,6 +49,9 @@ final class PreviewServer {
     /// in `pendingReconfig` until SERVE_READY pumps it). Reconfigs queued before a
     /// relaunch are dropped in `shutdown()` so they can't cross setups.
     var canReconfigure: Bool { process != nil || launching }
+    func canReconfigure(setupToken: String) -> Bool {
+        setupToken == token && canReconfigure
+    }
     private var lineBuffer = ""
     private var firstFrameDeadline = Date.distantFuture
 
@@ -76,9 +85,18 @@ final class PreviewServer {
     /// Apply an interpreter-only change (exposure / look / eye) to the CURRENT view
     /// by handing the warm process a freshly resolved argv file. The renderer reuses
     /// its warm runtime and last camera — no relaunch, no re-warm.
-    func reconfig(argvFile: String) {
-        pendingReconfig = argvFile
+    @discardableResult
+    func reconfig(argvFile: String, setupToken: String) -> Bool {
+        guard canReconfigure(setupToken: setupToken) else {
+            removeReconfigFile(argvFile)
+            return false
+        }
+        if let pendingReconfig {
+            removeReconfigFile(pendingReconfig.argvFile)
+        }
+        pendingReconfig = QueuedReconfig(argvFile: argvFile, setupToken: setupToken)
         pumpIfIdle()
+        return true
     }
 
     func shutdown() {
@@ -87,7 +105,7 @@ final class PreviewServer {
         // A queued interpreter recompose belongs to the OLD setup's argv; if it
         // survived a relaunch it would fire after the new SERVE_READY and override
         // the fresh process's config with the stale (old-source) arguments.
-        pendingReconfig = nil
+        cleanupPendingReconfigs()
         if let stdinHandle {
             try? stdinHandle.write(contentsOf: Data("quit\n".utf8))
         }
@@ -179,9 +197,11 @@ final class PreviewServer {
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_FRAME") {
             loadFrame()
+            finishSentReconfig()
             sentCamera = nil // free to render the next pose
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_ERROR") {
+            finishSentReconfig()
             sentCamera = nil
             onStatus?(false, "Renderer error")
             pumpIfIdle()
@@ -191,11 +211,17 @@ final class PreviewServer {
     private func pumpIfIdle() {
         guard ready, process != nil, sentCamera == nil else { return }
         // An interpreter-only adjustment takes priority and re-renders the last view.
-        if let argvFile = pendingReconfig {
+        if let reconfig = pendingReconfig {
             pendingReconfig = nil
+            guard reconfig.setupToken == token else {
+                removeReconfigFile(reconfig.argvFile)
+                pumpIfIdle()
+                return
+            }
+            sentReconfig = reconfig
             sentCamera = "reconfig"
             seq += 1
-            stdinHandle?.write(Data("reconfig \(argvFile) \(seq)\n".utf8))
+            stdinHandle?.write(Data("reconfig \(reconfig.argvFile) \(seq)\n".utf8))
             onStatus?(true, "Adjusting…")
             return
         }
@@ -215,6 +241,28 @@ final class PreviewServer {
         guard let image = Self.imageFromPPM(data) ?? NSImage(data: data) else { return }
         onFrame?(image)
         onStatus?(false, "Live")
+    }
+
+    private func cleanupPendingReconfigs() {
+        if let pendingReconfig {
+            removeReconfigFile(pendingReconfig.argvFile)
+            self.pendingReconfig = nil
+        }
+        if let sentReconfig {
+            removeReconfigFile(sentReconfig.argvFile)
+            self.sentReconfig = nil
+        }
+    }
+
+    private func finishSentReconfig() {
+        if let sentReconfig {
+            removeReconfigFile(sentReconfig.argvFile)
+            self.sentReconfig = nil
+        }
+    }
+
+    private func removeReconfigFile(_ path: String) {
+        try? FileManager.default.removeItem(atPath: path)
     }
 
     /// Decode a binary P6 PPM ("P6\n<w> <h>\n<maxval>\n<raw RGB>") into an NSImage by

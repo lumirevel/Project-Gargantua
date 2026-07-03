@@ -50,8 +50,10 @@ final class LauncherModel: ObservableObject {
     // subprocess that otherwise dominated preview latency. The GUI decodes the raw
     // bytes directly (PreviewServer.loadFrame) instead of PNG-decoding.
     let previewOutputPath = "/private/tmp/gargantua_gui_preview.ppm"
-    private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
-    private let previewReconfigCmdFile = "/private/tmp/gargantua_gui_reconfig_cmd.txt"
+    private let previewServeCmdPrefix = "/private/tmp/gargantua_gui_serve_cmd_"
+    private let previewReconfigCmdPrefix = "/private/tmp/gargantua_gui_reconfig_cmd_"
+    private var previewActiveSetupToken = ""
+    private var previewReconfigGeneration = 0
 
     // Progressive refine ladder. After the camera settles the preview climbs a
     // few increasing resolutions (rough -> sharp) instead of jumping straight to
@@ -193,20 +195,42 @@ final class LauncherModel: ObservableObject {
     /// full render when the warm process isn't up yet (e.g. first frame).
     func requestPreviewReconfig() {
         guard autoPreview, !isRunning else { return }
-        guard previewServer.canReconfigure else {
+        let setupToken = previewSetupToken
+        guard previewServer.canReconfigure(setupToken: setupToken) else {
             requestPreviewRender()
             return
         }
-        let invocation = previewPipelineInvocation(cmdFile: previewReconfigCmdFile)
-        let cmdFile = previewReconfigCmdFile
+        previewReconfigGeneration += 1
+        let generation = previewReconfigGeneration
+        let cmdFile = makePreviewReconfigCmdFile()
+        let invocation = previewPipelineInvocation(cmdFile: cmdFile)
         DispatchQueue.global(qos: .userInitiated).async {
             guard let argv = LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile),
-                  argv.count >= 2 else { return }
+                  argv.count >= 2 else {
+                try? FileManager.default.removeItem(atPath: cmdFile)
+                return
+            }
             DispatchQueue.main.async { [weak self] in
-                self?.previewServer.reconfig(argvFile: cmdFile)
+                guard let self,
+                      !self.isRunning,
+                      generation == self.previewReconfigGeneration,
+                      setupToken == self.previewSetupToken,
+                      self.previewServer.reconfig(argvFile: cmdFile, setupToken: setupToken) else {
+                    try? FileManager.default.removeItem(atPath: cmdFile)
+                    return
+                }
             }
         }
     }
+
+    private func makePreviewReconfigCmdFile() -> String {
+        previewReconfigCmdPrefix + UUID().uuidString + ".txt"
+    }
+
+    private func makePreviewServeCmdFile() -> String {
+        previewServeCmdPrefix + UUID().uuidString + ".txt"
+    }
+
     func refinePreview() {
         refineLadderWidths = previewQuality.refineLadder
         guard let first = refineLadderWidths.first else {
@@ -248,10 +272,17 @@ final class LauncherModel: ObservableObject {
         guard autoPreview, !isRunning else { return }
         let size = previewSize(width: baseWidth)
         previewPixelSize = "\(size.width)x\(size.height)"
-        let invocation = previewPipelineInvocation(cmdFile: previewCmdFile)
-        let cmdFile = previewCmdFile
-        previewServer.configure(token: previewSetupToken, imageOut: previewOutputPath) {
-            LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
+        let setupToken = previewSetupToken
+        if setupToken != previewActiveSetupToken {
+            previewActiveSetupToken = setupToken
+            previewReconfigGeneration += 1
+        }
+        let cmdFile = makePreviewServeCmdFile()
+        let invocation = previewPipelineInvocation(cmdFile: cmdFile)
+        previewServer.configure(token: setupToken, imageOut: previewOutputPath) {
+            let command = LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
+            try? FileManager.default.removeItem(atPath: cmdFile)
+            return command
         }
         let eye = camera.state.eye
         let roll = Double(camera.state.roll) * 180.0 / .pi
@@ -358,6 +389,7 @@ final class LauncherModel: ObservableObject {
     func runRender() {
         guard !isRunning else { return }
         ladderActive = false
+        previewReconfigGeneration += 1
         previewServer.shutdown() // free the GPU for the full-resolution render
         let plan = commandPlan
         isRunning = true
