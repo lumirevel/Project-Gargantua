@@ -6,13 +6,28 @@ import SwiftUI
 /// wheel and pinch zoom.
 final class PreviewImageView: NSView {
     var image: NSImage? { didSet { needsDisplay = true } }
+    /// Final-output aspect (w/h). Drawn as a white frame so the user sees what the
+    /// final render will crop to, while the preview itself fills the whole viewport.
+    var outputAspect: CGFloat = 16.0 / 9.0 {
+        didSet { if outputAspect != oldValue { needsDisplay = true } }
+    }
     var onOrbit: ((Float, Float) -> Void)?
     var onZoom: ((Float) -> Void)?
     var onInteractionBegan: (() -> Void)?
     var onInteractionEnded: (() -> Void)?
+    /// Reports the viewport's on-screen aspect (w/h) so the model can render the
+    /// preview to fill it.
+    var onViewportAspect: ((CGFloat) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { true }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if newSize.width > 0, newSize.height > 0 {
+            onViewportAspect?(newSize.width / newSize.height)
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
@@ -25,6 +40,22 @@ final class PreviewImageView: NSView {
         let rect = NSRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h)
         NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: rect, from: .zero, operation: .copy, fraction: 1.0)
+
+        // White frame marking the final-output crop. The preview and final share the
+        // same horizontal field of view, so the output spans the full preview width
+        // and a centered vertical band of height width/outputAspect. When the output
+        // is as tall as / taller than the viewport, everything visible is inside the
+        // final frame — there is no crop to mark, and a shrunken box would misstate
+        // the framing — so draw nothing.
+        guard outputAspect > 0.01 else { return }
+        let boxW = rect.width
+        let boxH = boxW / outputAspect
+        guard boxH < rect.height - 1 else { return }
+        let boxRect = NSRect(x: rect.midX - boxW / 2, y: rect.midY - boxH / 2, width: boxW, height: boxH)
+        NSColor.white.withAlphaComponent(0.85).setStroke()
+        let path = NSBezierPath(rect: boxRect.insetBy(dx: 0.75, dy: 0.75))
+        path.lineWidth = 1.5
+        path.stroke()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -65,6 +96,11 @@ struct InteractivePreviewViewport: NSViewRepresentable {
         let view = PreviewImageView()
         view.wantsLayer = true
         view.image = model.previewImage
+        view.outputAspect = CGFloat(model.outputSize.width) / CGFloat(max(model.outputSize.height, 1))
+        view.onViewportAspect = { [weak model] aspect in
+            // Hop off the layout pass before mutating observable state.
+            DispatchQueue.main.async { model?.updatePreviewViewportAspect(Double(aspect)) }
+        }
         view.onOrbit = { [weak coordinator = context.coordinator] dx, dy in
             coordinator?.handleOrbit(dx: dx, dy: dy)
         }
@@ -83,6 +119,7 @@ struct InteractivePreviewViewport: NSViewRepresentable {
 
     func updateNSView(_ nsView: PreviewImageView, context: Context) {
         nsView.image = model.previewImage
+        nsView.outputAspect = CGFloat(model.outputSize.width) / CGFloat(max(model.outputSize.height, 1))
     }
 
     @MainActor

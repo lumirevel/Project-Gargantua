@@ -56,7 +56,7 @@
       "status": "diagnostic",
       "summary": "3D GRMHD thermal visible-volume diagnostic.",
       "requiresDiskHDF5": true,
-      "defaultDiskHDF5": "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
+      "defaultDiskHDF5": "data/grmhd/SANE_a0_torus.out0.05010.h5",
       "args": ["--source-model", "grmhd-temperature-flow-diagnostic"]
     },
     {
@@ -90,7 +90,7 @@
       "status": "legacy",
       "summary": "Recovered bh_finish_cinema_1536.png family: Kerr a=0.92, SANE a0 dump 05010, state-smoothed GRMHD visible volume recipe.",
       "requiresDiskHDF5": true,
-      "defaultDiskHDF5": "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
+      "defaultDiskHDF5": "data/grmhd/SANE_a0_torus.out0.05010.h5",
       "args": ["--science-regime", "legacy-bh-finish-grmhd"]
     },
     {

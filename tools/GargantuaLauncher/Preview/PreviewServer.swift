@@ -20,10 +20,18 @@ struct PreviewPipelineInvocation: Sendable {
 /// the most recent pose is rendered when the renderer frees up.
 @MainActor
 final class PreviewServer {
+    private struct QueuedReconfig {
+        let argvFile: String
+        let setupToken: String
+    }
+
     /// Called on the main actor with each freshly rendered frame.
     var onFrame: ((NSImage) -> Void)?
     /// Called with short status strings for the HUD.
     var onStatus: ((Bool, String) -> Void)?
+    /// Called after a reconfig's frame has been delivered — the model uses it to
+    /// ladder-refine the (deliberately low-res, fast-profile) adjusted view.
+    var onReconfigApplied: (() -> Void)?
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -33,9 +41,20 @@ final class PreviewServer {
     private var launching = false
     private var launchGeneration = 0
 
-    private var latestCamera: String?     // most recent requested pose
-    private var sentCamera: String?       // pose currently being rendered
+    private var latestCamera: (pose: String, fast: Bool)?  // most recent requested pose
+    private var sentCamera: String?       // pose/command key currently being rendered
+    private var pendingReconfig: QueuedReconfig?  // argv file for an interpreter-only recompose
+    private var sentReconfig: QueuedReconfig?
     private var seq = 0
+
+    /// True when the warm process exists or is being launched — i.e. an
+    /// interpreter-only `reconfig` can be applied (immediately when ready, or queued
+    /// in `pendingReconfig` until SERVE_READY pumps it). Reconfigs queued before a
+    /// relaunch are dropped in `shutdown()` so they can't cross setups.
+    var canReconfigure: Bool { process != nil || launching }
+    func canReconfigure(setupToken: String) -> Bool {
+        setupToken == token && canReconfigure
+    }
     private var lineBuffer = ""
     private var firstFrameDeadline = Date.distantFuture
 
@@ -60,15 +79,39 @@ final class PreviewServer {
         relaunch(commandProvider: commandProvider)
     }
 
-    /// Request a render of this camera pose ("camX camY camZ fov roll").
-    func render(camera: String) {
-        latestCamera = camera
+    /// Request a render of this camera pose ("camX camY camZ fov roll width height").
+    /// `fast` renders with the drag-grade trace profile (bigger integrator steps) —
+    /// used while the camera is moving and for intermediate refine rungs; the
+    /// ladder-top frame always renders full quality.
+    func render(camera: String, fast: Bool = false) {
+        latestCamera = (pose: camera, fast: fast)
         pumpIfIdle()
+    }
+
+    /// Apply an interpreter-only change (exposure / look / eye) to the CURRENT view
+    /// by handing the warm process a freshly resolved argv file. The renderer reuses
+    /// its warm runtime and last camera — no relaunch, no re-warm.
+    @discardableResult
+    func reconfig(argvFile: String, setupToken: String) -> Bool {
+        guard canReconfigure(setupToken: setupToken) else {
+            removeReconfigFile(argvFile)
+            return false
+        }
+        if let pendingReconfig {
+            removeReconfigFile(pendingReconfig.argvFile)
+        }
+        pendingReconfig = QueuedReconfig(argvFile: argvFile, setupToken: setupToken)
+        pumpIfIdle()
+        return true
     }
 
     func shutdown() {
         launchGeneration += 1
         launching = false
+        // A queued interpreter recompose belongs to the OLD setup's argv; if it
+        // survived a relaunch it would fire after the new SERVE_READY and override
+        // the fresh process's config with the stale (old-source) arguments.
+        cleanupPendingReconfigs()
         if let stdinHandle {
             try? stdinHandle.write(contentsOf: Data("quit\n".utf8))
         }
@@ -160,9 +203,13 @@ final class PreviewServer {
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_FRAME") {
             loadFrame()
+            let wasReconfig = sentReconfig != nil
+            finishSentReconfig()
             sentCamera = nil // free to render the next pose
+            if wasReconfig { onReconfigApplied?() }
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_ERROR") {
+            finishSentReconfig()
             sentCamera = nil
             onStatus?(false, "Renderer error")
             pumpIfIdle()
@@ -170,20 +217,106 @@ final class PreviewServer {
     }
 
     private func pumpIfIdle() {
-        guard ready, process != nil, sentCamera == nil,
-              let camera = latestCamera, camera != sentCamera else { return }
+        guard ready, process != nil, sentCamera == nil else { return }
+        // An interpreter-only adjustment takes priority and re-renders the last view.
+        // "fast" makes the warm renderer answer at its low launch resolution with the
+        // drag-grade trace profile; onReconfigApplied then ladder-refines to sharp.
+        if let reconfig = pendingReconfig {
+            pendingReconfig = nil
+            guard reconfig.setupToken == token else {
+                removeReconfigFile(reconfig.argvFile)
+                pumpIfIdle()
+                return
+            }
+            sentReconfig = reconfig
+            sentCamera = "reconfig"
+            seq += 1
+            stdinHandle?.write(Data("reconfig \(reconfig.argvFile) \(seq) fast\n".utf8))
+            onStatus?(true, "Adjusting…")
+            return
+        }
         // Render only the newest pose; intermediate ones are skipped.
+        guard let camera = latestCamera else { return }
+        let key = camera.pose + (camera.fast ? " fast" : "")
+        guard key != sentCamera else { return }
         latestCamera = nil
-        sentCamera = camera
+        sentCamera = key
         seq += 1
-        stdinHandle?.write(Data("\(camera) \(seq)\n".utf8))
+        stdinHandle?.write(Data("\(camera.pose) \(seq)\(camera.fast ? " fast" : "")\n".utf8))
         onStatus?(true, "Rendering…")
     }
 
     private func loadFrame() {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: imageOut)),
-              let image = NSImage(data: data) else { return }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: imageOut)) else { return }
+        // The warm renderer writes raw P6 PPM (see LauncherModel.previewOutputPath),
+        // so decode the bytes directly — no PNG codec, no NSImage(data:) round-trip.
+        guard let image = Self.imageFromPPM(data) ?? NSImage(data: data) else { return }
         onFrame?(image)
         onStatus?(false, "Live")
+    }
+
+    private func cleanupPendingReconfigs() {
+        if let pendingReconfig {
+            removeReconfigFile(pendingReconfig.argvFile)
+            self.pendingReconfig = nil
+        }
+        if let sentReconfig {
+            removeReconfigFile(sentReconfig.argvFile)
+            self.sentReconfig = nil
+        }
+    }
+
+    private func finishSentReconfig() {
+        if let sentReconfig {
+            removeReconfigFile(sentReconfig.argvFile)
+            self.sentReconfig = nil
+        }
+    }
+
+    private func removeReconfigFile(_ path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    /// Decode a binary P6 PPM ("P6\n<w> <h>\n<maxval>\n<raw RGB>") into an NSImage by
+    /// wrapping the pixel bytes in a 24-bit RGB CGImage. Returns nil if the bytes are
+    /// not a P6 PPM (caller falls back to the generic image loader).
+    static func imageFromPPM(_ data: Data) -> NSImage? {
+        let bytes = [UInt8](data)
+        guard bytes.count > 2, bytes[0] == 0x50, bytes[1] == 0x36 else { return nil } // "P6"
+
+        // Parse three ASCII integers (width, height, maxval) separated by whitespace,
+        // skipping any `#` comment lines, then a single whitespace byte before pixels.
+        var i = 2
+        func isSpace(_ b: UInt8) -> Bool { b == 0x20 || b == 0x09 || b == 0x0a || b == 0x0d }
+        func nextInt() -> Int? {
+            while i < bytes.count {
+                if isSpace(bytes[i]) { i += 1; continue }
+                if bytes[i] == 0x23 { while i < bytes.count && bytes[i] != 0x0a { i += 1 }; continue } // comment
+                break
+            }
+            var value = 0, digits = 0
+            while i < bytes.count, bytes[i] >= 0x30, bytes[i] <= 0x39 {
+                value = value * 10 + Int(bytes[i] - 0x30); digits += 1; i += 1
+            }
+            return digits > 0 ? value : nil
+        }
+        guard let width = nextInt(), let height = nextInt(), let maxval = nextInt(),
+              maxval == 255, width > 0, height > 0 else { return nil }
+        i += 1 // single whitespace byte after maxval, before the pixel block
+
+        let pixelCount = width * height * 3
+        guard bytes.count - i >= pixelCount else { return nil }
+        let pixels = data.subdata(in: i ..< (i + pixelCount))
+
+        guard let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        guard let cg = CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 24, bytesPerRow: width * 3,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: width, height: height))
     }
 }

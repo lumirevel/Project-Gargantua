@@ -12,6 +12,12 @@ struct ResolvedRenderConfig {
     var imageOutPath: String = ""
     var composeGPU: Bool = false
     var gpuFullCompose: Bool = false
+    // Set by the warm `--serve` preview loop. Forces full-frame compose so the
+    // legacy tile-first paths (perlin / physicsMode 1) don't take the tiled compose
+    // route, which corrupts or GPU-hangs when a warm runtime renders at a resolution
+    // other than its launch size (the refine ladder). Preview resolutions are tiny,
+    // so full-frame always fits and matches the proven-clean one-shot render path.
+    var serveFullFrameCompose: Bool = false
     var discardCollisionOutput: Bool = false
     var linear32IntermediateRequested: Bool = false
     var useLinear32Intermediate: Bool = false
@@ -243,6 +249,10 @@ struct ResolvedRenderConfig {
     var motionBlurSamplesArg: Int = 1
     var motionBlurTimeLapseArg: Double = 1.0
     var shutterFlowTimeSpan: Double = 0.0
+    // Sub-pixel-jitter temporal anti-aliasing. 1 = off (single centered ray,
+    // byte-identical to legacy). N>1 traces N jittered passes and averages the
+    // linear HDR radiance before tone mapping. Requires the HDR intermediate path.
+    var taaSamplesArg: Int = 1
     var eyePhotometricEnabled: Bool = false
     var eyeNDArg: Double = -1.0
     var eyeAdaptationArg: Double = -1.0

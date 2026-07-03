@@ -20,6 +20,9 @@ final class LauncherModel: ObservableObject {
     @Published var customWidth = 1536
     @Published var customHeight = 864
     @Published var ssaa: RenderSampling = .one
+    // Sub-pixel-jitter temporal AA for the final render only (1 = off). The live
+    // preview always renders single-sample, so this never slows the warm preview.
+    @Published var taaSamples: Int = 1
     @Published var noBuild = true
     @Published var showAdvancedPhysics = false
     @Published var rayBundleMode: RayBundleMode = .off
@@ -36,8 +39,21 @@ final class LauncherModel: ObservableObject {
     @Published var isPreviewInteracting = false
     @Published var previewStatus = "Drag to orbit · scroll to zoom"
     @Published var previewPixelSize = ""
-    let previewOutputPath = "/private/tmp/gargantua_gui_preview.png"
-    private let previewCmdFile = "/private/tmp/gargantua_gui_serve_cmd.txt"
+    // Aspect ratio (w/h) of the on-screen preview viewport. The preview renders to
+    // THIS shape so it fills the whole viewport edge-to-edge; the final-output
+    // aspect is drawn as a white frame overlay rather than by letterboxing the
+    // render. Reported by the viewport on resize.
+    @Published var previewViewportAspect: Double = 16.0 / 9.0
+    // Raw P6 PPM, not PNG: the warm renderer writes each preview frame straight to
+    // disk as header + raw RGB bytes (RenderOutputs.writeImage short-circuits the
+    // `.ppm` extension), avoiding the per-frame `python3 ppm_to_png.py` / `sips`
+    // subprocess that otherwise dominated preview latency. The GUI decodes the raw
+    // bytes directly (PreviewServer.loadFrame) instead of PNG-decoding.
+    let previewOutputPath = "/private/tmp/gargantua_gui_preview.ppm"
+    private let previewServeCmdPrefix = "/private/tmp/gargantua_gui_serve_cmd_"
+    private let previewReconfigCmdPrefix = "/private/tmp/gargantua_gui_reconfig_cmd_"
+    private var previewActiveSetupToken = ""
+    private var previewReconfigGeneration = 0
 
     // Progressive refine ladder. After the camera settles the preview climbs a
     // few increasing resolutions (rough -> sharp) instead of jumping straight to
@@ -79,7 +95,12 @@ final class LauncherModel: ObservableObject {
     @Published var eyeAdaptation = 2000.0
 
     // MARK: Output / execution
-    @Published var diskHDF5Path = "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
+    // Persistent in-repo location (gitignored data/), so the GRMHD snapshot survives
+    // reboots / tmp cleanups instead of vanishing from /private/tmp.
+    static var defaultGrmhdSnapshotPath: String {
+        ProjectPaths.repositoryRoot.appendingPathComponent("data/grmhd/SANE_a0_torus.out0.05010.h5").path
+    }
+    @Published var diskHDF5Path = LauncherModel.defaultGrmhdSnapshotPath
     @Published var outputPath = "/private/tmp/gargantua_gui_render.png"
     @Published var logText = "Ready."
     @Published var progressFraction = 0.0
@@ -105,6 +126,12 @@ final class LauncherModel: ObservableObject {
         previewServer.onStatus = { [weak self] rendering, status in
             self?.isPreviewRendering = rendering
             self?.previewStatus = status
+        }
+        // A reconfig answers instantly at the fast (drag-grade) resolution/profile;
+        // climb the resolution ladder right after so the adjusted view sharpens to
+        // the exact final-render integrator.
+        previewServer.onReconfigApplied = { [weak self] in
+            self?.refinePreview()
         }
     }
 
@@ -153,12 +180,12 @@ final class LauncherModel: ObservableObject {
 
     func previewCameraDidCommit() { objectWillChange.send() }
 
-    /// Stream the current pose to the warm renderer at the fast (low) resolution —
-    /// called continuously while the camera is being dragged (renders coalesce).
-    /// A live camera move abandons any in-progress refine climb.
+    /// Stream the current pose to the warm renderer at the fast (low) resolution
+    /// and the fast trace profile — called continuously while the camera is being
+    /// dragged (renders coalesce). A live camera move abandons any refine climb.
     func streamPreviewCamera() {
         ladderActive = false
-        sendPreview(width: previewQuality.fastWidth)
+        sendPreview(width: previewQuality.fastWidth, fast: true)
     }
 
     /// Render the current pose progressively — used when the camera settles, on a
@@ -167,17 +194,63 @@ final class LauncherModel: ObservableObject {
     /// frame arrives.
     func requestPreviewRender() { refinePreview() }
     func renderPreviewNow() { refinePreview() }
+
+    /// Apply a camera/eye interpreter change (exposure, look, optics, eye) to the
+    /// current preview WITHOUT a relaunch: resolve the new argv off the main actor
+    /// (~0.1 s), then hand it to the warm process for a recompose. Falls back to a
+    /// full render when the warm process isn't up yet (e.g. first frame).
+    func requestPreviewReconfig() {
+        guard autoPreview, !isRunning else { return }
+        let setupToken = previewSetupToken
+        guard previewServer.canReconfigure(setupToken: setupToken) else {
+            requestPreviewRender()
+            return
+        }
+        previewReconfigGeneration += 1
+        let generation = previewReconfigGeneration
+        let cmdFile = makePreviewReconfigCmdFile()
+        let invocation = previewPipelineInvocation(cmdFile: cmdFile)
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let argv = LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile),
+                  argv.count >= 2 else {
+                try? FileManager.default.removeItem(atPath: cmdFile)
+                return
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      !self.isRunning,
+                      generation == self.previewReconfigGeneration,
+                      setupToken == self.previewSetupToken,
+                      self.previewServer.reconfig(argvFile: cmdFile, setupToken: setupToken) else {
+                    try? FileManager.default.removeItem(atPath: cmdFile)
+                    return
+                }
+            }
+        }
+    }
+
+    private func makePreviewReconfigCmdFile() -> String {
+        previewReconfigCmdPrefix + UUID().uuidString + ".txt"
+    }
+
+    private func makePreviewServeCmdFile() -> String {
+        previewServeCmdPrefix + UUID().uuidString + ".txt"
+    }
+
     func refinePreview() {
         refineLadderWidths = previewQuality.refineLadder
         guard let first = refineLadderWidths.first else {
             ladderActive = false
-            sendPreview(width: previewQuality.refineWidth)
+            sendPreview(width: previewQuality.refineWidth, fast: false)
             return
         }
         ladderStep = 0
         ladderActive = true
         ladderPendingWidth = previewSize(width: first).width
-        sendPreview(width: first)
+        // Intermediate rungs use the fast trace profile (they exist to show
+        // something sharper quickly); only the ladder-top frame renders with the
+        // exact final-render integrator.
+        sendPreview(width: first, fast: refineLadderWidths.count > 1)
     }
 
     /// Called for every frame the warm renderer delivers. When a refine climb is
@@ -193,7 +266,7 @@ final class LauncherModel: ObservableObject {
         }
         let next = refineLadderWidths[ladderStep]
         ladderPendingWidth = previewSize(width: next).width
-        sendPreview(width: next)
+        sendPreview(width: next, fast: ladderStep < refineLadderWidths.count - 1)
     }
 
     /// Pixel width of a decoded preview frame (used to identify its ladder rung).
@@ -203,39 +276,62 @@ final class LauncherModel: ObservableObject {
     }
 
     /// (Re)configure the warm serve process for the current setup and send the
-    /// current camera pose at the given resolution.
-    private func sendPreview(width baseWidth: Int) {
+    /// current camera pose at the given resolution. `fast` selects the drag-grade
+    /// trace profile (bigger integrator steps, ~3x quicker frames).
+    private func sendPreview(width baseWidth: Int, fast: Bool = false) {
         guard autoPreview, !isRunning else { return }
         let size = previewSize(width: baseWidth)
         previewPixelSize = "\(size.width)x\(size.height)"
-        let invocation = previewPipelineInvocation()
-        let cmdFile = previewCmdFile
-        previewServer.configure(token: previewSetupToken, imageOut: previewOutputPath) {
-            LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
+        let setupToken = previewSetupToken
+        if setupToken != previewActiveSetupToken {
+            previewActiveSetupToken = setupToken
+            previewReconfigGeneration += 1
+        }
+        let cmdFile = makePreviewServeCmdFile()
+        let invocation = previewPipelineInvocation(cmdFile: cmdFile)
+        previewServer.configure(token: setupToken, imageOut: previewOutputPath) {
+            let command = LauncherModel.fetchServeCommand(invocation: invocation, cmdFile: cmdFile)
+            try? FileManager.default.removeItem(atPath: cmdFile)
+            return command
         }
         let eye = camera.state.eye
         let roll = Double(camera.state.roll) * 180.0 / .pi
         let line = "\(Double(eye.x)) \(Double(eye.y)) \(Double(eye.z)) \(Double(camera.state.fov)) \(roll) \(size.width) \(size.height)"
-        previewServer.render(camera: line)
+        previewServer.render(camera: line, fast: fast)
     }
 
-    /// Everything except the camera pose + resolution. When this changes the warm
-    /// serve process must relaunch (new disk atlas / pipelines / exposure setup).
-    private var previewSetupToken: String {
+    /// Geometry/source setup. When THIS changes the warm serve must relaunch (new
+    /// disk atlas / trace). Camera-interpreter options are deliberately excluded —
+    /// they flow through `reconfig` (no relaunch), see `previewInterpreterToken`.
+    var previewSetupToken: String {
         [
             selectedSourceID, String(describing: blackHoleMetric), String(spin),
             String(describing: observerMode), renderIntentID,
+            diskHDF5Path, "\(outputSize.width)x\(outputSize.height)"
+        ].joined(separator: "|")
+    }
+
+    /// Camera/eye interpreter options (exposure, look, optics, eye). Changing any of
+    /// these re-renders the current view via `reconfig` — the warm runtime is reused
+    /// and only the compose stage changes, so it adjusts like a Lightroom edit.
+    var previewInterpreterToken: String {
+        [
             String(describing: exposureProgram), String(exposureEV),
             String(fNumber), String(iso), shutter,
-            String(enableColorGrade), String(enableCinematicEffects), String(enableDepthOfField),
+            String(enableColorGrade), String(allowExperimentalCinematicControls),
+            String(enableCinematicEffects), String(enableDepthOfField),
+            String(flareStrength), String(diffractionStrength), String(focusDepth),
+            String(motionBlurSamples), String(motionBlurTimeLapse),
+            String(describing: cameraPhotonNoise), String(cameraPhotonScale),
+            String(psfSigma), String(readNoise), String(shotNoise),
             String(describing: eyePhotometric), String(useEyeND), String(eyeND),
-            diskHDF5Path, "\(outputSize.width)x\(outputSize.height)"
+            String(useEyeAdaptation), String(eyeAdaptation)
         ].joined(separator: "|")
     }
 
     /// The run_pipeline.sh + BH_PRINT_CMD invocation that yields the translated
     /// binary argv for the current setup (built on the main actor; run off it).
-    private func previewPipelineInvocation() -> PreviewPipelineInvocation {
+    private func previewPipelineInvocation(cmdFile: String) -> PreviewPipelineInvocation {
         let binaryExists = FileManager.default.isExecutableFile(atPath: Self.blackholeBinaryPath)
         let inputs = commandInputs(noBuild: binaryExists)
         let launch = previewSize(width: previewQuality.fastWidth)
@@ -247,7 +343,7 @@ final class LauncherModel: ObservableObject {
             collisionsOut: "/private/tmp/gargantua_gui_serve_collisions.bin",
             etaHistory: nil
         )
-        env["BH_PRINT_CMD"] = previewCmdFile
+        env["BH_PRINT_CMD"] = cmdFile
         return PreviewPipelineInvocation(
             executable: "/bin/bash",
             arguments: [plan.executablePath] + plan.arguments,
@@ -279,10 +375,23 @@ final class LauncherModel: ObservableObject {
     }
 
     private func previewSize(width baseWidth: Int) -> (width: Int, height: Int) {
-        let out = outputSize
+        // Render at the VIEWPORT's aspect so the preview fills the window; the
+        // final-output aspect is shown as a white overlay, not by cropping.
+        let aspect = (previewViewportAspect.isFinite && previewViewportAspect > 0.05) ? previewViewportAspect : (16.0 / 9.0)
         let w = max(16, baseWidth)
-        let h = max(16, Int((Double(w) * Double(out.height) / Double(max(out.width, 1))).rounded()))
+        let h = max(16, Int((Double(w) / aspect).rounded()))
         return (w - (w % 2), h - (h % 2))
+    }
+
+    /// The preview viewport reports its on-screen aspect (w/h) here. When it changes
+    /// meaningfully, re-render so the preview keeps filling the resized window. This
+    /// only changes frame dimensions (handled per-frame by the warm serve), so it
+    /// does NOT relaunch the renderer.
+    func updatePreviewViewportAspect(_ aspect: Double) {
+        guard aspect.isFinite, aspect > 0.05, aspect < 20 else { return }
+        guard abs(aspect - previewViewportAspect) > 0.02 else { return }
+        previewViewportAspect = aspect
+        refinePreview()
     }
 
     // MARK: - Final render
@@ -290,6 +399,7 @@ final class LauncherModel: ObservableObject {
     func runRender() {
         guard !isRunning else { return }
         ladderActive = false
+        previewReconfigGeneration += 1
         previewServer.shutdown() // free the GPU for the full-resolution render
         let plan = commandPlan
         isRunning = true
@@ -407,7 +517,8 @@ final class LauncherModel: ObservableObject {
             useEyeAdaptation: useEyeAdaptation,
             eyeAdaptation: eyeAdaptation,
             diskHDF5Path: diskHDF5Path,
-            outputPath: outputPath
+            outputPath: outputPath,
+            taaSamples: taaSamples
         )
     }
 

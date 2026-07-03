@@ -3612,7 +3612,16 @@ static inline bool trace_single_ray(constant Params& P,
                                     texture3d<float, access::sample> diskVol1Tex,
                                     thread CollisionInfo& info)
 {
-    float3 dir = normalize(x * P.planeX + y * P.planeY - P.d * P.z);
+    // Sub-pixel-jitter TAA: motionBlurParams.zw carry a per-pass camera jitter
+    // in pixel units. They default to (0,0) (set in ParamsBuilderPacking), so an
+    // unjittered render is byte-for-byte identical and every pixel-invariance /
+    // raw-purity gate stays green. When temporal AA is active the host varies the
+    // jitter across passes (Halton 2,3) and averages linear radiance, which is an
+    // observation-pipeline sampling choice only -- the per-ray geodesic physics,
+    // hit logic, and transfer are untouched.
+    float jx = P.motionBlurParams.z;
+    float jy = P.motionBlurParams.w;
+    float3 dir = normalize((x + jx) * P.planeX + (y + jy) * P.planeY - P.d * P.z);
 
     init_collision_info(info);
     info.direct_world = float4(-normalize(dir), 0.0);

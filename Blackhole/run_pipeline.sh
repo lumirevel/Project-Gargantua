@@ -1124,16 +1124,19 @@ apply_science_regime_defaults() {
           SWIFT_ARGS+=(--metric "kerr")
         fi
         if [[ -z "$DISK_HDF5_PATH" ]]; then
-          LEGACY_BH_FINISH_GRMHD_SNAPSHOT="/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
+          # Prefer the persistent in-repo copy (survives reboots); fall back to the
+          # historical volatile /tmp locations for older setups.
+          LEGACY_BH_FINISH_GRMHD_SNAPSHOT="$ROOT_DIR/data/grmhd/SANE_a0_torus.out0.05010.h5"
           if [[ -f "$LEGACY_BH_FINISH_GRMHD_SNAPSHOT" ]]; then
             DISK_HDF5_PATH="$LEGACY_BH_FINISH_GRMHD_SNAPSHOT"
+          elif [[ -f "/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" ]]; then
+            DISK_HDF5_PATH="/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
           elif [[ -f "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" ]]; then
             DISK_HDF5_PATH="/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5"
           else
             echo "error: legacy-bh-finish-grmhd requires the Illinois SANE a0 dump 05010 HDF5 snapshot." >&2
             echo "       expected: $LEGACY_BH_FINISH_GRMHD_SNAPSHOT" >&2
-            echo "       fallback: /private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5" >&2
-            echo "       fetch with: Blackhole/scripts/fetch_illinois_grmhd_snapshot.py --flux SANE --spin 0 --dump 05010 --out-dir /tmp/bh_real_grmhd_sequence" >&2
+            echo "       fetch with: Blackhole/scripts/fetch_illinois_grmhd_snapshot.py --flux SANE --spin 0 --dump 05010 --out-dir \"$ROOT_DIR/data/grmhd\"" >&2
             exit 2
           fi
         fi
@@ -1546,6 +1549,12 @@ Camera / interpreter options:
       Simulation-seconds per camera-second (default 1.0 = physical).
       Values > 1 compress disk evolution into the exposure; label such
       output as time-lapse, not a physical photograph.
+  --taa-samples <n>
+      Sub-pixel-jitter temporal anti-aliasing (1 = off, max 64). Traces n
+      passes, each offset by a deterministic Halton(2,3) sub-pixel camera
+      jitter, and averages the linear HDR radiance before a single tone-map.
+      This is a camera-sampling/anti-aliasing choice only; per-ray geodesic
+      physics is unchanged. N>1 auto-selects the --hdr-intermediate path.
   --eye-photometric {auto|on|off}
       Physically anchored human-eye observer for --presentation eye.
       The disk photosphere is at solar-surface-order luminance, so the
@@ -2778,6 +2787,21 @@ while [[ "$#" -gt 0 ]]; do
     --hdr-intermediate|--linear32-intermediate)
       HDR_INTERMEDIATE_REQUESTED=1
       continue
+      ;;
+    --taa-samples)
+      need_value "$arg" "$@"
+      val="$1"
+      shift
+      if ! [[ "$val" =~ ^[0-9]+$ ]] || [[ "$val" -lt 1 ]]; then
+        echo "error: --taa-samples must be a positive integer (1 = off)" >&2
+        exit 2
+      fi
+      # Temporal AA averages linear HDR across jittered passes, so it needs the
+      # HDR intermediate compose path. Force it on for N>1.
+      if [[ "$val" -gt 1 ]]; then
+        HDR_INTERMEDIATE_REQUESTED=1
+      fi
+      SWIFT_ARGS+=("$arg" "$val")
       ;;
     --temp-collisions)
       echo "warn: --temp-collisions is deprecated and ignored; the runtime now manages temporary intermediates automatically." >&2

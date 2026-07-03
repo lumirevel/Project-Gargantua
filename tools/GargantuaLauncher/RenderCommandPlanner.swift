@@ -49,6 +49,7 @@ struct RenderCommandInputs {
     let eyeAdaptation: Double
     let diskHDF5Path: String
     let outputPath: String
+    let taaSamples: Int
 }
 
 struct RenderProgressEstimate {
@@ -97,7 +98,8 @@ enum RenderCommandPlanner {
             height: size.height,
             ssaa: inputs.ssaa,
             quality: inputs.quality,
-            includeRawSidecars: true
+            includeRawSidecars: true,
+            temporalAASamples: inputs.taaSamples
         )
     }
 
@@ -111,7 +113,8 @@ enum RenderCommandPlanner {
             height: max(16, height),
             ssaa: .one,
             quality: .preview,
-            includeRawSidecars: false
+            includeRawSidecars: false,
+            temporalAASamples: 1
         )
     }
 
@@ -122,7 +125,8 @@ enum RenderCommandPlanner {
         height: Int,
         ssaa: RenderSampling,
         quality: RenderQuality,
-        includeRawSidecars: Bool
+        includeRawSidecars: Bool,
+        temporalAASamples: Int
     ) -> RenderCommandPlan {
         var args: [String] = []
         args.append(contentsOf: inputs.source.args)
@@ -133,6 +137,14 @@ enum RenderCommandPlanner {
 
         args.append(contentsOf: ["--width", "\(width)", "--height", "\(height)"])
         args.append(contentsOf: ["--ssaa", ssaa.rawValue])
+
+        // Sub-pixel-jitter temporal AA. Only the final render requests N>1; the
+        // live preview always passes 1 (see `previewPlan`) so it stays fast.
+        // Skipped for the scientific raw-like intent, whose pixels must stay an
+        // unfiltered single-sample readout.
+        if temporalAASamples > 1 && inputs.renderIntentID != "raw-like" {
+            args.append(contentsOf: ["--taa-samples", "\(temporalAASamples)"])
+        }
 
         switch inputs.blackHoleMetric {
         case .schwarzschild:
@@ -219,7 +231,11 @@ enum RenderCommandPlanner {
         if !explicit.isEmpty {
             return explicit
         }
-        return inputs.source.defaultDiskHDF5 ?? ""
+        // A relative default (e.g. "data/grmhd/...") resolves against the repo root so
+        // the snapshot lives in the persistent in-repo data dir, not volatile /tmp.
+        let def = inputs.source.defaultDiskHDF5 ?? ""
+        if def.isEmpty || def.hasPrefix("/") { return def }
+        return ProjectPaths.repositoryRoot.appendingPathComponent(def).path
     }
 
     private static func appendRayBundleArguments(_ inputs: RenderCommandInputs, to args: inout [String]) {

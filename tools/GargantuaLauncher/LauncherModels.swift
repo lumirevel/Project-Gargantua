@@ -92,7 +92,7 @@ struct LauncherOptionsManifest: Codable {
                 status: "legacy",
                 summary: "Recovered bh_finish_cinema_1536.png family.",
                 requiresDiskHDF5: true,
-                defaultDiskHDF5: "/private/tmp/bh_real_grmhd_sequence/SANE_a0_torus.out0.05010.h5",
+                defaultDiskHDF5: "data/grmhd/SANE_a0_torus.out0.05010.h5",
                 args: ["--science-regime", "legacy-bh-finish-grmhd"]
             ),
             SourceModelOption(

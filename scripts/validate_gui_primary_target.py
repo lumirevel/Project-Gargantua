@@ -50,14 +50,16 @@ def main() -> None:
         and 'productType = "com.apple.product-type.tool";' in text,
         "render_uses_absolute_pipeline_path": "ProjectPaths.runPipelineURL.path" in launcher_text,
         "render_cwd_is_repository_root": "process.currentDirectoryURL = plan.repositoryRoot" in launcher_text,
-        "render_exports_project_root": 'environment["BH_PROJECT_ROOT"] = plan.repositoryRoot.path' in launcher_text,
+        "render_exports_project_root": 'environment["BH_PROJECT_ROOT"] = root' in launcher_text
+        and "processEnvironment(root: plan.repositoryRoot.path" in launcher_text,
         "render_has_gui_path_fallback": 'environment["PATH"] = guiPath' in launcher_text
         and "/Applications/Xcode.app/Contents/Developer/usr/bin" in launcher_text,
         "render_process_is_retained": "private var runningProcess: Process?" in launcher_text
         and "runningProcess = process" in launcher_text
         and ("self?.runningProcess = nil" in launcher_text or "runningProcess = nil" in launcher_text),
         "render_can_be_stopped": "func stopRender()" in launcher_text
-        and ('Button("Stop")' in launcher_text or 'Label("Stop"' in launcher_text),
+        and "model.stopRender()" in launcher_text
+        and 'help("Stop render")' in launcher_text,
         "fallback_includes_restored_legacy_models": "legacy-perlin-classic" in launcher_text
         and "legacy-perlin-ec7" in launcher_text
         and "perlin-classic" in launcher_text

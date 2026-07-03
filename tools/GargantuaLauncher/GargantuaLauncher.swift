@@ -69,32 +69,18 @@ struct GargantuaLauncherView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1060, minHeight: 600)
         .onAppear { model.requestPreviewRender() }
-        .onChange(of: previewTriggerKey) { model.requestPreviewRender() }
+        // Geometry/source/quality changes re-render (and relaunch the warm process
+        // when the setup token changes).
+        .onChange(of: setupTriggerKey) { model.requestPreviewRender() }
+        // Camera/eye interpreter changes (exposure, look, optics, eye) recompose the
+        // current view through the warm process — no relaunch, Lightroom-style.
+        .onChange(of: model.previewInterpreterToken) { model.requestPreviewReconfig() }
     }
 
-    /// Every option that changes the rendered image, folded into one value so a
-    /// single onChange schedules a preview re-render without a huge modifier chain.
-    private var previewTriggerKey: String {
-        [
-            String(describing: model.blackHoleMetric),
-            String(model.spin),
-            model.selectedSourceID,
-            String(describing: model.observerMode),
-            model.renderIntentID,
-            String(describing: model.previewQuality),
-            String(describing: model.exposureProgram),
-            String(model.exposureEV),
-            String(model.fNumber),
-            String(model.iso),
-            model.shutter,
-            String(model.enableColorGrade),
-            String(model.enableCinematicEffects),
-            String(model.enableDepthOfField),
-            String(describing: model.eyePhotometric),
-            String(model.useEyeND),
-            String(model.eyeND),
-            model.diskHDF5Path
-        ].joined(separator: "|")
+    /// Setup that forces a re-render / relaunch: metric, source, observer, intent,
+    /// resolution, disk data, and the preview quality ladder.
+    private var setupTriggerKey: String {
+        model.previewSetupToken + "|" + String(describing: model.previewQuality)
     }
 
     private var sourceSidebar: some View {
@@ -256,12 +242,14 @@ private struct ObserverPanel: View {
                 .pickerStyle(.segmented)
 
                 if model.isCameraMode {
+                    // Menu (not segmented): the intent titles are long and get
+                    // clipped as segments in the narrow controls column.
                     Picker("Camera output", selection: $model.renderIntentID) {
                         ForEach(model.renderIntents) { intent in
                             Text(intent.title).tag(intent.id)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     Text(model.selectedIntent.summary)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -334,12 +322,14 @@ private struct CameraInterpreterPanel: View {
 
     private var cameraExposure: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Menu (not segmented): five long titles get clipped as segments in the
+            // narrow controls column.
             Picker("Exposure mode", selection: $model.exposureProgram) {
                 ForEach(CameraExposureProgram.allCases) { program in
                     Text(program.title).tag(program)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             Text(model.exposureProgram.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -545,6 +535,19 @@ private struct RenderSetupPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Temporal AA (sub-pixel jitter)", selection: $model.taaSamples) {
+                        Text("Off").tag(1)
+                        Text("4×").tag(4)
+                        Text("8×").tag(8)
+                        Text("16×").tag(16)
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Final render only — averages N Halton-jittered passes in linear HDR for smoother edges. Camera-sampling only; physics unchanged. Ignored for the raw-like intent and the live preview.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Toggle("Skip build", isOn: $model.noBuild)
                 TextField("Output path", text: $model.outputPath)

@@ -38,3 +38,6 @@ __pycache__/
 /tune_ref/
 /tests/baseline/reports/verify_runs/
 /tests/baseline/reports/*verify_report.json
+
+# Large local datasets (GRMHD HDF5 snapshots, etc.) — persistent but not committed
+/data/
