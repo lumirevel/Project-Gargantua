@@ -127,6 +127,12 @@ final class LauncherModel: ObservableObject {
             self?.isPreviewRendering = rendering
             self?.previewStatus = status
         }
+        // A reconfig answers instantly at the fast (drag-grade) resolution/profile;
+        // climb the resolution ladder right after so the adjusted view sharpens to
+        // the exact final-render integrator.
+        previewServer.onReconfigApplied = { [weak self] in
+            self?.refinePreview()
+        }
     }
 
     var selectedSource: SourceModelOption {
@@ -174,12 +180,12 @@ final class LauncherModel: ObservableObject {
 
     func previewCameraDidCommit() { objectWillChange.send() }
 
-    /// Stream the current pose to the warm renderer at the fast (low) resolution —
-    /// called continuously while the camera is being dragged (renders coalesce).
-    /// A live camera move abandons any in-progress refine climb.
+    /// Stream the current pose to the warm renderer at the fast (low) resolution
+    /// and the fast trace profile — called continuously while the camera is being
+    /// dragged (renders coalesce). A live camera move abandons any refine climb.
     func streamPreviewCamera() {
         ladderActive = false
-        sendPreview(width: previewQuality.fastWidth)
+        sendPreview(width: previewQuality.fastWidth, fast: true)
     }
 
     /// Render the current pose progressively — used when the camera settles, on a
@@ -235,13 +241,16 @@ final class LauncherModel: ObservableObject {
         refineLadderWidths = previewQuality.refineLadder
         guard let first = refineLadderWidths.first else {
             ladderActive = false
-            sendPreview(width: previewQuality.refineWidth)
+            sendPreview(width: previewQuality.refineWidth, fast: false)
             return
         }
         ladderStep = 0
         ladderActive = true
         ladderPendingWidth = previewSize(width: first).width
-        sendPreview(width: first)
+        // Intermediate rungs use the fast trace profile (they exist to show
+        // something sharper quickly); only the ladder-top frame renders with the
+        // exact final-render integrator.
+        sendPreview(width: first, fast: refineLadderWidths.count > 1)
     }
 
     /// Called for every frame the warm renderer delivers. When a refine climb is
@@ -257,7 +266,7 @@ final class LauncherModel: ObservableObject {
         }
         let next = refineLadderWidths[ladderStep]
         ladderPendingWidth = previewSize(width: next).width
-        sendPreview(width: next)
+        sendPreview(width: next, fast: ladderStep < refineLadderWidths.count - 1)
     }
 
     /// Pixel width of a decoded preview frame (used to identify its ladder rung).
@@ -267,8 +276,9 @@ final class LauncherModel: ObservableObject {
     }
 
     /// (Re)configure the warm serve process for the current setup and send the
-    /// current camera pose at the given resolution.
-    private func sendPreview(width baseWidth: Int) {
+    /// current camera pose at the given resolution. `fast` selects the drag-grade
+    /// trace profile (bigger integrator steps, ~3x quicker frames).
+    private func sendPreview(width baseWidth: Int, fast: Bool = false) {
         guard autoPreview, !isRunning else { return }
         let size = previewSize(width: baseWidth)
         previewPixelSize = "\(size.width)x\(size.height)"
@@ -287,7 +297,7 @@ final class LauncherModel: ObservableObject {
         let eye = camera.state.eye
         let roll = Double(camera.state.roll) * 180.0 / .pi
         let line = "\(Double(eye.x)) \(Double(eye.y)) \(Double(eye.z)) \(Double(camera.state.fov)) \(roll) \(size.width) \(size.height)"
-        previewServer.render(camera: line)
+        previewServer.render(camera: line, fast: fast)
     }
 
     /// Geometry/source setup. When THIS changes the warm serve must relaunch (new

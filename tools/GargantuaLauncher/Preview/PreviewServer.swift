@@ -29,6 +29,9 @@ final class PreviewServer {
     var onFrame: ((NSImage) -> Void)?
     /// Called with short status strings for the HUD.
     var onStatus: ((Bool, String) -> Void)?
+    /// Called after a reconfig's frame has been delivered — the model uses it to
+    /// ladder-refine the (deliberately low-res, fast-profile) adjusted view.
+    var onReconfigApplied: (() -> Void)?
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -38,8 +41,8 @@ final class PreviewServer {
     private var launching = false
     private var launchGeneration = 0
 
-    private var latestCamera: String?     // most recent requested pose
-    private var sentCamera: String?       // pose/command currently being rendered
+    private var latestCamera: (pose: String, fast: Bool)?  // most recent requested pose
+    private var sentCamera: String?       // pose/command key currently being rendered
     private var pendingReconfig: QueuedReconfig?  // argv file for an interpreter-only recompose
     private var sentReconfig: QueuedReconfig?
     private var seq = 0
@@ -76,9 +79,12 @@ final class PreviewServer {
         relaunch(commandProvider: commandProvider)
     }
 
-    /// Request a render of this camera pose ("camX camY camZ fov roll").
-    func render(camera: String) {
-        latestCamera = camera
+    /// Request a render of this camera pose ("camX camY camZ fov roll width height").
+    /// `fast` renders with the drag-grade trace profile (bigger integrator steps) —
+    /// used while the camera is moving and for intermediate refine rungs; the
+    /// ladder-top frame always renders full quality.
+    func render(camera: String, fast: Bool = false) {
+        latestCamera = (pose: camera, fast: fast)
         pumpIfIdle()
     }
 
@@ -197,8 +203,10 @@ final class PreviewServer {
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_FRAME") {
             loadFrame()
+            let wasReconfig = sentReconfig != nil
             finishSentReconfig()
             sentCamera = nil // free to render the next pose
+            if wasReconfig { onReconfigApplied?() }
             pumpIfIdle()
         } else if line.hasPrefix("SERVE_ERROR") {
             finishSentReconfig()
@@ -211,6 +219,8 @@ final class PreviewServer {
     private func pumpIfIdle() {
         guard ready, process != nil, sentCamera == nil else { return }
         // An interpreter-only adjustment takes priority and re-renders the last view.
+        // "fast" makes the warm renderer answer at its low launch resolution with the
+        // drag-grade trace profile; onReconfigApplied then ladder-refines to sharp.
         if let reconfig = pendingReconfig {
             pendingReconfig = nil
             guard reconfig.setupToken == token else {
@@ -221,16 +231,18 @@ final class PreviewServer {
             sentReconfig = reconfig
             sentCamera = "reconfig"
             seq += 1
-            stdinHandle?.write(Data("reconfig \(reconfig.argvFile) \(seq)\n".utf8))
+            stdinHandle?.write(Data("reconfig \(reconfig.argvFile) \(seq) fast\n".utf8))
             onStatus?(true, "Adjusting…")
             return
         }
         // Render only the newest pose; intermediate ones are skipped.
-        guard let camera = latestCamera, camera != sentCamera else { return }
+        guard let camera = latestCamera else { return }
+        let key = camera.pose + (camera.fast ? " fast" : "")
+        guard key != sentCamera else { return }
         latestCamera = nil
-        sentCamera = camera
+        sentCamera = key
         seq += 1
-        stdinHandle?.write(Data("\(camera) \(seq)\n".utf8))
+        stdinHandle?.write(Data("\(camera.pose) \(seq)\(camera.fast ? " fast" : "")\n".utf8))
         onStatus?(true, "Rendering…")
     }
 
