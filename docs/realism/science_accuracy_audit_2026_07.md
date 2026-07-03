@@ -55,11 +55,38 @@ baseline. The one-shot (non-serve) render path is untouched by the preview work.
 - Legacy tile-first source: no tearing across ladder resolutions, ladder-top
   full frames repeatable byte-identical.
 
+## Performance verification (same tip, same isolated build)
+
+Interactive-preview latency re-measured over the serve protocol with the audit
+build (`/tmp/BlackholeDD_science`), thin-disk perlin, kerr spin 0.6, cinema
+presentation — the same scenario as the pre-improvement baseline:
+
+| Path | Full-only (previous behavior) | With fast profile | Gain |
+|------|------------------------------:|------------------:|-----:|
+| Drag frame, 144x90 (GUI fast size) | 348 ms (2.9 fps) | **98 ms (10.2 fps)** | 3.6x |
+| Refine rung, 240x150 | 960 ms (1.0 fps) | **233 ms (4.3 fps)** | 4.1x |
+| Interpreter edit apply (reconfig) | up to ~3.5 s (settled-res re-render) | **101 ms** + auto ladder | ~35x |
+| Ladder-top frame, 480x300 | 3469 ms | 3469 ms (unchanged by design) | 1x |
+| Warm relaunch (spawn -> SERVE_READY) | — | 86 ms | |
+
+The ladder-top and every file-producing render deliberately keep the exact
+final-render integrator — the speedups live only in opt-in drag/rung/reconfig
+frames, which is exactly what the scientific gates above require.
+
+Remaining headroom (not regressions; candidate future work):
+- Ladder-top full frame (~3.5 s at 480x300) is the longest remaining wait; a
+  progressive tile present or a lower default ladder cap would hide it.
+- First serve launch after a renderer rebuild pays a one-time ~2 s Metal
+  pipeline JIT before the OS shader cache warms (subsequent launches ~90 ms).
+- run_pipeline.sh argv translation costs ~140 ms per reconfig on arm64.
+
 ## Verdict
 
 The merged `codex/realism-rendering` tip preserves every audited scientific
-contract. The interactive-preview fast profile degrades only opt-in, drag-time
-frames; every settled frame and every file-producing render path is exact.
+contract, and the preview performance gains hold on the same build: drag
+~10 fps, interpreter edits ~0.1 s to first feedback. The interactive-preview
+fast profile degrades only opt-in, drag-time frames; every settled frame and
+every file-producing render path is exact.
 
 ## Reproduce
 
