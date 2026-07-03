@@ -36,13 +36,16 @@ enum PreviewQuality: String, CaseIterable, Identifiable {
     /// GPU each pass — there is no Monte-Carlo noise to average down), so the
     /// "progressive" axis that actually buys anything here is *resolution*: render
     /// an intermediate width first so a sharper-than-drag image appears quickly,
-    /// then climb to full width. Each step strictly exceeds `fastWidth` and the
-    /// previous step, so a frame's pixel width unambiguously identifies its step.
+    /// then climb to full width. Each step meets or exceeds the previous one and
+    /// strictly exceeds `fastWidth`; frames advance the ladder in arrival order.
+    /// The top width appears twice: all rungs but the last render with the fast
+    /// (drag-grade) trace profile, so the duplicate shows a full-sharpness frame
+    /// ~3x sooner while the exact final-integrator frame replaces it right after.
     var refineLadder: [Int] {
         switch self {
-        case .low: return [176, 240]
-        case .medium: return [240, 340]
-        case .high: return [320, 480]
+        case .low: return [176, 240, 240]
+        case .medium: return [240, 340, 340]
+        case .high: return [320, 480, 480]
         }
     }
 
