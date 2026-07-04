@@ -130,17 +130,27 @@ enum RenderExecutionPlanning {
             if collisionLite32Enabled { return runtime.traceLitePipeline }
             return runtime.tracePipeline
         }()
+        // Threadgroup shape for the register-heavy geodesic trace. A square 8×8
+        // (two SIMD groups on Apple silicon) was best-or-tied at every real GUI
+        // resolution (112→480) in the ground-truth sweep; other small shapes each
+        // collapse somewhere (16×2 ~20% on the smallest frames, 16×4 ~9% at 480),
+        // and the previous 32×8 left 20-40% on the table. The shape is pure work
+        // partitioning — it never enters per-pixel math, so output bytes are
+        // identical for any shape (a warm-up autotune probe was prototyped and
+        // dropped: at real resolutions the 1-3% shape effect sits well under the
+        // ~20% thermal/DVFS noise of any in-process measurement, so it tuned on
+        // noise). BH_TRACE_TG_WIDTH/HEIGHT override the shape for benchmarking.
         let traceThreadWidth = max(1, activeTracePipeline.threadExecutionWidth)
         let traceMaxThreads = max(1, activeTracePipeline.maxTotalThreadsPerThreadgroup)
-        let tgWidth = min(traceThreadWidth, 32)
-        // Small threadgroups win for the register-heavy geodesic integrator: on
-        // Apple silicon, execution-width x 2 (64 threads) measured 5-40% faster
-        // than the previous x8 shape across every trace kernel (kerr thin +21-27%,
-        // legacy regime +40%, GRMHD volume +9%, schwarzschild +5%) with output
-        // bytes identical — dispatch geometry never enters per-pixel math. Frames
-        // are >= tens of thousands of rays, so occupancy stays saturated.
-        let targetThreads = min(traceMaxThreads, max(64, traceThreadWidth * 2))
-        let tgHeight = max(1, min(2, targetThreads / max(tgWidth, 1)))
+        var tgWidth = max(1, min(traceThreadWidth / 4, traceMaxThreads))
+        var tgHeight = max(1, min(traceThreadWidth / 4, traceMaxThreads / tgWidth))
+        if let ws = ProcessInfo.processInfo.environment["BH_TRACE_TG_WIDTH"], let w = Int(ws), w >= 1 {
+            tgWidth = w
+        }
+        if let hs = ProcessInfo.processInfo.environment["BH_TRACE_TG_HEIGHT"], let h = Int(hs), h >= 1 {
+            tgHeight = h
+        }
+        if tgWidth * tgHeight > traceMaxThreads { tgHeight = max(1, traceMaxThreads / max(tgWidth, 1)) }
         let tg = MTLSize(width: tgWidth, height: tgHeight, depth: 1)
 
         let activeComposeLinearTilePipeline =
