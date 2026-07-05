@@ -243,6 +243,29 @@ static inline float disk_nt_flux_correction(float rM, float rMsM, float a) {
     return clamp(corr, 0.0, 8.0);
 }
 
+// Returning-radiation (disk self-irradiation) temperature enhancement E(r).
+// The profile is computed once per config on the CPU from first-principles Kerr
+// null geodesics (ReturningRadiation.swift) and packed as a 16-sample log-r
+// lookup; T_tot = T * E with E = (1 + s*F_ret/F_NT)^(1/4), so the returned flux
+// flows through emission, redshift, and color temperature like any other
+// heating. Applied INSIDE each disk temperature producer (thin/legacy/thick/
+// visible) so every consumer inherits it exactly once. Disabled (the strict
+// scientific default) or below the disk inner edge (plunge: returned flux there
+// was classified captured) => exactly 1.
+static inline float disk_returning_rad_enhancement(float rEmitM, constant Params& P) {
+    if (P.returnRadEnabled == 0u) return 1.0;
+    float rIn = max(P.returnRadRInM, 1e-6);
+    float x = log(max(rEmitM / rIn, 1e-9)) * P.returnRadInvLogSpan;
+    if (x < 0.0) return 1.0;
+    float t = min(x, 1.0) * 15.0;
+    uint i = min(uint(t), 14u);
+    float f = t - float(i);
+    float4 luts[4] = { P.returnRadLut0, P.returnRadLut1, P.returnRadLut2, P.returnRadLut3 };
+    float e0 = luts[i >> 2][i & 3u];
+    float e1 = luts[(i + 1u) >> 2][(i + 1u) & 3u];
+    return mix(e0, e1, f);
+}
+
 static inline float thin_teff(float r_norm, constant Params& P) {
     const float sigmaSB = 5.670374419e-8;
     const float kappaEs = 0.04;
@@ -267,7 +290,7 @@ static inline float thin_teff(float r_norm, constant Params& P) {
 
     float t4 = flux / sigmaSB;
     if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
-    return max(pow(t4, 0.25), 1.0);
+    return max(pow(t4, 0.25), 1.0) * disk_returning_rad_enhancement(rr * rsSafe, P);
 }
 
 static inline float thin_tcol(float r_norm, constant Params& P) {
@@ -288,7 +311,7 @@ static inline float disk_teff_legacy(float rEmitM, float rInnerM, constant Param
     float flux = pref * pow(rr, -3.0) * boundary;
     float t4 = flux / sigmaSB;
     if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
-    return pow(t4, 0.25);
+    return pow(t4, 0.25) * disk_returning_rad_enhancement(rEmitM, P);
 }
 
 static inline float disk_teff_thin_nt(float rEmitM, float rInnerM, constant Params& P) {
@@ -316,7 +339,7 @@ static inline float disk_teff_thin_nt(float rEmitM, float rInnerM, constant Para
         flux *= rel;
         float t4 = flux / sigmaSB;
         if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
-        float tEff = pow(t4, 0.25);
+        float tEff = pow(t4, 0.25) * disk_returning_rad_enhancement(rEmitM, P);
         float fCol = max(P.diskColorFactor, 1.0);
         return tEff * fCol;
     }
@@ -362,10 +385,12 @@ static inline float disk_teff_thick(float rEmitM, float rInnerM, constant Params
         float flux = pref * pow(rr, -3.0) * boundary;
         float t4 = flux / sigmaSB;
         if (!(t4 > 0.0) || !isfinite(t4)) return 0.0;
-        return pow(t4, 0.25);
+        return pow(t4, 0.25) * disk_returning_rad_enhancement(rEmitM, P);
     }
 
     // Thick mode: finite but smooth plunging emissivity continuation inside ISCO.
+    // (No returning-radiation enhancement here: flux returning inside the ISCO
+    // was classified captured by the CPU transfer, and the LUT guard agrees.)
     float rH = disk_horizon_radius_m(P) * (1.0 + 2.0 * P.eps);
     float rrH = max(rH / rsSafe, 0.2);
     float rrAnchor = rrIn * 1.03;
@@ -390,6 +415,8 @@ static inline float disk_teff_thick(float rEmitM, float rInnerM, constant Params
 static inline float disk_effective_temperature(float rEmitM, float rInnerM, constant Params& P) {
     // Choke-point #1: explicit disk physics routing for temperature model.
     // 0=legacy, 1=thick, 2=thinNT/precision, 3=eht(legacy-safe fallback here).
+    // Returning radiation is applied inside each temperature producer
+    // (disk_returning_rad_enhancement), so every route inherits it exactly once.
     if (FC_PHYSICS_MODE == 2u) {
         return disk_teff_thin_nt(rEmitM, rInnerM, P);
     }
@@ -399,7 +426,7 @@ static inline float disk_effective_temperature(float rEmitM, float rInnerM, cons
     return disk_teff_legacy(rEmitM, rInnerM, P);
 }
 
-static inline float disk_visible_teff(float rEmitM, constant Params& P) {
+static inline float disk_visible_teff_base(float rEmitM, constant Params& P) {
     const float sigmaSB = 5.670374419e-8;
     float rsGeom = max(P.rs, 1e-6);
     float r = max(rEmitM, rsGeom * 1.0001);
@@ -486,6 +513,17 @@ static inline float disk_visible_teff(float rEmitM, constant Params& P) {
     float teff4 = max(flux, 0.0);
     if (!(teff4 > 0.0) || !isfinite(teff4)) return 0.0;
     return max(pow(teff4, 0.25), 1.0);
+}
+
+// Public visible-Teff entry: whichever calibration backbone is selected
+// (parametric, thin-disk, NT-corrected, GRMHD-hybrid, slim), returning
+// radiation heats the same photosphere, so the geodesic-transfer enhancement
+// multiplies the result exactly once here. (The E(r) profile is derived from
+// the NT flux shape; for non-NT backbones it is the same bounded, inner-peaked
+// heating applied as an approximation, and it is off unless
+// --disk-returning-rad is set.)
+static inline float disk_visible_teff(float rEmitM, constant Params& P) {
+    return disk_visible_teff_base(rEmitM, P) * disk_returning_rad_enhancement(rEmitM, P);
 }
 
 static inline bool disk_schwarzschild_circular_constants(float rM,

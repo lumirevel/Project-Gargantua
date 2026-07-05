@@ -35,10 +35,8 @@ static inline float4 renderBH_linear_from_collision(bool traced,
         // and the final image can collapse to black.
         return float4(rgbBase, 2.0);
     }
-    if (FC_PHYSICS_MODE == 2u) {
-        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-        rgbBase *= retFactor;
-    }
+    // Returning radiation now enters the disk temperature at the trace choke
+    // point (disk_returning_rad_enhancement); no interpreter-side factor here.
     if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         return float4(rgb, cloudRaw);
@@ -180,10 +178,8 @@ kernel void composeLinearRGB(constant Params& P [[buffer(0)]],
         outLinear[gidx] = float4(rgbBase, 2.0);
         return;
     }
-    if (FC_PHYSICS_MODE == 2u) {
-        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-        rgbBase *= retFactor;
-    }
+    // Returning radiation now enters the disk temperature at the trace choke
+    // point (disk_returning_rad_enhancement); no interpreter-side factor here.
     if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         outLinear[gidx] = float4(rgb, cloudRaw);
@@ -285,10 +281,8 @@ kernel void composeLinearRGBTile(constant Params& P [[buffer(0)]],
         outLinear[gid] = float4(rgbBase, 2.0);
         return;
     }
-    if (FC_PHYSICS_MODE == 2u) {
-        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-        rgbBase *= retFactor;
-    }
+    // Returning radiation now enters the disk temperature at the trace choke
+    // point (disk_returning_rad_enhancement); no interpreter-side factor here.
     if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         outLinear[gid] = float4(rgb, cloudRaw);
@@ -326,10 +320,8 @@ kernel void composeLinearRGBTileLite(constant Params& P [[buffer(0)]],
         outLinear[gid] = float4(rgbBase, 2.0);
         return;
     }
-    if (FC_PHYSICS_MODE == 2u) {
-        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-        rgbBase *= retFactor;
-    }
+    // Returning radiation now enters the disk temperature at the trace choke
+    // point (disk_returning_rad_enhancement); no interpreter-side factor here.
     if ((FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) && C.analysisMode == 2u) {
         float3 rgb = comp_apply_precision_cloud_to_rgb(rgbBase, rec, P, C, cloudRaw);
         outLinear[gid] = float4(rgb, cloudRaw);

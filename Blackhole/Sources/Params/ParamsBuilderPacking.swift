@@ -181,7 +181,17 @@ extension ParamsBuilder {
                 Float(config.shutterFlowTimeSpan),
                 0.0,
                 0.0
-            )
+            ),
+            // Returning radiation is filled in after the accretion-model pack step
+            // (ParamsBuilder.build), once the resolved strength/bounces are final.
+            returnRadEnabled: 0,
+            returnRadRInM: 0,
+            returnRadInvLogSpan: 0,
+            _padReturnRad: 0,
+            returnRadLut0: SIMD4<Float>(repeating: 1.0),
+            returnRadLut1: SIMD4<Float>(repeating: 1.0),
+            returnRadLut2: SIMD4<Float>(repeating: 1.0),
+            returnRadLut3: SIMD4<Float>(repeating: 1.0)
         )
     }
 }

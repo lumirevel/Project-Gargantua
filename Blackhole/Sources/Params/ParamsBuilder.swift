@@ -1019,6 +1019,36 @@ enum ParamsBuilder {
             params.diskPrecisionTexture = Float(diskPrecisionTextureArg)
         }
 
+        // Returning radiation (disk self-irradiation): compute the first-principles
+        // Kerr-geodesic enhancement profile E(r) once per config and pack it as a
+        // 16-sample log-r LUT. Inert (E == 1) when the strength is 0 or the physics
+        // mode has its own transfer (GRMHD).
+        if let profile = ReturningRadiation.packedProfile(
+            metric: metricArg,
+            spin: spinArg,
+            rsMeters: rsD,
+            rInMeters: diskInnerRadiusM(metric: metricArg, spin: spinArg, rs: rsD),
+            rOutMeters: config.reD,
+            strength: Double(params.diskReturningRad),
+            bounces: Int(params.diskReturnBounces),
+            physicsModeID: diskPhysicsModeID
+        ) {
+            params.returnRadEnabled = 1
+            params.returnRadRInM = profile.rInMeters
+            params.returnRadInvLogSpan = profile.invLogSpan
+            params.returnRadLut0 = SIMD4<Float>(profile.lut[0], profile.lut[1], profile.lut[2], profile.lut[3])
+            params.returnRadLut1 = SIMD4<Float>(profile.lut[4], profile.lut[5], profile.lut[6], profile.lut[7])
+            params.returnRadLut2 = SIMD4<Float>(profile.lut[8], profile.lut[9], profile.lut[10], profile.lut[11])
+            params.returnRadLut3 = SIMD4<Float>(profile.lut[12], profile.lut[13], profile.lut[14], profile.lut[15])
+            let r = profile.result
+            let lutText = profile.lut.map { String(format: "%.4f", $0) }.joined(separator: " ")
+            ParamsBuilderDiagnostics.emit(lines: [
+                String(format: "returning-radiation: phi=%.2f%% captured=%.2f%% peakE=%.4f (spin=%.3f, first-principles geodesic transfer)",
+                       r.returningFraction * 100, r.capturedFraction * 100, r.peakEnhancement, (metricArg == 0) ? 0.0 : spinArg),
+                "returning-radiation E(r) LUT: \(lutText)"
+            ])
+        }
+
         return BuiltParams(
             rawArguments: logical.rawArguments,
             runRegression: false,

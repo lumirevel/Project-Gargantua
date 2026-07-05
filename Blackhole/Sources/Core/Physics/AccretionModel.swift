@@ -88,7 +88,10 @@ private func precisionDefaults(for input: DiskPolicyInput) -> (plungeFloor: Doub
         cloudPorosity: hasVolume ? 0.42 : 0.18,
         cloudShadow: hasVolume ? 0.62 : 0.90,
         scatteringAlbedo: hasVolume ? 0.52 : 0.62,
-        returningRad: 0.35,
+        // Full first-principles returning radiation (1.0 = the physical geodesic
+        // transfer, no attenuation). The old 0.35 belonged to the compose-side
+        // phenomenological factor this replaced.
+        returningRad: 1.0,
         precisionTexture: 0.58,
         returnBounces: 2
     )
@@ -100,26 +103,27 @@ struct LegacyAccretionModel: AccretionModel {
 
     func applyDefaults(input: DiskPolicyInput) -> DiskPolicyOutput {
         var warnings: [String] = []
-        if input.returningRadRawArg > 1e-8 {
-            warnings.append("warn: --disk-returning-rad is only active in precision mode")
-        }
         if input.cloudCoverageRawArg > 1e-8 || input.cloudOpticalDepthRawArg > 1e-8 || input.cloudPorosityRawArg > 1e-8 || input.cloudShadowStrengthRawArg > 1e-8 {
             warnings.append("warn: cloud args are active in precision mode, or thick mode when --cloud-tau is set")
         }
-        if input.returnBouncesRawArg != 1 || input.rtStepsRawArg > 0 || input.scatteringAlbedoRawArg > 1e-8 {
-            warnings.append("warn: --disk-return-bounces is precision-only; --rt-steps/--disk-scattering-albedo are active in precision or thick-with-cloud-tau")
+        if input.rtStepsRawArg > 0 || input.scatteringAlbedoRawArg > 1e-8 {
+            warnings.append("warn: --rt-steps/--disk-scattering-albedo are active in precision or thick-with-cloud-tau")
         }
         return DiskPolicyOutput(
             plungeFloor: 0.0,
             thickScale: 1.0,
             colorFactor: input.colorFactorExplicit ? input.colorFactorRawArg : 1.0,
-            returningRad: 0.0,
+            // Returning radiation is first-principles physics (geodesic transfer
+            // into the NT temperature), available in every NT-flux mode. The strict
+            // scientific default stays 0 (a clean NT reference) but an explicit
+            // --disk-returning-rad is honored instead of silently ignored.
+            returningRad: input.returningRadExplicit ? input.returningRadRawArg : 0.0,
             precisionTexture: 0.0,
             cloudCoverage: 0.0,
             cloudOpticalDepth: 0.0,
             cloudPorosity: 0.0,
             cloudShadowStrength: 0.0,
-            returnBounces: 1,
+            returnBounces: input.returnBouncesExplicit ? input.returnBouncesRawArg : 1,
             rtSteps: 0,
             scatteringAlbedo: 0.0,
             thickCloudExplicit: false,
@@ -137,9 +141,6 @@ struct ThickAccretionModel: AccretionModel {
     func applyDefaults(input: DiskPolicyInput) -> DiskPolicyOutput {
         let thickCloudExplicit = input.cloudOpticalDepthExplicit
         var warnings: [String] = []
-        if input.returningRadRawArg > 1e-8 {
-            warnings.append("warn: --disk-returning-rad is only active in precision mode")
-        }
         if !thickCloudExplicit && (input.cloudCoverageRawArg > 1e-8 || input.cloudOpticalDepthRawArg > 1e-8 || input.cloudPorosityRawArg > 1e-8 || input.cloudShadowStrengthRawArg > 1e-8) {
             warnings.append("warn: cloud args are active in precision mode, or thick mode when --cloud-tau is set")
         }
@@ -147,13 +148,15 @@ struct ThickAccretionModel: AccretionModel {
             plungeFloor: input.plungeFloorExplicit ? input.plungeFloorRawArg : 0.02,
             thickScale: input.thickScaleExplicit ? input.thickScaleRawArg : 1.3,
             colorFactor: input.colorFactorExplicit ? input.colorFactorRawArg : 1.0,
-            returningRad: 0.0,
+            // First-principles returning radiation is available here too; the
+            // default stays off, explicit args are honored.
+            returningRad: input.returningRadExplicit ? input.returningRadRawArg : 0.0,
             precisionTexture: 0.0,
             cloudCoverage: thickCloudExplicit ? max(input.cloudCoverageRawArg, 0.55) : 0.0,
             cloudOpticalDepth: thickCloudExplicit ? input.cloudOpticalDepthRawArg : 0.0,
             cloudPorosity: thickCloudExplicit ? max(input.cloudPorosityRawArg, 0.20) : 0.0,
             cloudShadowStrength: thickCloudExplicit ? max(input.cloudShadowStrengthRawArg, 0.55) : 0.0,
-            returnBounces: 1,
+            returnBounces: input.returnBouncesExplicit ? input.returnBouncesRawArg : 1,
             rtSteps: input.rtStepsRawArg,
             scatteringAlbedo: thickCloudExplicit ? input.scatteringAlbedoRawArg : 0.0,
             thickCloudExplicit: thickCloudExplicit,

@@ -392,6 +392,84 @@ enum ReturningRadiation {
         return Outcome(kind: .escaped, rLand: r)
     }
 
+    // MARK: - Novikov-Thorne flux shape (Page-Thorne), Swift port
+
+    /// Relativistic NT flux shape f(r) (Page & Thorne 1974), mirroring the Metal
+    /// implementation `disk_nt_flux_shape` in disk_models.metal so the CPU
+    /// transfer uses the same emission-weighting as the GPU temperature.
+    /// r, rms in M units; returns 0 outside the disk.
+    static func ntFluxShape(_ rM: Double, rms rMsM: Double, a: Double) -> Double {
+        guard rM > rMsM else { return 0 }
+        let aSafe = min(max(a, -0.999), 0.999)
+        let x = sqrt(max(rM, 1e-12))
+        let x0 = sqrt(max(rMsM, 1e-12))
+        let psi = acos(min(max(aSafe, -0.999999), 0.999999)) / 3.0
+        let x1 = 2.0 * cos(psi - Double.pi / 3.0)
+        let x2 = 2.0 * cos(psi + Double.pi / 3.0)
+        let x3 = -2.0 * cos(psi)
+        let f0 = x - x0 - 1.5 * aSafe * log(max(x / max(x0, 1e-12), 1e-12))
+        func safeDen(_ v: Double) -> Double { abs(v) > 1e-12 ? v : (v < 0 ? -1e-12 : 1e-12) }
+        let d1 = safeDen(x1 * (x1 - x2) * (x1 - x3))
+        let d2 = safeDen(x2 * (x2 - x1) * (x2 - x3))
+        let d3 = safeDen(x3 * (x3 - x1) * (x3 - x2))
+        let t1 = 3.0 * pow(x1 - aSafe, 2.0) / d1
+        let t2 = 3.0 * pow(x2 - aSafe, 2.0) / d2
+        let t3 = 3.0 * pow(x3 - aSafe, 2.0) / d3
+        let e1 = safeDen(x0 - x1), e2 = safeDen(x0 - x2), e3 = safeDen(x0 - x3)
+        let l1 = log(max((x - x1) / e1, 1e-12))
+        let l2 = log(max((x - x2) / e2, 1e-12))
+        let l3 = log(max((x - x3) / e3, 1e-12))
+        let q = f0 - t1 * l1 - t2 * l2 - t3 * l3
+        let den = max(4.0 * Double.pi * rM * x * x * (x * x * x - 3.0 * x + 2.0 * aSafe), 1e-12)
+        let fpt = 1.5 * q / den
+        return (fpt.isFinite && fpt > 0) ? fpt : 0
+    }
+
+    // MARK: - PackedParams LUT
+
+    struct PackedProfile {
+        var rInMeters: Float
+        var invLogSpan: Float
+        var lut: [Float]        // exactly 16 E samples, log-r spaced [rIn, rOut]
+        var result: Result      // diagnostics for logging/validation
+    }
+
+    /// Compute the enhancement profile for a render config and shape it into the
+    /// 16-sample log-r LUT the GPU consumes. Returns nil when the effect is off
+    /// or out of scope (GRMHD physics mode has its own transfer).
+    static func packedProfile(metric: Int32, spin: Double, rsMeters: Double,
+                              rInMeters: Double, rOutMeters: Double,
+                              strength: Double, bounces: Int,
+                              physicsModeID: UInt32) -> PackedProfile? {
+        guard strength > 1e-9, physicsModeID != 3 else { return nil }
+        guard rsMeters > 0, rOutMeters > rInMeters, rInMeters > 0 else { return nil }
+        let a = (metric == 0) ? 0.0 : min(max(spin, 0.0), 0.9985)
+        let massLen = 0.5 * rsMeters
+        let rInM = rInMeters / massLen
+        let rOutM = min(rOutMeters / massLen, rInM * 400.0)
+        let cfg = Config(spin: a, rInner: rInM, rOuter: rOutM,
+                         strength: strength, bounces: max(bounces, 1),
+                         radialSamples: 16, emitterSamples: 48,
+                         polarSamples: 10, azimuthSamples: 14)
+        let res = compute(config: cfg) { r in ntFluxShape(r, rms: rInM, a: a) }
+        guard res.enhancement.count == 16 else { return nil }
+        let span = log(rOutM / rInM)
+        guard span > 1e-6 else { return nil }
+        var lut = res.enhancement
+        // The first bin sits exactly on the zero-torque inner edge where the NT
+        // flux vanishes, so the multiplicative ratio there is a floor/clamp
+        // artifact, not physics. Replace it with the log-r linear extrapolation
+        // of its neighbours (bounded), which preserves the inner-peaked trend
+        // without injecting the clamp ceiling into the interpolation.
+        if lut.count >= 3 {
+            lut[0] = min(max(lut[1] + (lut[1] - lut[2]), 1.0), 2.0)
+        }
+        return PackedProfile(rInMeters: Float(rInM * massLen),
+                             invLogSpan: Float(1.0 / span),
+                             lut: lut.map { Float(min(max($0, 1.0), 2.0)) },
+                             result: res)
+    }
+
     /// Deposit returning energy into the two nearest output bins (linear in log r).
     private static func accumulateLanding(_ dep: inout [Double], radii: [Double],
                                           rLand: Double, energy: Double) {

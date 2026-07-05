@@ -1,60 +1,11 @@
 
-static inline float comp_precision_returning_radiation_factor(const CollisionInfo rec,
-                                                             constant Params& P,
-                                                             constant ComposeParams& C,
-                                                             float cloudRaw)
-{
-    if (FC_PHYSICS_MODE != 2u) return 1.0;
-    float ret = clamp(P.diskReturningRad, 0.0, 1.0);
-    if (!(ret > 1e-6)) return 1.0;
-
-    float rEmit = max(rec.v_disk.y, P.rs * 1.0001);
-    float rIn = disk_inner_radius_m(P);
-    float rH = disk_horizon_radius_m(P);
-    float span = max(2.8 * rIn - rIn, 1e-6);
-    float x = clamp((rEmit - rIn) / span, 0.0, 1.0);
-    float innerWeight = 1.0 - smoothstep(0.0, 1.0, x);
-    float horizonGate = smoothstep(rH * (1.02 + 16.0 * P.eps), rIn, rEmit);
-
-    float spinFac = (FC_METRIC == 0) ? 0.14 : pow(clamp(abs(P.spin), 0.0, 0.999), 1.6);
-
-    float3 d = rec.direct_world.xyz;
-    float mu = abs(d.z) / max(length(d), 1e-30);
-    float bending = 0.35 + 0.65 * pow(1.0 - clamp(mu, 0.0, 1.0), 0.72);
-
-    float cloudNorm = comp_cloud_norm_from_raw(clamp(cloudRaw, 0.0, 1.0), C);
-    float c = clamp((cloudNorm - 0.18) / 0.82, 0.0, 1.0);
-    float coverage = clamp(P.diskCloudCoverage, 0.0, 1.0);
-    float tau0 = max(P.diskCloudOpticalDepth, 0.0);
-    float albedo = clamp(P.diskScatteringAlbedo, 0.0, 1.0);
-    uint bounceCount = clamp(P.diskReturnBounces, 1u, 4u);
-    float reprocess = 1.0 - exp(-tau0 * (0.30 + 0.70 * coverage * c));
-    float absorbFrac = clamp(0.45 + 0.55 * reprocess, 0.0, 1.0);
-
-    float firstBounce = ret
-                      * (0.22 + 0.78 * spinFac)
-                      * innerWeight
-                      * bending
-                      * horizonGate
-                      * absorbFrac;
-    firstBounce = clamp(firstBounce, 0.0, 0.95);
-
-    // Multi-bounce geometric approximation: I_ret ~ f1 * (1 + q + q^2 + ...)
-    float q = albedo
-            * (0.20 + 0.55 * spinFac)
-            * (0.35 + 0.65 * bending)
-            * (0.40 + 0.60 * innerWeight)
-            * (0.55 + 0.45 * horizonGate);
-    q = clamp(q, 0.0, 0.88);
-
-    float accum = 0.0;
-    float term = firstBounce;
-    for (uint b = 0u; b < bounceCount; ++b) {
-        accum += term;
-        term *= q;
-    }
-    return 1.0 + clamp(accum, 0.0, 1.6);
-}
+// (comp_precision_returning_radiation_factor removed: returning radiation is
+// now computed first-principles on the CPU from Kerr null geodesics and enters
+// the disk temperature at the trace choke point — see
+// disk_returning_rad_enhancement in disk_models.metal and
+// ReturningRadiation.swift. An interpreter-side RGB multiplier would now be
+// double counting, and it was exactly the kind of physics-in-the-interpreter
+// the physics contract forbids.)
 
 static inline float3 comp_apply_precision_cloud_to_rgb(float3 rgb,
                                                        const CollisionInfo rec,
@@ -2214,8 +2165,9 @@ static inline float3 comp_linear_rgb(const CollisionInfo rec,
         if (P.diskVolumeMode != 0u && rec.noise <= -50.0) {
             return rgb;
         }
-        float retFactor = comp_precision_returning_radiation_factor(rec, P, C, cloudRaw);
-        rgb *= retFactor;
+        // Returning radiation is physics now: it enters the disk temperature at
+        // the trace choke point (disk_returning_rad_enhancement), so no
+        // interpreter-side brightness factor is applied here.
     }
     if (FC_PHYSICS_MODE == 1u || FC_PHYSICS_MODE == 2u) {
         if (C.analysisMode == 1u) return rgb;

@@ -157,6 +157,18 @@ struct PackedParams {
     var pcdSourceB: SIMD4<Float>
     var pcdSourceC: SIMD4<Float> // x=hotCrescent, y=profile-6 debug field selector
     var motionBlurParams: SIMD4<Float> // x=samples (1=off), y=shutter span in flow-time units
+    // Returning-radiation (disk self-irradiation) temperature enhancement E(r):
+    // 16-sample lookup, log-r spaced over [returnRadRInM, rOut], computed on the
+    // CPU from first-principles Kerr null geodesics (ReturningRadiation.swift).
+    // T_tot(r) = T_NT(r) * E(r); disabled => E == 1 everywhere.
+    var returnRadEnabled: UInt32
+    var returnRadRInM: Float          // LUT inner radius (meters)
+    var returnRadInvLogSpan: Float    // 1 / ln(rOut/rIn)
+    var _padReturnRad: Float
+    var returnRadLut0: SIMD4<Float>   // E samples 0..3
+    var returnRadLut1: SIMD4<Float>   // E samples 4..7
+    var returnRadLut2: SIMD4<Float>   // E samples 8..11
+    var returnRadLut3: SIMD4<Float>   // E samples 12..15
 }
 
 struct CollisionInfo {
@@ -291,8 +303,8 @@ func dumpPackedParams(_ params: inout PackedParams, to path: String) throws {
 }
 
 func validatePackedParamsABIOrThrow() throws {
-    let expectedSize = 688
-    let expectedStride = 688
+    let expectedSize = 768
+    let expectedStride = 768
     let expectedAlignment = 16
     let expectedComposeSize = 368
     let expectedComposeStride = 368
@@ -317,6 +329,8 @@ func validatePackedParamsABIOrThrow() throws {
         "pcdSourceB": 640,
         "pcdSourceC": 656,
         "motionBlurParams": 672,
+        "returnRadEnabled": 688,
+        "returnRadLut0": 704,
     ]
     guard MemoryLayout<PackedParams>.size == expectedSize else {
         throw NSError(domain: "Blackhole", code: 101, userInfo: [NSLocalizedDescriptionKey: "PackedParams size changed: \(MemoryLayout<PackedParams>.size) != \(expectedSize)"])
@@ -385,6 +399,8 @@ private func packedParamsCriticalOffsets() -> [String: Int] {
         "pcdSourceB": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceB) ?? -1,
         "pcdSourceC": MemoryLayout<PackedParams>.offset(of: \PackedParams.pcdSourceC) ?? -1,
         "motionBlurParams": MemoryLayout<PackedParams>.offset(of: \PackedParams.motionBlurParams) ?? -1,
+        "returnRadEnabled": MemoryLayout<PackedParams>.offset(of: \PackedParams.returnRadEnabled) ?? -1,
+        "returnRadLut0": MemoryLayout<PackedParams>.offset(of: \PackedParams.returnRadLut0) ?? -1,
     ]
 }
 

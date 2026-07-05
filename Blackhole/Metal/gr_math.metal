@@ -170,6 +170,17 @@ struct Params {
     // Span maps physical shutter seconds through t_flow = t_phys * c / (sqrt(2) * rs),
     // matching the Keplerian phase convention used by the heating-field advection.
     float4 motionBlurParams;
+    // Returning-radiation (disk self-irradiation) temperature enhancement E(r):
+    // 16-sample lookup, log-r spaced over [returnRadRInM, rOut], computed on the
+    // CPU from first-principles Kerr null geodesics. T_tot = T_NT * E(r).
+    uint   returnRadEnabled;
+    float  returnRadRInM;       // LUT inner radius (meters)
+    float  returnRadInvLogSpan; // 1 / ln(rOut/rIn)
+    float  _padReturnRad;
+    float4 returnRadLut0; // E samples 0..3
+    float4 returnRadLut1; // E samples 4..7
+    float4 returnRadLut2; // E samples 8..11
+    float4 returnRadLut3; // E samples 12..15
 };
 
 struct CollisionInfo {
