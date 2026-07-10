@@ -38,7 +38,10 @@ enum RenderEyePhotometric {
                 return nil
             }
             // Choose the filter so the near-peak scene luminance lands at the
-            // photopic viewing target (default 8000 cd/m^2, bright sky).
+            // photopic viewing target (default 8000 cd/m^2, bright sky). Note the
+            // Naka-Rushton display below is invariant to this global attenuation
+            // (scene and adaptation luminance scale together); the ND only sets
+            // the absolute level for the mesopic rod/cone weighting.
             nd = max(0.0, log10(absPerY * p995 / max(config.eyeTargetLuminanceArg, 1.0)))
         }
         let ndLinear = pow(10.0, -nd)
@@ -46,7 +49,20 @@ enum RenderEyePhotometric {
         var adapt = config.eyeAdaptationArg
         if adapt <= 0 {
             if let p50, p50 > 0 {
-                adapt = absPerY * p50 * ndLinear
+                // Adaptation anchor. Pinning it to the scene median puts the median
+                // pixel exactly at the Naka-Rushton half-response, and the white
+                // normalization maps half-response to display ~0.68 — so the body of
+                // a narrow-histogram disk (thermal photosphere: p99.5 within ~2.5x
+                // of the median) is structurally pinned near white and its texture
+                // compresses into a couple of 8-bit counts. Physiologically the
+                // adaptation pool of an observer staring at a bright disk is driven
+                // toward the bright field, not the scene median; anchoring at the
+                // geometric mean of the median and near-peak luminance drops the
+                // median below half-response (structure becomes visible) for narrow
+                // scenes while barely moving wide-histogram scenes whose body spans
+                // the response range anyway.
+                let anchor = (p995 != nil && p995! > 0) ? sqrt(p50 * p995!) : p50
+                adapt = absPerY * anchor * ndLinear
             } else {
                 adapt = config.eyeTargetLuminanceArg * 0.125
             }
